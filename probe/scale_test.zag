@@ -1,0 +1,108 @@
+// scale_test.zag — large-design benchmark: an NxN grid of populated plates
+// (5 comps + 3 routed guides each). Times placement, routing, sim compile,
+// sim stepping, and full app frames so architecture regressions show up as
+// numbers, not vibes.
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn grid_n() i32 { return 32; }   // 32x32 plates = 5120 comps, 3072 guides
+
+fn print_kv(k: []u8, v: i64) void {
+    _zag_print(k);
+    _zag_print("=");
+    _zag_print(_zag_i64_to_str(v));
+    _zag_print(" ");
+}
+
+fn main() i32 {
+    let a: *App = app_new(1440, 900);
+    let s: *Scene = a.*.scene;
+
+    let t0: i64 = _zag_clock_monotonic_ms();
+    let comps: i32 = 0;
+    let guides: i32 = 0;
+    let route_fail: i32 = 0;
+    let gz: i32 = 0;
+    while (gz < grid_n()) {
+        let gx: i32 = 0;
+        while (gx < grid_n()) {
+            let ox: i32 = gx * 10;
+            let oz: i32 = gz * 10;
+            let plate: i32 = scene_place(s, Kind.Plate, vox(ox, 0, oz), 0);
+            let e1: i32 = scene_place(s, Kind.Emitter, vox(ox, 1, oz + 1), 0);
+            let e2: i32 = scene_place(s, Kind.Emitter, vox(ox, 1, oz + 5), 0);
+            let ch: i32 = scene_place(s, Kind.Chamber, vox(ox + 3, 1, oz + 3), 0);
+            let dt: i32 = scene_place(s, Kind.Detector, vox(ox + 7, 1, oz + 4), 0);
+            if (plate > 0) { comps = comps + 1; }
+            if (e1 > 0) { comps = comps + 1; }
+            if (e2 > 0) { comps = comps + 1; }
+            if (ch > 0) { comps = comps + 1; }
+            if (dt > 0) { comps = comps + 1; }
+            if (e1 > 0 && ch > 0 && dt > 0 && e2 > 0) {
+                let ec: Comp = s.*.comps.data[scene_comp_index(s, e1)];
+                let ec2: Comp = s.*.comps.data[scene_comp_index(s, e2)];
+                let cc: Comp = s.*.comps.data[scene_comp_index(s, ch)];
+                let dc: Comp = s.*.comps.data[scene_comp_index(s, dt)];
+                let p1: list.ArrayList[Vox] = list.make[Vox](32);
+                if (route_guide(s, comp_port_attach(ec, 0), comp_port_attach(cc, 0), &p1)) {
+                    let _g1: i32 = scene_add_guide(s, e1, 0, ch, 0, p1);
+                    guides = guides + 1;
+                } else { route_fail = route_fail + 1; list.free[Vox](&p1); }
+                let p2: list.ArrayList[Vox] = list.make[Vox](32);
+                if (route_guide(s, comp_port_attach(ec2, 0), comp_port_attach(cc, 1), &p2)) {
+                    let _g2: i32 = scene_add_guide(s, e2, 0, ch, 1, p2);
+                    guides = guides + 1;
+                } else { route_fail = route_fail + 1; list.free[Vox](&p2); }
+                let p3: list.ArrayList[Vox] = list.make[Vox](32);
+                if (route_guide(s, comp_port_attach(cc, 3), comp_port_attach(dc, 0), &p3)) {
+                    let _g3: i32 = scene_add_guide(s, ch, 3, dt, 0, p3);
+                    guides = guides + 1;
+                } else { route_fail = route_fail + 1; list.free[Vox](&p3); }
+            }
+            gx = gx + 1;
+        }
+        gz = gz + 1;
+    }
+    let t_build: i64 = _zag_clock_monotonic_ms() - t0;
+    print_kv("comps", comps as i64);
+    print_kv("guides", guides as i64);
+    print_kv("route_fail", route_fail as i64);
+    print_kv("build_ms", t_build);
+
+    let t1: i64 = _zag_clock_monotonic_ms();
+    sim_recompile(a.*.sim, s);
+    print_kv("sim_compile_ms", _zag_clock_monotonic_ms() - t1);
+
+    let t2: i64 = _zag_clock_monotonic_ms();
+    let st: i32 = 0;
+    while (st < 100) { sim_step(a.*.sim, s); st = st + 1; }
+    print_kv("sim_100steps_ms", _zag_clock_monotonic_ms() - t2);
+
+    // one long route across the whole board
+    let far: list.ArrayList[Vox] = list.make[Vox](64);
+    let t3: i64 = _zag_clock_monotonic_ms();
+    let far_ok: bool = route_guide(s, vox(1, 2, 0 - 2), vox(grid_n() * 10 - 5, 2, 0 - 2), &far);
+    print_kv("long_route_ms", _zag_clock_monotonic_ms() - t3);
+    let fo: i64 = 0;
+    if (far_ok) { fo = 1; }
+    print_kv("long_route_ok", fo);
+    list.free[Vox](&far);
+
+    // one incremental edit: must not full-recompile at this scale
+    let t4: i64 = _zag_clock_monotonic_ms();
+    let extra: i32 = scene_place(s, Kind.Chamber, vox(3, 1, 3), 0);
+    let _e: i32 = extra;
+    sim_recompile_region(a.*.sim, s);
+    print_kv("edit_patch_ms", _zag_clock_monotonic_ms() - t4);
+
+    // frame-all camera then measure frames
+    app_action(a, 21);
+    a.*.inp.w = 1440;
+    a.*.inp.h = 900;
+    let t5: i64 = _zag_clock_monotonic_ms();
+    let fr: i32 = 0;
+    while (fr < 5) { app_frame(a, 0.016); fr = fr + 1; }
+    print_kv("frame_ms_avg", (_zag_clock_monotonic_ms() - t5) / 5);
+    _zag_println("");
+    return 0;
+}

@@ -41,6 +41,11 @@ struct Scene {
     world: *World,                  // sparse chunk index for region queries
     comp_idx: hm.IntMap[i32],       // component id -> comps index (lazy rebuild)
     idx_dirty: bool,
+    guide_idx: hm.IntMap[i32],      // guide id -> guides index (lazy rebuild)
+    guide_idx_dirty: bool,
+    port_use: hm.Int64Map[i32],     // (comp id, port) -> incident guide count
+    plate_chambers: hm.IntMap[i32], // plate id -> chambers mounted (lazy rebuild)
+    plate_chambers_dirty: bool,
     next_comp: i32,
     next_guide: i32,
     made: list.ArrayList[i32],      // per-kind naming counters
@@ -58,6 +63,11 @@ fn scene_new() *Scene {
         .world = world_new(),
         .comp_idx = hm.int_make[i32](64),
         .idx_dirty = true,
+        .guide_idx = hm.int_make[i32](64),
+        .guide_idx_dirty = true,
+        .port_use = hm.int64_make[i32](64),
+        .plate_chambers = hm.int_make[i32](16),
+        .plate_chambers_dirty = true,
         .next_comp = 1,
         .next_guide = 1,
         .made = list.make[i32](8),
@@ -141,13 +151,21 @@ fn scene_comp_index(s: *Scene, id: i32) i32 {
     return got orelse (0 - 1);
 }
 
-fn scene_guide_index(s: *Scene, id: i32) i32 {
+fn scene_guide_idx_rebuild(s: *Scene) void {
+    hm.int_free[i32](&s.*.guide_idx);
+    s.*.guide_idx = hm.int_make[i32](s.*.guides.len * 2 + 16);
     let i: i32 = 0;
     while (i < s.*.guides.len) {
-        if (s.*.guides.data[i].id == id) { return i; }
+        hm.int_put[i32](&s.*.guide_idx, s.*.guides.data[i].id, i);
         i = i + 1;
     }
-    return 0 - 1;
+    s.*.guide_idx_dirty = false;
+}
+
+fn scene_guide_index(s: *Scene, id: i32) i32 {
+    if (s.*.guide_idx_dirty) { scene_guide_idx_rebuild(s); }
+    let got: ?i32 = hm.int_get[i32](s.*.guide_idx, id);
+    return got orelse (0 - 1);
 }
 
 // Component id occupying a voxel, or -1.
@@ -188,6 +206,7 @@ fn scene_cells_comp(c: Comp, out: *list.ArrayList[Vox]) void {
 fn hm_put_cell(s: *Scene, v: Vox, id: i32) void {
     hm.int64_put[i32](&s.*.occ, vox_key(v), id);
     world_touch_vox(s.*.world, v, id);
+    s.*.plate_chambers_dirty = true;
 }
 
 fn hm_del_cell(s: *Scene, v: Vox) void {
@@ -196,12 +215,14 @@ fn hm_del_cell(s: *Scene, v: Vox) void {
     if (owner >= 0) {
         world_remove_vox(s.*.world, v, owner);
     }
+    s.*.plate_chambers_dirty = true;
 }
 
 fn hm_clear_occ(s: *Scene) void {
     hm.int64_free[i32](&s.*.occ);
     s.*.occ = hm.int64_make[i32](512);
     world_clear(s.*.world);
+    s.*.plate_chambers_dirty = true;
 }
 
 // Plate id under a cell's XZ column, or -1. Scans downward so components can
@@ -232,16 +253,28 @@ fn scene_plate_below(s: *Scene, cell: Vox) bool {
     return s.*.comps.data[ci].kind == Kind.Plate;
 }
 
-fn scene_chambers_on_plate(s: *Scene, plate_id: i32) i32 {
-    let n: i32 = 0;
+// Per-plate chamber counts, rebuilt lazily after any occupancy change so the
+// DRC quota check is O(1) per query instead of an all-components scan.
+fn scene_plate_chambers_rebuild(s: *Scene) void {
+    hm.int_free[i32](&s.*.plate_chambers);
+    s.*.plate_chambers = hm.int_make[i32](16);
     let i: i32 = 0;
     while (i < s.*.comps.len) {
         if (s.*.comps.data[i].kind == Kind.Chamber) {
-            if (scene_plate_under(s, s.*.comps.data[i].origin) == plate_id) { n = n + 1; }
+            let plate: i32 = scene_plate_under(s, s.*.comps.data[i].origin);
+            if (plate >= 0) {
+                let cur: i32 = hm.int_get[i32](s.*.plate_chambers, plate) orelse 0;
+                hm.int_put[i32](&s.*.plate_chambers, plate, cur + 1);
+            }
         }
         i = i + 1;
     }
-    return n;
+    s.*.plate_chambers_dirty = false;
+}
+
+fn scene_chambers_on_plate(s: *Scene, plate_id: i32) i32 {
+    if (s.*.plate_chambers_dirty) { scene_plate_chambers_rebuild(s); }
+    return hm.int_get[i32](s.*.plate_chambers, plate_id) orelse 0;
 }
 
 // ── design-rule check ─────────────────────────────────────────────────────────
@@ -337,7 +370,11 @@ fn scene_place(s: *Scene, k: Kind, origin: Vox, rot: i32) i32 {
     list.free[Vox](&cells);
 
     list.push[Comp](&s.*.comps, c);
-    s.*.idx_dirty = true;
+    // append keeps existing indices valid: extend the map instead of a full
+    // O(n) rebuild (which made bulk placement quadratic)
+    if (!s.*.idx_dirty) {
+        hm.int_put[i32](&s.*.comp_idx, id, s.*.comps.len - 1);
+    }
     scene_mark_topo_comp(s, id);
     return id;
 }
@@ -425,6 +462,9 @@ fn scene_resize(s: *Scene, id: i32, new_size: Vox) i32 {
 fn scene_remove_guide_at(s: *Scene, gi: i32) void {
     let fc: i32 = s.*.guides.data[gi].from_c;
     let tc: i32 = s.*.guides.data[gi].to_c;
+    port_use_add(s, fc, s.*.guides.data[gi].from_p, 0 - 1);
+    port_use_add(s, tc, s.*.guides.data[gi].to_p, 0 - 1);
+    s.*.guide_idx_dirty = true;
     list.free[Vox](&s.*.guides.data[gi].path);
     // ordered removal keeps outliner rows stable
     let j: i32 = gi;
@@ -480,15 +520,19 @@ fn scene_remove(s: *Scene, id: i32) void {
 
 // ── waveguides ────────────────────────────────────────────────────────────────
 
+fn port_key(cid: i32, port: i32) i64 {
+    return (cid as i64) * 64 + (port as i64);
+}
+
+fn port_use_add(s: *Scene, cid: i32, port: i32, delta: i32) void {
+    let k: i64 = port_key(cid, port);
+    let cur: i32 = hm.int64_get[i32](s.*.port_use, k) orelse 0;
+    hm.int64_put[i32](&s.*.port_use, k, cur + delta);
+}
+
 fn scene_port_in_use(s: *Scene, cid: i32, port: i32) bool {
-    let i: i32 = 0;
-    while (i < s.*.guides.len) {
-        let g: Guide = s.*.guides.data[i];
-        if (g.from_c == cid && g.from_p == port) { return true; }
-        if (g.to_c == cid && g.to_p == port) { return true; }
-        i = i + 1;
-    }
-    return false;
+    let n: i32 = hm.int64_get[i32](s.*.port_use, port_key(cid, port)) orelse 0;
+    return n > 0;
 }
 
 // Takes ownership of `path` (attach cell .. attach cell inclusive).
@@ -508,6 +552,11 @@ fn scene_add_guide(s: *Scene, fc: i32, fp: i32, tc: i32, tp: i32, path: list.Arr
         .live = 0,
     };
     list.push[Guide](&s.*.guides, g);
+    port_use_add(s, fc, fp, 1);
+    port_use_add(s, tc, tp, 1);
+    if (!s.*.guide_idx_dirty) {
+        hm.int_put[i32](&s.*.guide_idx, id, s.*.guides.len - 1);
+    }
     scene_mark_topo_comp(s, fc);
     scene_mark_topo_comp(s, tc);
     scene_mark_topo_guides(s);
@@ -608,6 +657,11 @@ fn scene_clear(s: *Scene) void {
     hm.int_free[i32](&s.*.comp_idx);
     s.*.comp_idx = hm.int_make[i32](64);
     s.*.idx_dirty = true;
+    hm.int_free[i32](&s.*.guide_idx);
+    s.*.guide_idx = hm.int_make[i32](64);
+    s.*.guide_idx_dirty = true;
+    hm.int64_free[i32](&s.*.port_use);
+    s.*.port_use = hm.int64_make[i32](64);
     hm_clear_occ(s);
     s.*.next_comp = 1;
     s.*.next_guide = 1;
@@ -630,7 +684,9 @@ fn scene_restore_comp(s: *Scene, c: Comp) void {
     }
     list.free[Vox](&cells);
     list.push[Comp](&s.*.comps, c);
-    s.*.idx_dirty = true;
+    if (!s.*.idx_dirty) {
+        hm.int_put[i32](&s.*.comp_idx, c.id, s.*.comps.len - 1);
+    }
     if (c.id >= s.*.next_comp) { s.*.next_comp = c.id + 1; }
     scene_mark_topo_comp(s, c.id);
 }
@@ -638,6 +694,11 @@ fn scene_restore_comp(s: *Scene, c: Comp) void {
 // Re-insert a guide snapshot (takes ownership of its path).
 fn scene_restore_guide(s: *Scene, g: Guide) void {
     list.push[Guide](&s.*.guides, g);
+    port_use_add(s, g.from_c, g.from_p, 1);
+    port_use_add(s, g.to_c, g.to_p, 1);
+    if (!s.*.guide_idx_dirty) {
+        hm.int_put[i32](&s.*.guide_idx, g.id, s.*.guides.len - 1);
+    }
     if (g.id >= s.*.next_guide) { s.*.next_guide = g.id + 1; }
     scene_mark_topo_comp(s, g.from_c);
     scene_mark_topo_comp(s, g.to_c);

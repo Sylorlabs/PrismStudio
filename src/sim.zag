@@ -163,7 +163,7 @@ fn sim_recompile(sim: *Sim, s: *Scene) void {
         s.*.guides.data[gi].live = 0;
         gi = gi + 1;
     }
-    s.*.topo_dirty = false;
+    scene_topo_clear(s);   // full rebuild consumes every pending dirty mark
 }
 
 fn sim_reset(sim: *Sim, s: *Scene) void {
@@ -262,15 +262,10 @@ fn sim_step(sim: *Sim, s: *Scene) void {
 
     // Mirror in-flight state onto scene guides for viewport coloring.
     let sgi: i32 = 0;
-    while (sgi < s.*.guides.len) {
-        let gidx: i32 = 0 - 1;
-        let k: i32 = 0;
-        while (k < sim.*.sguides.len) {
-            if (sim.*.sguides.data[k].guide_id == s.*.guides.data[sgi].id) { gidx = k; }
-            k = k + 1;
-        }
-        if (gidx >= 0) {
-            s.*.guides.data[sgi].live = sim.*.sguides.data[gidx].arrived;
+    while (sgi < sim.*.sguides.len) {
+        let gi3: i32 = scene_guide_index(s, sim.*.sguides.data[sgi].guide_id);
+        if (gi3 >= 0) {
+            s.*.guides.data[gi3].live = sim.*.sguides.data[sgi].arrived;
         }
         sgi = sgi + 1;
     }

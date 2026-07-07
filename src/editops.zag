@@ -67,7 +67,7 @@ fn unmark_group(s: *Scene, ids: *list.ArrayList[i32]) void {
         if (ci >= 0) {
             let c: Comp = s.*.comps.data[ci];
             let cells: list.ArrayList[Vox] = list.make[Vox](8);
-            scene_cells_of(c.kind, c.origin, c.rot, &cells);
+            scene_cells_comp(c, &cells);   // parametric size, not default footprint
             let k: i32 = 0;
             while (k < cells.len) {
                 hm_del_cell(s, cells.data[k]);
@@ -86,7 +86,7 @@ fn mark_group(s: *Scene, ids: *list.ArrayList[i32]) void {
         if (ci >= 0) {
             let c: Comp = s.*.comps.data[ci];
             let cells: list.ArrayList[Vox] = list.make[Vox](8);
-            scene_cells_of(c.kind, c.origin, c.rot, &cells);
+            scene_cells_comp(c, &cells);   // parametric size, not default footprint
             let k: i32 = 0;
             while (k < cells.len) {
                 hm_put_cell(s, cells.data[k], c.id);
@@ -112,7 +112,12 @@ fn group_move(s: *Scene, ids: *list.ArrayList[i32], delta: Vox) void {
     }
     mark_group(s, ids);
     reroute_incident(s, ids);
-    s.*.topo_dirty = true;
+    // per-id dirty marks so incremental sim repatches SOH adjacency
+    let mi: i32 = 0;
+    while (mi < ids.*.len) {
+        scene_mark_topo_comp(s, list.get[i32](ids.*, mi));
+        mi = mi + 1;
+    }
 }
 
 fn reroute_incident(s: *Scene, ids: *list.ArrayList[i32]) void {
@@ -142,6 +147,7 @@ fn reroute_incident(s: *Scene, ids: *list.ArrayList[i32]) void {
                     let steps: i32 = np.len - 1;
                     if (steps < 0) { steps = 0; }
                     s.*.guides.data[gi].length_nm = (steps as f64) * pitch_nm();
+                    scene_mark_topo_guides(s);   // path length -> delay changed
                     done = true;
                 } else {
                     list.free[Vox](&np);

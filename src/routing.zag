@@ -77,21 +77,59 @@ fn r_pool_push(pool: *list.ArrayList[RNode], n: RNode) i32 {
     return idx;
 }
 
-// Linear scan of the open set for the lowest-f node.
-fn r_open_best(pool: list.ArrayList[RNode]) i32 {
-    let best: i32 = 0 - 1;
-    let best_f: i32 = 2147483647;
-    let i: i32 = 0;
-    while (i < pool.len) {
-        if (pool.data[i].open) {
-            if (best < 0 || pool.data[i].f < best_f) {
-                best = i;
-                best_f = pool.data[i].f;
-            }
-        }
-        i = i + 1;
+// Binary min-heap over (f, pool index) with lazy deletion: stale entries
+// (node already closed, or f no longer matching) are skipped on pop. Keeps
+// each A* iteration O(log n) instead of a full open-set scan.
+struct HEnt {
+    f: i32,
+    idx: i32,
+}
+
+fn heap_push(h: *list.ArrayList[HEnt], f: i32, idx: i32) void {
+    list.push[HEnt](h, HEnt{ .f = f, .idx = idx });
+    let i: i32 = h.*.len - 1;
+    while (i > 0) {
+        let p: i32 = (i - 1) / 2;
+        if (h.*.data[p].f <= h.*.data[i].f) { return; }
+        let tmp: HEnt = h.*.data[p];
+        h.*.data[p] = h.*.data[i];
+        h.*.data[i] = tmp;
+        i = p;
     }
-    return best;
+}
+
+fn heap_pop(h: *list.ArrayList[HEnt]) HEnt {
+    let top: HEnt = h.*.data[0];
+    let last: i32 = h.*.len - 1;
+    h.*.data[0] = h.*.data[last];
+    h.*.len = last;
+    let i: i32 = 0;
+    let sifting: bool = true;
+    while (sifting) {
+        let l: i32 = i * 2 + 1;
+        let r: i32 = l + 1;
+        let m: i32 = i;
+        if (l < h.*.len && h.*.data[l].f < h.*.data[m].f) { m = l; }
+        if (r < h.*.len && h.*.data[r].f < h.*.data[m].f) { m = r; }
+        if (m == i) {
+            sifting = false;
+        } else {
+            let tmp: HEnt = h.*.data[i];
+            h.*.data[i] = h.*.data[m];
+            h.*.data[m] = tmp;
+            i = m;
+        }
+    }
+    return top;
+}
+
+// Pop the live lowest-f open node; -1 when the open set is exhausted.
+fn r_open_best(pool: list.ArrayList[RNode], h: *list.ArrayList[HEnt]) i32 {
+    while (h.*.len > 0) {
+        let e: HEnt = heap_pop(h);
+        if (pool.data[e.idx].open && pool.data[e.idx].f == e.f) { return e.idx; }
+    }
+    return 0 - 1;
 }
 
 // Walk parent links from `end_idx` and fill `out` start..goal inclusive.
@@ -127,6 +165,7 @@ fn r_try_neighbor(
     s: *Scene,
     pool: *list.ArrayList[RNode],
     best: *hm.Int64Map[i32],
+    heap: *list.ArrayList[HEnt],
     cur_i: i32,
     cur: RNode,
     nd: i32,
@@ -159,6 +198,7 @@ fn r_try_neighbor(
         pool.*.data[pi].g = ng;
         pool.*.data[pi].f = nh;
         pool.*.data[pi].parent = cur_i;
+        heap_push(heap, nh, pi);
         return true;
     }
 
@@ -173,6 +213,7 @@ fn r_try_neighbor(
     };
     let ni: i32 = r_pool_push(pool, nn);
     hm.int64_put[i32](best, sk, ni);
+    heap_push(heap, nh2, ni);
     return true;
 }
 
@@ -198,6 +239,7 @@ fn route_guide(s: *Scene, start: Vox, goal: Vox, out: *list.ArrayList[Vox]) bool
 
     let pool: list.ArrayList[RNode] = list.make[RNode](64);
     let best: hm.Int64Map[i32] = hm.int64_make[i32](256);
+    let heap: list.ArrayList[HEnt] = list.make[HEnt](64);
 
     let h0: i32 = r_heuristic(start, goal);
     let root: RNode = RNode{
@@ -210,14 +252,15 @@ fn route_guide(s: *Scene, start: Vox, goal: Vox, out: *list.ArrayList[Vox]) bool
     };
     let root_i: i32 = r_pool_push(&pool, root);
     hm.int64_put[i32](&best, r_state_key(start, 6), root_i);
+    heap_push(&heap, h0, root_i);
 
     let found: bool = false;
     let end_idx: i32 = 0 - 1;
 
     let guard: i32 = 0;
     let running: bool = true;
-    while (guard < 65536 && running) {
-        let cur_i: i32 = r_open_best(pool);
+    while (guard < 262144 && running) {
+        let cur_i: i32 = r_open_best(pool, &heap);
         if (cur_i < 0) {
             running = false;
         } else {
@@ -232,7 +275,7 @@ fn route_guide(s: *Scene, start: Vox, goal: Vox, out: *list.ArrayList[Vox]) bool
                 let nd: i32 = 0;
                 while (nd < 6) {
                     let _changed: bool = r_try_neighbor(
-                        s, &pool, &best, cur_i, cur, nd, goal,
+                        s, &pool, &best, &heap, cur_i, cur, nd, goal,
                         bx0, bx1, by0, by1, bz0, bz1,
                     );
                     nd = nd + 1;
@@ -248,5 +291,6 @@ fn route_guide(s: *Scene, start: Vox, goal: Vox, out: *list.ArrayList[Vox]) bool
 
     hm.int64_free[i32](&best);
     list.free[RNode](&pool);
+    list.free[HEnt](&heap);
     return found;
 }
