@@ -79,6 +79,34 @@ fn v_lshlrev_b32(s: *list.ArrayList[u8], vdst: i64, shift: i64, vsrc1: i64) void
     r_dw(s, v_lshlrev_b32_op() * r_pow2(25) + vdst * r_pow2(17) + vsrc1 * r_pow2(9) + (128 + shift));
 }
 
+// v_add_nc_u32 opcode — verified empirically (op 0x25 gives 2+5=7; probe/gpu_op1).
+fn v_add_nc_u32_op() i64 { return 0x25; }
+
+// v_add_nc_u32 vDST, vSRC0, vSRC1 : vDST = vSRC0 + vSRC1 (both VGPRs).
+fn v_add_nc_u32_vv(s: *list.ArrayList[u8], vdst: i64, vsrc0: i64, vsrc1: i64) void {
+    // VGPR src0 is encoded as 256 + vgpr number in the 9-bit SRC0 field.
+    r_dw(s, v_add_nc_u32_op() * r_pow2(25) + vdst * r_pow2(17) + vsrc1 * r_pow2(9) + (256 + vsrc0));
+}
+
+// Emit a parallel buffer-fill kernel. Dispatched as a grid of workgroups, each
+// with (1 << threads_log2) threads. User SGPRs: s0/s1 = buffer base, s2 = fill
+// value; workgroup-id x is delivered in s3 (dispatch with pm4_build_dispatch_wg).
+// Each thread computes global = (wg_id << threads_log2) + tid.x and stores the
+// fill value at base + global*4. Caller sizes the grid so the whole buffer is
+// covered. Returns the kernel's dword count.
+fn rdna_emit_fill_kernel(s: *list.ArrayList[u8], threads_log2: i64) i32 {
+    let start: i32 = s.*.len;
+    v_mov_b32_from_sgpr(s, 1, 3);                 // v1 = s3 = workgroup id
+    v_lshlrev_b32(s, 2, threads_log2, 1);         // v2 = wg_id << threads_log2
+    v_add_nc_u32_vv(s, 3, 0, 2);                  // v3 = tid.x(v0) + v2 = global
+    v_lshlrev_b32(s, 4, 2, 3);                     // v4 = global << 2 (byte offset)
+    v_mov_b32_from_sgpr(s, 5, 2);                 // v5 = s2 = fill value
+    global_store_dword_saddr(s, 4, 5, 0, 0);      // [base + v4] = v5
+    s_waitcnt_vm0(s);
+    s_endpgm(s);
+    return (s.*.len - start) / 4;
+}
+
 // ── SOPP (scalar control) ────────────────────────────────────────────────────
 // s_waitcnt <simm16>: [31:23]=0b101111111, [22:16]=OP(s_waitcnt=12), [15:0]=SIMM
 // vmcnt(0) with expcnt/lgkmcnt left maximal encodes to SIMM 0x3F70.

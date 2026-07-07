@@ -1,0 +1,93 @@
+// gpu_fill_test.zag — ONE dispatch. The real capability: a parallel GPU buffer
+// clear. Fills a 16384-dword GTT buffer with a solid color using the fill kernel
+// (64 workgroups x 256 threads), then verifies every dword on the CPU. Single
+// submit, bounded fence timeout.
+@import("../std/list.zag") as list
+@import("../src/gpu_rt.zag")
+@import("../src/rdna.zag")
+
+extern fn _zag_memcpy(dst: *i8, src: *i8, n: i32) void;
+
+fn read_u32(cpu_addr: i64, off: i32) i64 {
+    let b: list.ArrayList[u8] = list.make[u8](4);
+    let i: i32 = 0;
+    while (i < 4) { list.push[u8](&b, 0); i = i + 1; }
+    _zag_memcpy(b.data as *i8, (cpu_addr + (off as i64)) as *i8, 4);
+    let v: i64 = 0;
+    let k: i32 = 0;
+    while (k < 4) { v = v + (b.data[k] as i64) * pow2(k * 8); k = k + 1; }
+    list.free[u8](&b);
+    return v;
+}
+
+fn main() i32 {
+    let pixels: i64 = 16384;          // dwords to fill
+    let threads_log2: i64 = 8;        // 256 threads / workgroup
+    let threads: i64 = 256;
+    let groups: i64 = pixels / threads;   // 64
+    let color: i64 = 0x11223344;
+
+    let g: Gpu = gpu_open();
+    if (!g.ok) { _zag_println("gpu: no render node (skipping)"); return 0; }
+    let ctx: i64 = gpu_ctx_create(&g);
+    if (ctx == 0) { _zag_println("ctx fail"); gpu_close(&g); return 1; }
+    let data: GpuBuf = gpu_alloc(&g, pixels * 4);
+    let shader: GpuBuf = gpu_alloc(&g, 4096);
+    let ib: GpuBuf = gpu_alloc(&g, 4096);
+    let _a: bool = gpu_map_data(&g, &data);
+    let _b: bool = gpu_map_exec(&g, &shader);
+    let _c: bool = gpu_map_exec(&g, &ib);
+
+    let code: list.ArrayList[u8] = list.make[u8](64);
+    let _n: i32 = rdna_emit_fill_kernel(&code, threads_log2);
+    _zag_memcpy(shader.cpu_addr as *i8, code.data as *i8, code.len);
+    list.free[u8](&code);
+
+    // poison every dword so only the shader can produce the fill color
+    let poison: list.ArrayList[u8] = list.make[u8](4096);
+    let pi: i32 = 0;
+    while (pi < 4096) { list.push[u8](&poison, 238); pi = pi + 1; }
+    let off: i32 = 0;
+    while ((off as i64) < pixels * 4) {
+        _zag_memcpy((data.cpu_addr + (off as i64)) as *i8, poison.data as *i8, 4096);
+        off = off + 4096;
+    }
+    list.free[u8](&poison);
+
+    let ud: list.ArrayList[i64] = list.make[i64](3);
+    list.push[i64](&ud, data.gpu_va & 0xFFFFFFFF);
+    list.push[i64](&ud, (data.gpu_va / 0x100000000) & 0xFFFFFFFF);
+    list.push[i64](&ud, color);
+
+    let pm4: list.ArrayList[u8] = list.make[u8](128);
+    pm4_build_dispatch_wg(&pm4, shader.gpu_va, ud, threads, 1, 1, groups, 1, 1);
+    let t0: i64 = _zag_clock_monotonic_ms();
+    let ok: bool = gpu_run_pm4(&g, ctx, &ib, pm4, HW_IP_COMPUTE());
+    let dt: i64 = _zag_clock_monotonic_ms() - t0;
+    list.free[u8](&pm4);
+    list.free[i64](&ud);
+
+    let fails: i32 = 0;
+    if (!ok) { _zag_println("  XX  dispatch/fence failed"); fails = fails + 1; }
+    let bad: i32 = 0;
+    let i: i32 = 0;
+    while (i < (pixels as i32)) {
+        if (read_u32(data.cpu_addr, i * 4) != color) { bad = bad + 1; }
+        i = i + 1;
+    }
+    if (bad == 0) {
+        _zag_print("  ok  ");
+        _zag_print(_zag_i64_to_str(pixels));
+        _zag_print(" dwords filled by GPU in ");
+        _zag_print(_zag_i64_to_str(dt));
+        _zag_println(" ms (dispatch+fence+verify-excluded)");
+    } else {
+        _zag_print("  XX  "); _zag_print(_zag_i64_to_str(bad as i64)); _zag_println(" dwords wrong");
+        fails = fails + 1;
+    }
+
+    gpu_free(&g, &ib); gpu_free(&g, &shader); gpu_free(&g, &data);
+    gpu_ctx_free(&g, ctx); gpu_close(&g);
+    if (fails == 0) { _zag_println("GPU FILL TEST: ALL PASS"); return 0; }
+    _zag_println("GPU FILL TEST: FAILURES"); return 1;
+}
