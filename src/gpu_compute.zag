@@ -1,0 +1,70 @@
+// gpu_compute.zag — high-level GPU compute operations built on the verified
+// pure-Zag AMDGPU runtime (gpu_rt.zag) and RDNA1 emitter (rdna.zag). Every
+// instruction used here was confirmed against known inputs on live hardware
+// (see probe/gpu_*_test); the fill kernel deliberately uses one thread per
+// workgroup so the workgroup id is the element index — no vector add (the
+// VGPR+VGPR add form faults on this part).
+
+@import("../std/list.zag") as list
+@import("gpu_rt.zag")
+@import("rdna.zag")
+
+extern fn _zag_memcpy(dst: *i8, src: *i8, n: i32) void;
+
+// Fill `count` consecutive u32 elements of the VM-mapped buffer `target` with
+// `value`, on the GPU. `shader` and `ib` are scratch buffers (>= 4 KiB, each
+// VM-mapped read+exec) reused across calls. Returns true on fenced completion.
+fn gpu_fill_u32(
+    g: *Gpu, ctx: i64,
+    target: *GpuBuf, shader: *GpuBuf, ib: *GpuBuf,
+    value: i64, count: i64,
+) bool {
+    let code: list.ArrayList[u8] = list.make[u8](64);
+    let _n: i32 = rdna_emit_fill_kernel(&code);
+    _zag_memcpy(shader.*.cpu_addr as *i8, code.data as *i8, code.len);
+    list.free[u8](&code);
+
+    let ud: list.ArrayList[i64] = list.make[i64](3);
+    list.push[i64](&ud, target.*.gpu_va & 0xFFFFFFFF);
+    list.push[i64](&ud, (target.*.gpu_va / 0x100000000) & 0xFFFFFFFF);
+    list.push[i64](&ud, value);
+
+    let pm4: list.ArrayList[u8] = list.make[u8](128);
+    // one thread per workgroup; `count` workgroups cover the buffer
+    pm4_build_dispatch_wg(&pm4, shader.*.gpu_va, ud, 1, 1, 1, count, 1, 1);
+    let ok: bool = gpu_run_pm4(g, ctx, ib, pm4, HW_IP_COMPUTE());
+    list.free[u8](&pm4);
+    list.free[i64](&ud);
+    return ok;
+}
+
+// A reusable GPU compute session: a context plus the scratch shader/IB buffers.
+// Open once, run many fills, close. ok=false if the device or any setup failed.
+struct GpuCompute {
+    g: Gpu,
+    ctx: i64,
+    shader: GpuBuf,
+    ib: GpuBuf,
+    ok: bool,
+}
+
+fn gpu_compute_open() GpuCompute {
+    let g: Gpu = gpu_open();
+    if (!g.ok) {
+        return GpuCompute{ .g = g, .ctx = 0, .shader = gpu_buf_bad(), .ib = gpu_buf_bad(), .ok = false };
+    }
+    let ctx: i64 = gpu_ctx_create(&g);
+    let shader: GpuBuf = gpu_alloc(&g, 4096);
+    let ib: GpuBuf = gpu_alloc(&g, 4096);
+    let ok: bool = ctx != 0 && shader.ok && ib.ok
+        && gpu_map_exec(&g, &shader) && gpu_map_exec(&g, &ib);
+    return GpuCompute{ .g = g, .ctx = ctx, .shader = shader, .ib = ib, .ok = ok };
+}
+
+fn gpu_compute_close(c: *GpuCompute) void {
+    if (c.*.ib.ok) { gpu_free(&c.*.g, &c.*.ib); }
+    if (c.*.shader.ok) { gpu_free(&c.*.g, &c.*.shader); }
+    if (c.*.ctx != 0) { gpu_ctx_free(&c.*.g, c.*.ctx); }
+    if (c.*.g.ok) { gpu_close(&c.*.g); }
+    c.*.ok = false;
+}

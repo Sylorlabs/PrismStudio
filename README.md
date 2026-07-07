@@ -119,20 +119,31 @@ of function.
   address mapping, GPU context, command submission (`AMDGPU_CS`), and fencing,
   all over `_zag_raw_syscall`.
 - `src/rdna.zag` — a hand-written RDNA1 (GFX10.1) machine-code emitter. Each
-  instruction is built from its documented microcode field layout (VOP1,
-  FLAT/GLOBAL, SOPP); no assembler in the loop.
+  instruction is built from its documented microcode field layout, and each
+  opcode was confirmed against known inputs on live hardware (`v_mov`,
+  `global_store` incl. SADDR mode, `v_lshlrev_b32`, `s_waitcnt`, `s_endpgm`).
+- `src/gpu_compute.zag` — a compute session + a parallel buffer-fill built on
+  the above.
 
-`probe/gpu_compute_test` hand-emits a GFX10 kernel with `src/rdna.zag`, uploads
-it to an executable GPU buffer, builds the PM4 to configure the compute pipeline
-(`SET_SH_REG` for the `COMPUTE_*` registers) and `DISPATCH_DIRECT`s it, then
-verifies the values the **shader cores** wrote back — a full znc-to-silicon
-compute path with nothing but Zag in it.
+`probe/gpu_compute_test` hand-emits a GFX10 kernel, uploads it, configures the
+compute pipeline (`SET_SH_REG` + `DISPATCH_DIRECT`), and verifies what the
+**shader cores** wrote back — a full znc-to-silicon compute path with nothing
+but Zag in it. `probe/gpu_parallel_test` runs 64 lanes writing their own slots.
 
-The interactive viewport is still the Zag software rasterizer (it no longer
-re-renders unchanged frames — tile cache in `src/tiles.zag` — which is what makes
-it ≈6 ms/frame steady-state at 5k+ components). Moving per-pixel rasterization
-onto the cores is the next increment: it needs a multi-lane addressing kernel
-(per-thread global-id arithmetic) on top of the verified single-thread path.
+**Reliability status — why the app does NOT render on the GPU.** Single, small
+dispatches are correct and reliable. But at framebuffer scale (thousands of
+workgroups), the *minimal* userspace submission here is **intermittently
+unreliable** — it occasionally returns stale data (a cache-coherence gap) or
+times out the fence. A production driver wraps every submission in cache
+invalidate/flush packets, preambles, and timeline sync that this proof-of-
+concept doesn't yet replicate. On a single-GPU box that also drives the display,
+an intermittently-hanging dispatch can take the desktop down. So GPU compute is
+**experimental and opt-in** (`TRITON_GPU_DISPATCH=1`), never on the render path.
+
+The interactive viewport is the Zag software rasterizer, which no longer
+re-renders unchanged frames (tile cache in `src/tiles.zag`) — that is what makes
+it fast (≈6 ms/frame steady-state at 5k+ components) and, critically, it can
+never hang your display.
 
 ## Compiler notes
 

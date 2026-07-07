@@ -54,10 +54,18 @@ Mesa, no LLVM, no C — driving the kernel's `amdgpu` DRM device through the
   (`AMDGPU_GEM_VA`), command-buffer submission (`AMDGPU_CS`) with PM4 packets,
   fence wait (`AMDGPU_WAIT_CS`, bounded timeout so a bad submit can't wedge).
 - **ISA**: `src/rdna.zag` is a hand-written RDNA1 (GFX10.1) machine-code emitter
-  — each instruction assembled from its microcode field layout (VOP1,
-  FLAT/GLOBAL, SOPP). `probe/gpu_compute_test` emits a kernel with it, dispatches
-  it via `SET_SH_REG` + `DISPATCH_DIRECT`, and verifies what the shader cores
-  wrote. This is a complete Zag-to-silicon compute path.
+  — each instruction assembled from its microcode field layout, and each opcode
+  confirmed against known inputs on live hardware one dispatch at a time (this
+  matters: a blind opcode sweep once hung the GPU and crashed the desktop —
+  never do that on the display adapter). `probe/gpu_compute_test` /
+  `gpu_parallel_test` verify what the shader cores wrote.
+
+- **Reliability**: single small dispatches are correct and reliable; large grids
+  (thousands of workgroups) are intermittently unreliable with this minimal
+  submission (stale reads / fence timeouts) because it doesn't replicate the
+  cache-management and sync a real driver emits. GPU compute is therefore
+  experimental and opt-in (`TRITON_GPU_DISPATCH=1`), never on the render path,
+  and the interactive app stays on the (fast, un-hangable) CPU rasterizer.
 
 The ioctl encodings were built from the `_IOC(dir,type,nr,size)` components
 (not pre-baked decimals) and the register offsets / struct layouts taken from
