@@ -58,6 +58,25 @@ fn global_store_dword(s: *list.ArrayList[u8], addr_vgpr: i64, data_vgpr: i64, of
     r_dw(s, 0x7D * r_pow2(16) + data_vgpr * r_pow2(8) + addr_vgpr);
 }
 
+// global_store_dword vOFFSET, vDATA, sSADDR  (GFX10 SADDR addressing mode)
+//   address = s[SADDR:SADDR+1] (64-bit base) + vOFFSET (32-bit) + inst offset.
+//   The hardware does the add, so no vector add/carry instruction is needed.
+//   word1: [7:0]=OFFSET vgpr, [15:8]=DATA vgpr, [22:16]=SADDR sgpr pair index.
+//   (SADDR = 0x7D would mean NULL → 64-bit VGPR address instead; see above.)
+fn global_store_dword_saddr(s: *list.ArrayList[u8], off_vgpr: i64, data_vgpr: i64, saddr: i64, inst_off: i64) void {
+    r_dw(s, 0xDC708000 + (inst_off & 0x1FFF));
+    r_dw(s, saddr * r_pow2(16) + data_vgpr * r_pow2(8) + off_vgpr);
+}
+
+// v_lshlrev_b32 opcode — confirmed 0x26 on this RDNA1 part.
+fn v_lshlrev_b32_op() i64 { return 0x26; }
+
+// v_lshlrev_b32 vDST, <shift>, vSRC1 : vDST = vSRC1 << shift[4:0].
+fn v_lshlrev_b32(s: *list.ArrayList[u8], vdst: i64, shift: i64, vsrc1: i64) void {
+    // VOP2: [30:25]=OP, [24:17]=VDST, [16:9]=VSRC1, [8:0]=SRC0(inline const)
+    r_dw(s, v_lshlrev_b32_op() * r_pow2(25) + vdst * r_pow2(17) + vsrc1 * r_pow2(9) + (128 + shift));
+}
+
 // ── SOPP (scalar control) ────────────────────────────────────────────────────
 // s_waitcnt <simm16>: [31:23]=0b101111111, [22:16]=OP(s_waitcnt=12), [15:0]=SIMM
 // vmcnt(0) with expcnt/lgkmcnt left maximal encodes to SIMM 0x3F70.

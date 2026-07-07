@@ -485,6 +485,32 @@ fn pm4_build_dispatch(
     pm4_dispatch_direct(s, gx, gy, gz);
 }
 
+// As pm4_build_dispatch but loads `nud` user-data dwords from `ud` into
+// s0..s[nud-1] (buffer VA lo/hi + any kernel params). RSRC2.USER_SGPR_COUNT is
+// set to match, so the shader sees exactly those SGPRs.
+fn pm4_build_dispatch_ud(
+    s: *list.ArrayList[u8],
+    shader_va: i64, ud: list.ArrayList[i64],
+    nx: i64, ny: i64, nz: i64,
+    gx: i64, gy: i64, gz: i64,
+) void {
+    pm4_set_sh_reg_hdr(s, REG_COMPUTE_START_X(), 3);
+    pm4_dw(s, 0); pm4_dw(s, 0); pm4_dw(s, 0);
+    pm4_set_sh_reg_hdr(s, REG_COMPUTE_NUM_THREAD_X(), 3);
+    pm4_dw(s, nx); pm4_dw(s, ny); pm4_dw(s, nz);
+    let pgm: i64 = shader_va / 256;
+    pm4_set_sh_reg_hdr(s, REG_COMPUTE_PGM_LO(), 2);
+    pm4_dw(s, pgm & 0xFFFFFFFF);
+    pm4_dw(s, (pgm / 0x100000000) & 0xFFFFFFFF);
+    pm4_set_sh_reg_hdr(s, REG_COMPUTE_PGM_RSRC1(), 2);
+    pm4_dw(s, 0);                                // RSRC1
+    pm4_dw(s, (ud.len as i64) * 2);             // RSRC2: USER_SGPR_COUNT<<1
+    pm4_set_sh_reg_hdr(s, REG_COMPUTE_USER_DATA_0(), ud.len as i64);
+    let u: i32 = 0;
+    while (u < ud.len) { pm4_dw(s, ud.data[u] & 0xFFFFFFFF); u = u + 1; }
+    pm4_dispatch_direct(s, gx, gy, gz);
+}
+
 // Copy a host PM4 stream into an exec-mapped IB and submit it. Returns true on
 // fenced completion.
 fn gpu_run_pm4(g: *Gpu, ctx_id: i64, ib: *GpuBuf, pm4: list.ArrayList[u8], ip_type: i64) bool {

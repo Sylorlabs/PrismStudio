@@ -16,3 +16,4 @@ probe/*.bmp
 !probe/smoke_app.bmp
 .cursor/
 tools/__pycache__/
+probe/gpu_saddr_test

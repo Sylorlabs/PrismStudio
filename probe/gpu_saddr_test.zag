@@ -1,0 +1,79 @@
+// gpu_saddr_test.zag — ONE careful dispatch. Verifies two things the parallel
+// clear needs, in a single kernel: v_lshlrev_b32 (byte offset = index<<2) and
+// the GLOBAL SADDR addressing mode (address = s[0:1] base + VGPR offset, the
+// hardware does the add). Single thread, single submit, bounded fence timeout.
+@import("../std/list.zag") as list
+@import("../src/gpu_rt.zag")
+@import("../src/rdna.zag")
+
+extern fn _zag_memcpy(dst: *i8, src: *i8, n: i32) void;
+
+fn read_u32(cpu_addr: i64, off: i32) i64 {
+    let b: list.ArrayList[u8] = list.make[u8](4);
+    let i: i32 = 0;
+    while (i < 4) { list.push[u8](&b, 0); i = i + 1; }
+    _zag_memcpy(b.data as *i8, (cpu_addr + (off as i64)) as *i8, 4);
+    let v: i64 = 0;
+    let k: i32 = 0;
+    while (k < 4) { v = v + (b.data[k] as i64) * pow2(k * 8); k = k + 1; }
+    list.free[u8](&b);
+    return v;
+}
+
+fn main() i32 {
+    let g: Gpu = gpu_open();
+    if (!g.ok) { _zag_println("gpu: no render node (skipping)"); return 0; }
+    let ctx: i64 = gpu_ctx_create(&g);
+    if (ctx == 0) { _zag_println("ctx fail"); gpu_close(&g); return 1; }
+    let data: GpuBuf = gpu_alloc(&g, 4096);
+    let shader: GpuBuf = gpu_alloc(&g, 4096);
+    let ib: GpuBuf = gpu_alloc(&g, 4096);
+    let _a: bool = gpu_map_data(&g, &data);
+    let _b: bool = gpu_map_exec(&g, &shader);
+    let _c: bool = gpu_map_exec(&g, &ib);
+
+    // kernel: v0=s2(index); v1=v0<<2 (byte offset); v2=0xABCD; store v2 at
+    // s[0:1]+v1 via SADDR mode; wait; end.
+    let code: list.ArrayList[u8] = list.make[u8](64);
+    v_mov_b32_from_sgpr(&code, 0, 2);              // v0 = s2 = index
+    v_lshlrev_b32(&code, 1, 2, 0);                 // v1 = v0 << 2
+    v_mov_b32_lit(&code, 2, 0xABCD);              // v2 = data
+    global_store_dword_saddr(&code, 1, 2, 0, 0);  // [s[0:1] + v1] = v2
+    s_waitcnt_vm0(&code);
+    s_endpgm(&code);
+    _zag_memcpy(shader.cpu_addr as *i8, code.data as *i8, code.len);
+    list.free[u8](&code);
+
+    // zero the first 16 dwords; index 3 -> dword 3 (byte 12) should get 0xABCD
+    let z: list.ArrayList[u8] = list.make[u8](64);
+    let zi: i32 = 0;
+    while (zi < 64) { list.push[u8](&z, 0); zi = zi + 1; }
+    _zag_memcpy(data.cpu_addr as *i8, z.data as *i8, 64);
+    list.free[u8](&z);
+
+    // user data: s0/s1 = buffer base VA, s2 = index (3)
+    let ud: list.ArrayList[i64] = list.make[i64](3);
+    list.push[i64](&ud, data.gpu_va & 0xFFFFFFFF);
+    list.push[i64](&ud, (data.gpu_va / 0x100000000) & 0xFFFFFFFF);
+    list.push[i64](&ud, 3);
+
+    let pm4: list.ArrayList[u8] = list.make[u8](128);
+    pm4_build_dispatch_ud(&pm4, shader.gpu_va, ud, 1, 1, 1, 1, 1, 1);
+    let ok: bool = gpu_run_pm4(&g, ctx, &ib, pm4, HW_IP_COMPUTE());
+    list.free[u8](&pm4);
+    list.free[i64](&ud);
+
+    let fails: i32 = 0;
+    if (!ok) { _zag_println("  XX  dispatch/fence failed"); fails = fails + 1; }
+    let at3: i64 = read_u32(data.cpu_addr, 12);   // dword 3
+    let at0: i64 = read_u32(data.cpu_addr, 0);
+    if (at3 == 0xABCD) { _zag_println("  ok  SADDR store landed at base + (index<<2)"); }
+    else { _zag_print("  XX  dword3="); _zag_println(_zag_i64_to_str(at3)); fails = fails + 1; }
+    if (at0 == 0) { _zag_println("  ok  other dwords untouched (addressing precise)"); }
+    else { _zag_print("  XX  dword0 clobbered="); _zag_println(_zag_i64_to_str(at0)); fails = fails + 1; }
+
+    gpu_free(&g, &ib); gpu_free(&g, &shader); gpu_free(&g, &data);
+    gpu_ctx_free(&g, ctx); gpu_close(&g);
+    if (fails == 0) { _zag_println("GPU SADDR TEST: ALL PASS"); return 0; }
+    _zag_println("GPU SADDR TEST: FAILURES"); return 1;
+}
