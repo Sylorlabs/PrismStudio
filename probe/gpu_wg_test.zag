@@ -1,0 +1,77 @@
+// gpu_wg_test.zag — ONE dispatch. Verify multi-workgroup addressing: dispatch G
+// workgroups of 1 thread; each workgroup W writes W to buffer[W] (address base +
+// W*4, W read from the workgroup-id SGPR s2). Confirms wg-id delivery + grid.
+@import("../std/list.zag") as list
+@import("../src/gpu_rt.zag")
+@import("../src/rdna.zag")
+
+extern fn _zag_memcpy(dst: *i8, src: *i8, n: i32) void;
+
+fn read_u32(cpu_addr: i64, off: i32) i64 {
+    let b: list.ArrayList[u8] = list.make[u8](4);
+    let i: i32 = 0;
+    while (i < 4) { list.push[u8](&b, 0); i = i + 1; }
+    _zag_memcpy(b.data as *i8, (cpu_addr + (off as i64)) as *i8, 4);
+    let v: i64 = 0;
+    let k: i32 = 0;
+    while (k < 4) { v = v + (b.data[k] as i64) * pow2(k * 8); k = k + 1; }
+    list.free[u8](&b);
+    return v;
+}
+
+fn main() i32 {
+    let ng: i64 = 8;   // workgroups
+
+    let g: Gpu = gpu_open();
+    if (!g.ok) { _zag_println("gpu: no render node (skipping)"); return 0; }
+    let ctx: i64 = gpu_ctx_create(&g);
+    if (ctx == 0) { _zag_println("ctx fail"); gpu_close(&g); return 1; }
+    let data: GpuBuf = gpu_alloc(&g, 4096);
+    let shader: GpuBuf = gpu_alloc(&g, 4096);
+    let ib: GpuBuf = gpu_alloc(&g, 4096);
+    let _a: bool = gpu_map_data(&g, &data);
+    let _b: bool = gpu_map_exec(&g, &shader);
+    let _c: bool = gpu_map_exec(&g, &ib);
+
+    // kernel: v1 = s2 (workgroup id); v2 = v1<<2 (offset); [base + v2] = v1.
+    let code: list.ArrayList[u8] = list.make[u8](64);
+    v_mov_b32_from_sgpr(&code, 1, 2);             // v1 = s2 = wg id
+    v_lshlrev_b32(&code, 2, 2, 1);                // v2 = v1 << 2
+    global_store_dword_saddr(&code, 2, 1, 0, 0);  // [base + v2] = v1
+    s_waitcnt_vm0(&code);
+    s_endpgm(&code);
+    _zag_memcpy(shader.cpu_addr as *i8, code.data as *i8, code.len);
+    list.free[u8](&code);
+
+    let z: list.ArrayList[u8] = list.make[u8]((ng as i32) * 4);
+    let zi: i32 = 0;
+    while (zi < (ng as i32) * 4) { list.push[u8](&z, 238); zi = zi + 1; }
+    _zag_memcpy(data.cpu_addr as *i8, z.data as *i8, (ng as i32) * 4);
+    list.free[u8](&z);
+
+    let ud: list.ArrayList[i64] = list.make[i64](2);
+    list.push[i64](&ud, data.gpu_va & 0xFFFFFFFF);
+    list.push[i64](&ud, (data.gpu_va / 0x100000000) & 0xFFFFFFFF);
+
+    let pm4: list.ArrayList[u8] = list.make[u8](128);
+    pm4_build_dispatch_wg(&pm4, shader.gpu_va, ud, 1, 1, 1, ng, 1, 1);  // ng groups x 1 thread
+    let ok: bool = gpu_run_pm4(&g, ctx, &ib, pm4, HW_IP_COMPUTE());
+    list.free[u8](&pm4);
+    list.free[i64](&ud);
+
+    let fails: i32 = 0;
+    if (!ok) { _zag_println("  XX  dispatch/fence failed"); fails = fails + 1; }
+    let bad: i32 = 0;
+    let i: i32 = 0;
+    while (i < (ng as i32)) {
+        if (read_u32(data.cpu_addr, i * 4) != (i as i64)) { bad = bad + 1; }
+        i = i + 1;
+    }
+    if (bad == 0) { _zag_print("  ok  "); _zag_print(_zag_i64_to_str(ng)); _zag_println(" workgroups addressed by wg-id"); }
+    else { _zag_print("  XX  "); _zag_print(_zag_i64_to_str(bad as i64)); _zag_println(" wrong"); fails = fails + 1; }
+
+    gpu_free(&g, &ib); gpu_free(&g, &shader); gpu_free(&g, &data);
+    gpu_ctx_free(&g, ctx); gpu_close(&g);
+    if (fails == 0) { _zag_println("GPU WG TEST: ALL PASS"); return 0; }
+    _zag_println("GPU WG TEST: FAILURES"); return 1;
+}
