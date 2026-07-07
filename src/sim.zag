@@ -12,26 +12,60 @@
 @import("scene.zag")
 @import("ternary.zag")
 
-fn carrier_ghz() f64 { return 110.0; }
-fn symbol_period_ps() f64 { return 1000.0 / carrier_ghz(); }   // 9.09 ps
-// Group velocity in the GeSn-clad guide (n_g ~ 2.1), nm per ps.
-fn group_velocity_nm_ps() f64 { return 299792.458 / 2.1; }
 fn hist_len() i32 { return 192; }
 
-// Retimed synchronous fabric: every guide hop is at least one symbol of
-// latency; each 4 lattice cells of physical run add one more symbol of skew.
-fn guide_delay_symbols(path_len: i32) i32 {
-    let steps: i32 = path_len - 1;
-    if (steps < 0) { steps = 0; }
-    let d: i32 = steps / 4;
+// Group velocity in the GeSn-clad guide, nm per ps (material data from the
+// component library — not a sim tunable).
+fn group_velocity_nm_ps() f64 { return light_speed_nm_ps() / group_index(); }
+
+// A chamber's cavity linewidth narrows as adjacent SOH tiles deepen its Q.
+fn chamber_rate_ghz(soh: i32) f64 {
+    return kind_rate_ghz(Kind.Chamber) / (1.0 + (soh as f64));
+}
+
+// The board's symbol clock: the slowest active part sets the rate the whole
+// synchronous fabric can be retimed to. 0 when nothing active is placed.
+// Reads the compiled nodes (their soh counts are already cached) so a patch
+// pass costs one compare per node, not an adjacency scan per chamber.
+fn sim_clock_from_nodes(sim: *Sim) f64 {
+    let clock: f64 = 0.0;
+    let i: i32 = 0;
+    while (i < sim.*.nodes.len) {
+        let n: SNode = sim.*.nodes.data[i];
+        let r: f64 = kind_rate_ghz(n.kind);
+        if (n.kind == Kind.Chamber) { r = chamber_rate_ghz(n.soh); }
+        if (r > 0.0) {
+            if (clock == 0.0 || r < clock) { clock = r; }
+        }
+        i = i + 1;
+    }
+    return clock;
+}
+
+// True physical propagation delay (femtoseconds) — shown in the inspector and
+// the SAME quantity the delay lines quantize (one source of truth).
+fn guide_delay_fs(length_nm: f64) f64 {
+    return length_nm / group_velocity_nm_ps() * 1000.0;
+}
+
+// Retimed synchronous fabric: a guide is a delay line of ceil(t_prop / T)
+// symbols (min 1 — a hop can never be seen in the symbol it was launched).
+// On-chip light crosses small boards in far under one symbol, so short guides
+// are all 1; millimeter-scale routes genuinely accumulate skew.
+fn guide_delay_symbols_for(clock_ghz: f64, length_nm: f64) i32 {
+    if (clock_ghz <= 0.0) { return 1; }
+    let period_ps: f64 = 1000.0 / clock_ghz;
+    let t_ps: f64 = length_nm / group_velocity_nm_ps();
+    let d: i32 = ((t_ps / period_ps) + 0.9999999) as i32;
     if (d < 1) { d = 1; }
-    if (d > 64) { d = 64; }
+    if (d > 4096) { d = 4096; }   // memory guard; ~37 mm of guide at 110 GHz
     return d;
 }
 
-// True physical propagation delay (femtoseconds) — shown in the inspector.
-fn guide_delay_fs(length_nm: f64) f64 {
-    return length_nm / group_velocity_nm_ps() * 1000.0;
+// Carrier phase accumulated along a routed guide: phi = 2*pi*n_g*L/lambda.
+fn guide_phase(length_nm: f64, wl_nm: f64) f64 {
+    if (wl_nm <= 0.0) { return 0.0; }
+    return 6.283185307179586 * group_index() * length_nm / wl_nm;
 }
 
 // Emitter symbol pattern presets: 16-trit streams encoded as strings.
@@ -57,7 +91,9 @@ struct SNode {
     comp_id: i32,
     kind: Kind,
     soh: i32,        // adjacent SOH tiles (chamber memory depth)
-    input_sum: i32,  // summed field arriving this symbol
+    in_re: f64,      // complex field arriving this symbol (chambers interfere)
+    in_im: f64,
+    in_sum: i32,     // demodulated trit sum (detectors: coherent receiver)
     out_t: i32,      // output trit this symbol
     prev_t: i32,     // previous output (cavity feedback)
     hist: list.ArrayList[i32],   // ring of last hist_len() output trits
@@ -68,6 +104,8 @@ struct SGuide {
     from_c: i32,
     to_c: i32,
     delay: i32,
+    ph_re: f64,                  // carrier phase factor e^{i*phi} for this
+    ph_im: f64,                  //   guide's length at its source wavelength
     ring: list.ArrayList[i32],   // delay-line ring buffer
     head: i32,
     arrived: i32,                // trit delivered to the sink this symbol
@@ -77,6 +115,7 @@ struct Sim {
     nodes: list.ArrayList[SNode],
     sguides: list.ArrayList[SGuide],
     nidx: hm.IntMap[i32],        // comp id -> node index
+    clock_ghz: f64,              // derived: min EO bandwidth over placed parts
     symbol: i64,
     playing: bool,
     speed: f64,                  // symbols per second of wall time
@@ -88,11 +127,28 @@ fn sim_new() *Sim {
         .nodes = list.make[SNode](16),
         .sguides = list.make[SGuide](16),
         .nidx = hm.int_make[i32](64),
+        .clock_ghz = 0.0,
         .symbol = 0,
         .playing = false,
         .speed = 12.0,
         .accum = 0.0,
     });
+}
+
+// Symbol period of the current fabric (ps); 0 when no active parts exist.
+fn sim_period_ps(sim: *Sim) f64 {
+    if (sim.*.clock_ghz <= 0.0) { return 0.0; }
+    return 1000.0 / sim.*.clock_ghz;
+}
+
+// Source carrier wavelength for a guide: an emitter launches its WDM channel,
+// a chamber re-emits at its cavity resonance.
+fn sim_guide_wl(s: *Scene, from_c: i32) f64 {
+    let ci: i32 = scene_comp_index(s, from_c);
+    if (ci < 0) { return chamber_resonance_nm(); }
+    let c: Comp = s.*.comps.data[ci];
+    if (c.kind == Kind.Emitter) { return c.wl_nm; }
+    return chamber_resonance_nm();
 }
 
 fn sim_node_index(sim: *Sim, comp_id: i32) i32 {
@@ -125,7 +181,9 @@ fn sim_recompile(sim: *Sim, s: *Scene) void {
             .comp_id = c.id,
             .kind = c.kind,
             .soh = 0,
-            .input_sum = 0,
+            .in_re = 0.0,
+            .in_im = 0.0,
+            .in_sum = 0,
             .out_t = 0,
             .prev_t = 0,
             .hist = list.make[i32](hist_len()),
@@ -141,29 +199,43 @@ fn sim_recompile(sim: *Sim, s: *Scene) void {
         ci = ci + 1;
     }
 
+    // The clock derives from the placed parts; every delay line derives from
+    // the clock plus routed geometry.
+    sim.*.clock_ghz = sim_clock_from_nodes(sim);
+
     let gi: i32 = 0;
     while (gi < s.*.guides.len) {
         let g: Guide = s.*.guides.data[gi];
-        let delay: i32 = guide_delay_symbols(g.path.len);
-        let sg: SGuide = SGuide{
-            .guide_id = g.id,
-            .from_c = g.from_c,
-            .to_c = g.to_c,
-            .delay = delay,
-            .ring = list.make[i32](delay),
-            .head = 0,
-            .arrived = 0,
-        };
-        let ri: i32 = 0;
-        while (ri < delay) {
-            list.push[i32](&sg.ring, 0);
-            ri = ri + 1;
-        }
+        let sg: SGuide = sim_build_sguide(sim, s, g);
         list.push[SGuide](&sim.*.sguides, sg);
         s.*.guides.data[gi].live = 0;
         gi = gi + 1;
     }
     scene_topo_clear(s);   // full rebuild consumes every pending dirty mark
+}
+
+// Build a delay-line from a scene guide: delay quantized against the derived
+// clock, carrier phase from routed length and source wavelength.
+fn sim_build_sguide(sim: *Sim, s: *Scene, g: Guide) SGuide {
+    let delay: i32 = guide_delay_symbols_for(sim.*.clock_ghz, g.length_nm);
+    let phi: f64 = guide_phase(g.length_nm, sim_guide_wl(s, g.from_c));
+    let sg: SGuide = SGuide{
+        .guide_id = g.id,
+        .from_c = g.from_c,
+        .to_c = g.to_c,
+        .delay = delay,
+        .ph_re = cos(phi),
+        .ph_im = sin(phi),
+        .ring = list.make[i32](delay),
+        .head = 0,
+        .arrived = 0,
+    };
+    let ri: i32 = 0;
+    while (ri < delay) {
+        list.push[i32](&sg.ring, 0);
+        ri = ri + 1;
+    }
+    return sg;
 }
 
 fn sim_reset(sim: *Sim, s: *Scene) void {
@@ -172,7 +244,9 @@ fn sim_reset(sim: *Sim, s: *Scene) void {
     let i: i32 = 0;
     while (i < sim.*.nodes.len) {
         let n: *SNode = &sim.*.nodes.data[i];
-        n.*.input_sum = 0;
+        n.*.in_re = 0.0;
+        n.*.in_im = 0.0;
+        n.*.in_sum = 0;
         n.*.out_t = 0;
         n.*.prev_t = 0;
         let hi: i32 = 0;
@@ -201,12 +275,16 @@ fn sim_reset(sim: *Sim, s: *Scene) void {
     }
 }
 
-// Advance the fabric by one 9.09 ps symbol.
+// Advance the fabric by one symbol of the derived clock.
 fn sim_step(sim: *Sim, s: *Scene) void {
-    // Phase A: deliver the trit arriving at each guide's sink.
+    // Phase A: deliver each guide's arriving trit. Chambers accumulate the
+    // complex FIELD (the carrier's accumulated phase matters inside a cavity);
+    // detectors are coherent receivers and accumulate the demodulated trit.
     let i: i32 = 0;
     while (i < sim.*.nodes.len) {
-        sim.*.nodes.data[i].input_sum = 0;
+        sim.*.nodes.data[i].in_re = 0.0;
+        sim.*.nodes.data[i].in_im = 0.0;
+        sim.*.nodes.data[i].in_sum = 0;
         i = i + 1;
     }
     let gi: i32 = 0;
@@ -217,7 +295,11 @@ fn sim_step(sim: *Sim, s: *Scene) void {
         g.*.arrived = arrived;
         let ni: i32 = sim_node_index(sim, g.*.to_c);
         if (ni >= 0) {
-            sim.*.nodes.data[ni].input_sum = sim.*.nodes.data[ni].input_sum + arrived;
+            let n0: *SNode = &sim.*.nodes.data[ni];
+            let a: f64 = arrived as f64;
+            n0.*.in_re = n0.*.in_re + a * g.*.ph_re;
+            n0.*.in_im = n0.*.in_im + a * g.*.ph_im;
+            n0.*.in_sum = n0.*.in_sum + arrived;
         }
         gi = gi + 1;
     }
@@ -234,14 +316,18 @@ fn sim_step(sim: *Sim, s: *Scene) void {
             }
         }
         if (n.*.kind == Kind.Chamber) {
-            let sum: i32 = n.*.input_sum;
-            // SOH tiles feed the previous field back into the cavity.
-            if (n.*.soh > 0) { sum = sum + n.*.prev_t * n.*.soh; }
+            // True cavity interference: carriers sum as complex fields, then
+            // the cavity discriminates the in-phase component. SOH tiles feed
+            // the previous regenerated carrier back along the resonant axis.
+            let re: f64 = n.*.in_re;
+            if (n.*.soh > 0) { re = re + (n.*.prev_t * n.*.soh) as f64; }
             n.*.prev_t = n.*.out_t;
-            n.*.out_t = trit_from_sum(sum);
+            n.*.out_t = trit_from_field(re);
         }
         if (n.*.kind == Kind.Detector) {
-            n.*.out_t = trit_from_sum(n.*.input_sum);
+            // Coherent homodyne readout: per-carrier demodulation, so the
+            // detector reads the trit sum, not the raw optical phase.
+            n.*.out_t = trit_from_sum(n.*.in_sum);
         }
         list.set[i32](&n.*.hist, hist_pos, n.*.out_t);
         ni2 = ni2 + 1;

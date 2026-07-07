@@ -107,19 +107,29 @@ fn main() i32 {
         steps = steps + 1;
     }
     // pipeline latency: emitter->chamber guide delay + chamber->detector delay
-    let d_in: i32 = guide_delay_symbols(list.len[Vox](s.*.guides.data[0].path));
-    let d_out: i32 = guide_delay_symbols(list.len[Vox](s.*.guides.data[2].path));
+    // (delays are quantized from real propagation time against the derived
+    // clock; read them back from the compiled fabric)
+    check("clock derived from placed parts", sim.*.clock_ghz > 0.0, &fails);
+    let d_in: i32 = sim.*.sguides.data[0].delay;
+    let d_out: i32 = sim.*.sguides.data[2].delay;
     let lat: i32 = d_in + d_out;
-    // detector trit at t should equal sat(sum of both emitter trits at t-lat)
+    // The chamber interferes the two WDM carriers as complex fields: each
+    // arrives with phase 2*pi*n_g*L/lambda from its routed length, and the
+    // cavity discriminates the in-phase component. The detector then reads
+    // the regenerated trit coherently.
     let e1p: i32 = s.*.comps.data[e1i].preset;
     let e2p: i32 = s.*.comps.data[e2i].preset;
+    let g0re: f64 = sim.*.sguides.data[0].ph_re;
+    let g1re: f64 = sim.*.sguides.data[1].ph_re;
     let all_match: bool = true;
     let back: i32 = 0;
     while (back < 20) {
         let t_det: i64 = sim.*.symbol - 1 - (back as i64);
         let t_src: i64 = t_det - (lat as i64);
         if (t_src >= 0) {
-            let want: i32 = trit_from_sum(preset_trit(e1p, t_src) + preset_trit(e2p, t_src));
+            let fld: f64 = (preset_trit(e1p, t_src) as f64) * g0re
+                         + (preset_trit(e2p, t_src) as f64) * g1re;
+            let want: i32 = trit_from_field(fld);
             let got: i32 = sim_history(sim, det, back);
             if (want != got) { all_match = false; }
         }

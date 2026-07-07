@@ -258,7 +258,7 @@ fn agent_power(a: *App) void {
             _zag_print("C ");
             agent_print_i("", n.comp_id as i64);
             _zag_print(" interference=");
-            agent_print_i("", n.input_sum as i64);
+            agent_print_i("", n.in_re as i64);
             _zag_print(" out=");
             _zag_println(trit_glyph(n.out_t));
         }

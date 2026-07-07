@@ -213,6 +213,9 @@ fn uop_free(op: *UOp) void {
     }
     list.free[Guide](&op.*.guides);
     if (op.*.has_guide) { list.free[Vox](&op.*.guide.path); }
+    // ops own a strdup'd copy of the comp name (uop_empty's "" is a literal
+    // with len 0, never freed)
+    if (op.*.comp.name_.len > 0) { _zag_str_free(op.*.comp.name_); }
 }
 
 fn journal_clear_redo(j: *Journal) void {
@@ -256,6 +259,7 @@ fn op_add_comp(j: *Journal, s: *Scene, id: i32) void {
     let op: UOp = uop_empty();
     op.kind = 1;
     op.comp = s.*.comps.data[ci];
+    op.comp.name_ = _zag_strdup(op.comp.name_);   // own our copy
     journal_push(j, op);
 }
 
@@ -266,6 +270,7 @@ fn op_del_comp(j: *Journal, s: *Scene, id: i32) void {
     let op: UOp = uop_empty();
     op.kind = 2;
     op.comp = s.*.comps.data[ci];
+    op.comp.name_ = _zag_strdup(op.comp.name_);   // own our copy
     snapshot_incident(s, id, &op.guides);
     journal_push(j, op);
 }
@@ -298,6 +303,7 @@ fn op_move(j: *Journal, s: *Scene, id: i32, delta: Vox) void {
     let op: UOp = uop_empty();
     op.kind = 5;
     op.comp = s.*.comps.data[ci];
+    op.comp.name_ = _zag_strdup(op.comp.name_);   // own our copy
     op.old_origin = s.*.comps.data[ci].origin;
     op.new_origin = vox_add(op.old_origin, delta);
     snapshot_incident(s, id, &op.guides);
@@ -312,7 +318,10 @@ fn journal_undo(j: *Journal, s: *Scene) bool {
         scene_remove(s, op.comp.id);
     }
     if (op.kind == 2) {
-        scene_restore_comp(s, op.comp);
+        // the scene takes its own name copy; the op keeps its snapshot for redo
+        let rc: Comp = op.comp;
+        rc.name_ = _zag_strdup(op.comp.name_);
+        scene_restore_comp(s, rc);
         let i: i32 = 0;
         while (i < op.guides.len) {
             scene_restore_guide(s, guide_clone(op.guides.data[i]));
@@ -350,7 +359,11 @@ fn journal_undo(j: *Journal, s: *Scene) bool {
 fn journal_redo(j: *Journal, s: *Scene) bool {
     if (j.*.redo.len == 0) { return false; }
     let op: UOp = list.pop[UOp](&j.*.redo);
-    if (op.kind == 1) { scene_restore_comp(s, op.comp); }
+    if (op.kind == 1) {
+        let rc: Comp = op.comp;
+        rc.name_ = _zag_strdup(op.comp.name_);
+        scene_restore_comp(s, rc);
+    }
     if (op.kind == 2) { scene_remove(s, op.comp.id); }
     if (op.kind == 3) { scene_restore_guide(s, guide_clone(op.guide)); }
     if (op.kind == 4) { scene_remove_guide(s, op.guide.id); }
@@ -787,7 +800,7 @@ fn design_load(s: *Scene, path: []u8) bool {
             let stop: i32 = 0;
             parse_line_ints(line, 1, &nums, &stop);
             if (nums.len >= 9) {
-                let name_: []u8 = "part";
+                let name_: []u8 = _zag_strdup("part");   // owned: scene frees names
                 if (stop < line.len && (line[stop] as i32) == '|') {
                     name_ = _zag_strdup(line[stop + 1..line.len]);
                 }

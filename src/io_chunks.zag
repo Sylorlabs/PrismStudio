@@ -157,8 +157,9 @@ fn io_parse_comp_line(s: *Scene, line: []u8, nums: *list.ArrayList[i64], counts:
     let stop: i32 = 0;
     parse_line_ints(line, 1, nums, &stop);
     if (nums.*.len < 9) { return false; }
-    let name_: []u8 = "part";
+    let name_: []u8 = _zag_strdup("part");   // owned: scene frees names
     if (stop < line.len && (line[stop] as i32) == '|') {
+        _zag_str_free(name_);
         name_ = _zag_strdup(line[stop + 1..line.len]);
     }
     let kidx: i32 = list.get[i64](nums.*, 1) as i32;

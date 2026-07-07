@@ -13,7 +13,9 @@
 fn sim_patch_threshold() i32 { return 8; }
 
 fn sim_node_reset(n: *SNode) void {
-    n.*.input_sum = 0;
+    n.*.in_re = 0.0;
+    n.*.in_im = 0.0;
+    n.*.in_sum = 0;
     n.*.out_t = 0;
     n.*.prev_t = 0;
     let hi: i32 = 0;
@@ -28,7 +30,9 @@ fn sim_make_node(s: *Scene, c: Comp) SNode {
         .comp_id = c.id,
         .kind = c.kind,
         .soh = 0,
-        .input_sum = 0,
+        .in_re = 0.0,
+        .in_im = 0.0,
+        .in_sum = 0,
         .out_t = 0,
         .prev_t = 0,
         .hist = list.make[i32](hist_len()),
@@ -77,25 +81,6 @@ fn sim_patch_comp(sim: *Sim, s: *Scene, comp_id: i32) void {
     sim_node_reset(n2);
 }
 
-fn sim_make_sguide(g: Guide) SGuide {
-    let delay: i32 = guide_delay_symbols(g.path.len);
-    let sg: SGuide = SGuide{
-        .guide_id = g.id,
-        .from_c = g.from_c,
-        .to_c = g.to_c,
-        .delay = delay,
-        .ring = list.make[i32](delay),
-        .head = 0,
-        .arrived = 0,
-    };
-    let ri: i32 = 0;
-    while (ri < delay) {
-        list.push[i32](&sg.ring, 0);
-        ri = ri + 1;
-    }
-    return sg;
-}
-
 fn sim_find_in(pool: list.ArrayList[SGuide], guide_id: i32) i32 {
     let i: i32 = 0;
     while (i < pool.len) {
@@ -115,7 +100,7 @@ fn sim_patch_guides(sim: *Sim, s: *Scene) void {
     let gi: i32 = 0;
     while (gi < s.*.guides.len) {
         let g: Guide = s.*.guides.data[gi];
-        let sg: SGuide = sim_make_sguide(g);
+        let sg: SGuide = sim_build_sguide(sim, s, g);
         let prev: i32 = sim_find_in(old, g.id);
         if (prev >= 0) {
             let og: SGuide = old.data[prev];
@@ -155,6 +140,9 @@ fn sim_should_full_rebuild(sim: *Sim, s: *Scene) bool {
 }
 
 // Patch or full-rebuild the fabric; clears scene topo flags on success.
+// If the edit moved the derived board clock (a new slowest part, or SOH
+// adjacency changed a cavity linewidth), every delay line requantizes — that
+// is a genuine clock-domain change, so fall back to a full recompile.
 fn sim_recompile_region(sim: *Sim, s: *Scene) void {
     if (sim_should_full_rebuild(sim, s)) {
         sim_recompile(sim, s);
@@ -165,6 +153,12 @@ fn sim_recompile_region(sim: *Sim, s: *Scene) void {
     while (di < s.*.topo_dirty_ids.len) {
         sim_patch_comp(sim, s, s.*.topo_dirty_ids.data[di]);
         di = di + 1;
+    }
+    let new_clock: f64 = sim_clock_from_nodes(sim);
+    if (new_clock != sim.*.clock_ghz) {
+        sim_recompile(sim, s);
+        scene_topo_clear(s);
+        return;
     }
     if (s.*.topo_guides_dirty) {
         sim_patch_guides(sim, s);

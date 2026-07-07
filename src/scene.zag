@@ -342,6 +342,8 @@ fn scene_place(s: *Scene, k: Kind, origin: Vox, rot: i32) i32 {
     let numstr: []u8 = _zag_i64_to_str(serial as i64);
     let base: []u8 = _zag_str_concat(kind_short(k), ".");
     let nm: []u8 = _zag_str_concat(base, numstr);
+    _zag_str_free(base);
+    _zag_str_free(numstr);
 
     let c: Comp = Comp{
         .id = id,
@@ -507,6 +509,7 @@ fn scene_remove(s: *Scene, id: i32) void {
         }
     }
 
+    if (c.name_.len > 0) { _zag_str_free(c.name_); }
     let j: i32 = ci;
     while (j + 1 < s.*.comps.len) {
         s.*.comps.data[j] = s.*.comps.data[j + 1];
@@ -653,6 +656,11 @@ fn scene_clear(s: *Scene) void {
         gi = gi + 1;
     }
     s.*.guides.len = 0;
+    let cni: i32 = 0;
+    while (cni < s.*.comps.len) {
+        if (s.*.comps.data[cni].name_.len > 0) { _zag_str_free(s.*.comps.data[cni].name_); }
+        cni = cni + 1;
+    }
     s.*.comps.len = 0;
     hm.int_free[i32](&s.*.comp_idx);
     s.*.comp_idx = hm.int_make[i32](64);

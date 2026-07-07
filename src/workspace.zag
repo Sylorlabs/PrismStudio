@@ -412,7 +412,8 @@ fn draw_toolbar(a: *App) void {
             y = y + 14;
             let fs: []u8 = _zag_str_concat("delay ", fmt_i(guide_delay_fs(g.length_nm) as i64));
             let fs2: []u8 = _zag_str_concat(fs, " fs / ");
-            let fs3: []u8 = _zag_str_concat(fs2, fmt_i(guide_delay_symbols(g.path.len) as i64));
+            let fs3: []u8 = _zag_str_concat(fs2,
+                fmt_i(guide_delay_symbols_for(a.*.sim.*.clock_ghz, g.length_nm) as i64));
             let fs4: []u8 = _zag_str_concat(fs3, " symbols");
             draw_text(f, x, y, fs4, th_text_dim());
             y = y + 14;
@@ -602,8 +603,9 @@ fn draw_debugger(a: *App) void {
     draw_text(f, x + 180, y + 5, "rate", th_text_dim());
     a.*.sim.*.speed = ui_slider(f, inp, rect(x + 210, y + 3, 110, 12), a.*.sim.*.speed, 1.0, 120.0, &a.*.speed_drag);
 
-    // clock readout (plain data, no slogans)
-    let ps: f64 = (a.*.sim.*.symbol as f64) * symbol_period_ps();
+    // clock readout — the derived fabric clock (min EO bandwidth of the
+    // placed parts), not an asserted constant
+    let ps: f64 = (a.*.sim.*.symbol as f64) * sim_period_ps(a.*.sim);
     let cx: i32 = x + 332;
     let tcol: i64 = th_text_dim();
     draw_text(f, cx, y + 5, "symbol ", tcol);
@@ -614,8 +616,12 @@ fn draw_debugger(a: *App) void {
     cx = cx + draw_int(f, cx, y + 5, ps as i64, tcol);
     draw_text(f, cx, y + 5, " ps   clock ", tcol);
     cx = cx + text_w(" ps   clock ");
-    cx = cx + draw_int(f, cx, y + 5, carrier_ghz() as i64, tcol);
-    draw_text(f, cx, y + 5, " GHz", tcol);
+    if (a.*.sim.*.clock_ghz > 0.0) {
+        cx = cx + draw_int(f, cx, y + 5, a.*.sim.*.clock_ghz as i64, tcol);
+        draw_text(f, cx, y + 5, " GHz", tcol);
+    } else {
+        draw_text(f, cx, y + 5, "-- (no active parts)", tcol);
+    }
 
     y = y + 26;
 
