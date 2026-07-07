@@ -17,3 +17,4 @@ probe/*.bmp
 .cursor/
 tools/__pycache__/
 probe/gpu_saddr_test
+probe/gpu_op1

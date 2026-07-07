@@ -1,7 +1,6 @@
-// gpu_saddr_test.zag — ONE careful dispatch. Verifies two things the parallel
-// clear needs, in a single kernel: v_lshlrev_b32 (byte offset = index<<2) and
-// the GLOBAL SADDR addressing mode (address = s[0:1] base + VGPR offset, the
-// hardware does the add). Single thread, single submit, bounded fence timeout.
+// gpu_op1.zag — ONE careful dispatch per run. Reads a VOP2 opcode from argv[1],
+// computes v1 = op(src0=inline 2, vsrc1=v0=s2=5), stores it, prints the result.
+// Identifies v_lshlrev_b32 (result == 20 = 5<<2) one opcode at a time.
 @import("../std/list.zag") as list
 @import("../src/gpu_rt.zag")
 @import("../src/rdna.zag")
@@ -21,6 +20,9 @@ fn read_u32(cpu_addr: i64, off: i32) i64 {
 }
 
 fn main() i32 {
+    let op: i64 = 24;
+    if (_zag_argc() > 1) { op = _zag_str_to_i64(_zag_arg(1)); }
+
     let g: Gpu = gpu_open();
     if (!g.ok) { _zag_println("gpu: no render node (skipping)"); return 0; }
     let ctx: i64 = gpu_ctx_create(&g);
@@ -32,30 +34,28 @@ fn main() i32 {
     let _b: bool = gpu_map_exec(&g, &shader);
     let _c: bool = gpu_map_exec(&g, &ib);
 
-    // ISOLATION 2: offset straight from s2 (=12), no lshlrev.
-    // v0 = s2 (offset bytes); v1 = 0xABCD; store at s[0:1] + v0 via SADDR=s0.
     let code: list.ArrayList[u8] = list.make[u8](64);
-    v_mov_b32_from_sgpr(&code, 0, 2);              // v0 = s2 (expect 3)
+    v_mov_b32_from_sgpr(&code, 0, 2);              // v0 = s2 = 5
+    // raw VOP2: [30:25]=op, [24:17]=vdst=1, [16:9]=vsrc1=v0(0), [8:0]=src0=inl(2)=130
+    r_dw(&code, op * r_pow2(25) + 1 * r_pow2(17) + 130);
     v_mov_b32_from_sgpr(&code, 2, 0);              // v2 = base lo
     v_mov_b32_from_sgpr(&code, 3, 1);              // v3 = base hi
-    global_store_dword(&code, 2, 0, 0);            // NULL-mode: [v[2:3]] = v0
+    global_store_dword(&code, 2, 1, 0);            // [v[2:3]] = v1
     s_waitcnt_vm0(&code);
     s_endpgm(&code);
     _zag_memcpy(shader.cpu_addr as *i8, code.data as *i8, code.len);
     list.free[u8](&code);
 
-    // zero the first 16 dwords; index 3 -> dword 3 (byte 12) should get 0xABCD
-    let z: list.ArrayList[u8] = list.make[u8](64);
+    let z: list.ArrayList[u8] = list.make[u8](8);
     let zi: i32 = 0;
-    while (zi < 64) { list.push[u8](&z, 0); zi = zi + 1; }
-    _zag_memcpy(data.cpu_addr as *i8, z.data as *i8, 64);
+    while (zi < 8) { list.push[u8](&z, 0); zi = zi + 1; }
+    _zag_memcpy(data.cpu_addr as *i8, z.data as *i8, 8);
     list.free[u8](&z);
 
-    // user data: s0/s1 = buffer base VA, s2 = index (3)
     let ud: list.ArrayList[i64] = list.make[i64](3);
     list.push[i64](&ud, data.gpu_va & 0xFFFFFFFF);
     list.push[i64](&ud, (data.gpu_va / 0x100000000) & 0xFFFFFFFF);
-    list.push[i64](&ud, 3);
+    list.push[i64](&ud, 5);
 
     let pm4: list.ArrayList[u8] = list.make[u8](128);
     pm4_build_dispatch_ud(&pm4, shader.gpu_va, ud, 1, 1, 1, 1, 1, 1);
@@ -63,14 +63,13 @@ fn main() i32 {
     list.free[u8](&pm4);
     list.free[i64](&ud);
 
-    let fails: i32 = 0;
-    if (!ok) { _zag_println("  XX  dispatch/fence failed"); fails = fails + 1; }
-    let at0: i64 = read_u32(data.cpu_addr, 0);
-    if (at0 == 3) { _zag_println("  ok  s2 raw == 3"); }
-    else { _zag_print("  s2 raw = "); _zag_println(_zag_i64_to_str(at0)); fails = fails + 1; }
+    let got: i64 = read_u32(data.cpu_addr, 0);
+    _zag_print("op="); _zag_print(_zag_i64_to_str(op));
+    _zag_print("  op(2,5)="); _zag_print(_zag_i64_to_str(got));
+    if (got == 20) { _zag_println("   <== 5<<2 = LSHLREV"); } else { _zag_println(""); }
+    if (!ok) { _zag_println("  (dispatch/fence failed)"); }
 
     gpu_free(&g, &ib); gpu_free(&g, &shader); gpu_free(&g, &data);
     gpu_ctx_free(&g, ctx); gpu_close(&g);
-    if (fails == 0) { _zag_println("GPU SADDR TEST: ALL PASS"); return 0; }
-    _zag_println("GPU SADDR TEST: FAILURES"); return 1;
+    return 0;
 }
