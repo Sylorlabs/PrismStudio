@@ -68,8 +68,10 @@ fn global_store_dword_saddr(s: *list.ArrayList[u8], off_vgpr: i64, data_vgpr: i6
     r_dw(s, saddr * r_pow2(16) + data_vgpr * r_pow2(8) + off_vgpr);
 }
 
-// v_lshlrev_b32 opcode — confirmed 0x26 on this RDNA1 part.
-fn v_lshlrev_b32_op() i64 { return 0x26; }
+// v_lshlrev_b32 opcode — verified empirically on this RDNA1 part: op 0x1a with
+// src0=inline(2), vsrc1=v0 computes v0<<2 (probe/gpu_op1). (0x18 is a right
+// shift, 0x26 is subtract — both ruled out by single-dispatch tests.)
+fn v_lshlrev_b32_op() i64 { return 0x1a; }
 
 // v_lshlrev_b32 vDST, <shift>, vSRC1 : vDST = vSRC1 << shift[4:0].
 fn v_lshlrev_b32(s: *list.ArrayList[u8], vdst: i64, shift: i64, vsrc1: i64) void {

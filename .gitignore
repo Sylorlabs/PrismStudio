@@ -18,3 +18,4 @@ probe/*.bmp
 tools/__pycache__/
 probe/gpu_saddr_test
 probe/gpu_op1
+probe/gpu_parallel_test
