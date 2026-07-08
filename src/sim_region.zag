@@ -35,6 +35,9 @@ fn sim_make_node(s: *Scene, c: Comp) SNode {
         .in_sum = 0,
         .out_t = 0,
         .prev_t = 0,
+        .logic_op = c.logic_op,
+        .in_a = 0,
+        .in_b = 0,
         .hist = list.make[i32](hist_len()),
     };
     if (c.kind == Kind.Chamber) { n.soh = scene_soh_adjacent(s, c.id); }

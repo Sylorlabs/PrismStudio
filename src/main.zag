@@ -324,7 +324,8 @@ fn run_x11() i32 {
 }
 
 fn run_x11_capture(path: []u8, w: i32, h: i32) i32 {
-    if (w < 320 || h < 240 || w > 4096 || h > 4096) {
+    if (w < 320 || h < 240 || w > limit_image_dimension() || h > limit_image_dimension() ||
+        (w as i64) * (h as i64) > limit_image_pixels()) {
         _zag_eprintln("x11-capture: dimensions outside 320..4096");
         return 1;
     }

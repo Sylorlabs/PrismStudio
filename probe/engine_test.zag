@@ -268,6 +268,20 @@ fn main() i32 {
     _zag_write_file("/tmp/triton_engine_corrupt.zpa", corrupt);
     let s_bad: *Scene = scene_new();
     check("corrupt project checksum rejected", !design_load(s_bad, "/tmp/triton_engine_corrupt.zpa"), &fails);
+    let keep_id: i32 = scene_place(s_bad, Kind.Plate, vox(300, 0, 0), 0);
+    let keep_count: i32 = s_bad.*.comps.len;
+    _zag_write_file("/tmp/triton_engine_hostile_coord.zpa",
+        "zpa 1\nc 1 0 999999 0 0 0 1 0 1550000 0 |outside\n");
+    check("hostile project coordinate rejected",
+        !design_load(s_bad, "/tmp/triton_engine_hostile_coord.zpa"), &fails);
+    check("failed project load leaves active scene intact",
+        s_bad.*.comps.len == keep_count && scene_comp_index(s_bad, keep_id) >= 0, &fails);
+    _zag_write_file("/tmp/triton_engine_hostile_kind.zpa",
+        "zpa 1\nc 1 99 0 0 0 0 1 0 1550000 0 |bad-kind\n");
+    check("hostile project kind rejected",
+        !design_load(s_bad, "/tmp/triton_engine_hostile_kind.zpa"), &fails);
+    check("second failed load also rolls back",
+        s_bad.*.comps.len == keep_count && scene_comp_index(s_bad, keep_id) >= 0, &fails);
     let atomic_dir: list.ArrayList[u8] = io_cpath("/tmp/triton_atomic_target");
     let _mk_atomic_dir: i64 = _zag_raw_syscall(83, atomic_dir.data as i64, 493, 0, 0, 0, 0);
     list.free[u8](&atomic_dir);

@@ -30,6 +30,7 @@ extern fn _zag_read_fd(fd: i64, buf: *i8, n: i64) i64;
 @import("flash_ir.zag")
 @import("capability.zag")
 @import("export.zag")
+@import("limits.zag")
 
 struct Tok {
     off: i32,
@@ -1003,6 +1004,7 @@ fn agent_load_i32_le(buf: []u8, off: i32) i32 {
 
 // Run one agent command with stdout captured via pipe (for native MCP).
 fn agent_capture_line(a: *App, line: []u8) []u8 {
+    if (line.len > limit_agent_request_bytes()) { return "ERR E_REQUEST_LIMIT command exceeds 4096 bytes"; }
     let fds: list.ArrayList[u8] = list.make[u8](8);
     let zi: i32 = 0;
     while (zi < 8) {
@@ -1062,6 +1064,10 @@ fn agent_capture_line(a: *App, line: []u8) []u8 {
 }
 
 fn agent_run_line(a: *App, line: []u8) void {
+    if (line.len > limit_agent_request_bytes()) {
+        agent_err("E_REQUEST_LIMIT command exceeds 4096 bytes");
+        return;
+    }
     session_pull(a);
     let toks: list.ArrayList[Tok] = list.make[Tok](16);
     tokenize(line, &toks);
@@ -1073,6 +1079,10 @@ fn agent_run_script(a: *App, path: []u8) void {
     let raw: []u8 = _zag_read_file(path);
     if (raw.len <= 0) {
         agent_err("cannot read script");
+        return;
+    }
+    if (raw.len > limit_agent_script_bytes()) {
+        agent_err("E_SCRIPT_LIMIT script exceeds 1048576 bytes");
         return;
     }
     let pos: i32 = 0;

@@ -291,6 +291,10 @@ fn scene_chambers_on_plate(s: *Scene, plate_id: i32) i32 {
 // every base-layer cell of a plate-mounted part must rest on substrate,
 // whatever the plate's extruded thickness.
 fn scene_can_place_ext(s: *Scene, k: Kind, sz: Vox, origin: Vox, rot: i32, ignore_id: i32) i32 {
+    let ext: Vox = rot_ext(sz, rot);
+    if (origin.x < 0 - 2048 || origin.y < 0 - 2048 || origin.z < 0 - 2048 ||
+        origin.x + ext.x - 1 > 2047 || origin.y + ext.y - 1 > 2047 ||
+        origin.z + ext.z - 1 > 2047) { return 6; }
     if (kind_ground_only(k) && origin.y != 0) { return 2; }
     if (kind_needs_plate(k) && origin.y < 1) { return 3; }
 
@@ -329,6 +333,7 @@ fn place_err_text(code: i32) []u8 {
     if (code == 3) { return "needs GeSn plate underneath"; }
     if (code == 4) { return "board full: 64 chambers max"; }
     if (code == 5) { return "resize would orphan mounted parts"; }
+    if (code == 6) { return "outside lattice coordinate range"; }
     return "ok";
 }
 

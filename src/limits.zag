@@ -1,0 +1,10 @@
+// limits.zag — centralized resource ceilings for untrusted project/tool input.
+fn limit_agent_request_bytes() i32 { return 4096; }
+fn limit_agent_script_bytes() i32 { return 1048576; }
+fn limit_project_bytes() i32 { return 16777216; }
+fn limit_project_line_bytes() i32 { return 65536; }
+fn limit_flash_fir_bytes() i32 { return 4194304; }
+fn limit_flash_ops() i32 { return 256; }
+fn limit_trace_steps() i32 { return 100000; }
+fn limit_image_dimension() i32 { return 4096; }
+fn limit_image_pixels() i64 { return 16777216; }

@@ -6,6 +6,7 @@
 @import("scene.zag")
 @import("routing.zag")
 @import("sim.zag")
+@import("limits.zag")
 
 struct FlashOp {
     tag: []u8,
@@ -85,7 +86,8 @@ fn fir_phase_trit(microrad: i32) i32 {
 fn flash_ir_load(path: []u8) FlashIr {
     let raw: []u8 = _zag_read_file(path);
     let ir: FlashIr = FlashIr{ .raw = raw, .ops = list.make[FlashOp](32), .valid = false };
-    if (raw.len <= 0 || !fir_contains(raw, "# flash ir v1") || !fir_contains(raw, "[ir]")) { return ir; }
+    if (raw.len <= 0 || raw.len > limit_flash_fir_bytes() ||
+        !fir_contains(raw, "# flash ir v1") || !fir_contains(raw, "[ir]")) { return ir; }
     let pos: i32 = 0;
     while (pos < raw.len) {
         let end: i32 = pos;
@@ -105,7 +107,7 @@ fn flash_ir_load(path: []u8) FlashIr {
         }
         pos = end + 1;
     }
-    ir.valid = ir.ops.len > 0 && ir.ops.len <= 256;
+    ir.valid = ir.ops.len > 0 && ir.ops.len <= limit_flash_ops();
     return ir;
 }
 

@@ -6,6 +6,7 @@
 @import("components.zag")
 @import("scene.zag")
 @import("routing.zag")
+@import("limits.zag")
 
 // ── guide snapshots ───────────────────────────────────────────────────────────
 
@@ -841,9 +842,9 @@ fn design_save(s: *Scene, path: []u8) bool {
     return ok;
 }
 
-fn design_load(s: *Scene, path: []u8) bool {
+fn design_load_into(s: *Scene, path: []u8) bool {
     let raw: []u8 = _zag_read_file(path);
-    if (raw.len <= 0) { return false; }
+    if (raw.len <= 0 || raw.len > limit_project_bytes()) { return false; }
     if (raw.len < 5) { return false; }
     let v1: bool = _zag_strcmp(raw[0..5], "zpa 1") == 1;
     let v2: bool = _zag_strcmp(raw[0..5], "zpa 2") == 1;
@@ -878,6 +879,7 @@ fn design_load(s: *Scene, path: []u8) bool {
         while (eol < raw.len && (raw[eol] as i32) != 10) { eol = eol + 1; }
         let line: []u8 = raw[pos..eol];
         pos = eol + 1;
+        if (line.len > limit_project_line_bytes()) { return false; }
 
         if (line.len > 2 && (line[0] as i32) == 'm' && (line[1] as i32) == 32) {
             let mstop: i32 = 0;
@@ -906,13 +908,18 @@ fn design_load(s: *Scene, path: []u8) bool {
                     name_ = _zag_strdup(line[stop + 1..line.len]);
                 }
                 let kidx: i32 = list.get[i64](nums, 1) as i32;
+                if (kidx < 0 || kidx >= kind_count() || s.*.comps.len >= 100000) { return false; }
                 let logic_op: i32 = 0;
                 if (nums.len >= 10) { logic_op = list.get[i64](nums, 9) as i32; }
+                let origin: Vox = vox(list.get[i64](nums, 2) as i32, list.get[i64](nums, 3) as i32, list.get[i64](nums, 4) as i32);
+                let rot: i32 = list.get[i64](nums, 5) as i32;
+                if (list.get[i64](nums, 0) <= 0 || scene_comp_index(s, list.get[i64](nums, 0) as i32) >= 0 ||
+                    scene_can_place(s, kind_at(kidx), origin, rot) != 0) { return false; }
                 let c: Comp = Comp{
                     .id = list.get[i64](nums, 0) as i32,
                     .kind = kind_at(kidx),
-                    .origin = vox(list.get[i64](nums, 2) as i32, list.get[i64](nums, 3) as i32, list.get[i64](nums, 4) as i32),
-                    .rot = list.get[i64](nums, 5) as i32,
+                    .origin = origin,
+                    .rot = rot,
                     .size = kind_fp(kind_at(kidx)),
                     .visible = list.get[i64](nums, 6) == 1,
                     .wl_nm = (list.get[i64](nums, 8) as f64) / 1000.0,
@@ -929,25 +936,40 @@ fn design_load(s: *Scene, path: []u8) bool {
             parse_line_ints(line, 1, &nums, &stop2);
             if (nums.len >= 6) {
                 let n: i32 = list.get[i64](nums, 5) as i32;
+                let gid: i32 = list.get[i64](nums, 0) as i32;
+                let from_c: i32 = list.get[i64](nums, 1) as i32;
+                let from_p: i32 = list.get[i64](nums, 2) as i32;
+                let to_c: i32 = list.get[i64](nums, 3) as i32;
+                let to_p: i32 = list.get[i64](nums, 4) as i32;
+                let fci: i32 = scene_comp_index(s, from_c);
+                let tci: i32 = scene_comp_index(s, to_c);
+                if (n < 2 || n > 4096 || gid <= 0 || scene_guide_index(s, gid) >= 0 ||
+                    fci < 0 || tci < 0 || from_p < 0 || to_p < 0 ||
+                    from_p >= kind_port_count(s.*.comps.data[fci].kind) ||
+                    to_p >= kind_port_count(s.*.comps.data[tci].kind) ||
+                    s.*.guides.len >= 200000) { return false; }
                 if (nums.len >= 6 + n * 3) {
                     let p: list.ArrayList[Vox] = list.make[Vox](n + 1);
                     let vi: i32 = 0;
                     while (vi < n) {
-                        list.push[Vox](&p, vox(
+                        let pv: Vox = vox(
                             list.get[i64](nums, 6 + vi * 3) as i32,
                             list.get[i64](nums, 7 + vi * 3) as i32,
-                            list.get[i64](nums, 8 + vi * 3) as i32,
-                        ));
+                            list.get[i64](nums, 8 + vi * 3) as i32);
+                        if (pv.x < 0 - 2048 || pv.x > 2047 || pv.y < layer_min() || pv.y > layer_max() ||
+                            pv.z < 0 - 2048 || pv.z > 2047 ||
+                            (vi > 0 && vox_manhattan(p.data[vi - 1], pv) != 1)) { list.free[Vox](&p); return false; }
+                        list.push[Vox](&p, pv);
                         vi = vi + 1;
                     }
                     let steps: i32 = n - 1;
                     if (steps < 0) { steps = 0; }
                     let g: Guide = Guide{
-                        .id = list.get[i64](nums, 0) as i32,
-                        .from_c = list.get[i64](nums, 1) as i32,
-                        .from_p = list.get[i64](nums, 2) as i32,
-                        .to_c = list.get[i64](nums, 3) as i32,
-                        .to_p = list.get[i64](nums, 4) as i32,
+                        .id = gid,
+                        .from_c = from_c,
+                        .from_p = from_p,
+                        .to_c = to_c,
+                        .to_p = to_p,
                         .path = p,
                         .length_nm = (steps as f64) * s.*.model.pitch_nm.value,
                         .live = 0,
@@ -966,6 +988,14 @@ fn design_load(s: *Scene, path: []u8) bool {
     list.free[i64](&nums);
     list.free[i32](&counts);
     s.*.topo_dirty = true;
+    return true;
+}
+
+fn design_load(s: *Scene, path: []u8) bool {
+    let loaded: *Scene = scene_new();
+    if (!design_load_into(loaded, path)) { return false; }
+    scene_clear(s);
+    s.* = loaded.*;
     return true;
 }
 

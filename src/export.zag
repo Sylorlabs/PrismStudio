@@ -78,7 +78,7 @@ fn export_report(s: *Scene, sim: *Sim, path: []u8) bool {
 }
 
 fn export_trace(s: *Scene, sim: *Sim, path: []u8, steps: i32) bool {
-    if (steps < 1 || steps > 100000) { return false; }
+    if (steps < 1 || steps > limit_trace_steps()) { return false; }
     let out: list.ArrayList[u8] = list.make[u8](1024);
     ex_text(&out, "# Triton deterministic trace v1\nmode = ");
     if (sim.*.mode == SimMode.Functional) { ex_text(&out, "functional\n"); }
