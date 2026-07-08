@@ -169,6 +169,10 @@ fn mcp_read_msg(io: *IoBuf) []u8 {
             return "";
         }
         list.push[u8](&hdr, c as u8);
+        if (hdr.len > limit_mcp_header_bytes()) {
+            list.free[u8](&hdr);
+            return "";
+        }
         if (seq == 0 && c == 13) { seq = 1; }
         else if (seq == 1 && c == 10) { seq = 2; }
         else if (seq == 2 && c == 13) { seq = 3; }
@@ -178,13 +182,13 @@ fn mcp_read_msg(io: *IoBuf) []u8 {
     }
     let clen: i32 = mcp_parse_content_length(hdr.data[0..hdr.len]);
     list.free[u8](&hdr);
-    if (clen <= 0) { return ""; }
+    if (clen <= 0 || clen > limit_mcp_body_bytes()) { return ""; }
     let body: list.ArrayList[u8] = list.make[u8](clen + 1);
     if (!iobuf_read_n(io, 0, &body, clen)) {
         list.free[u8](&body);
         return "";
     }
-    let out: []u8 = body.data[0..body.len];
+    let out: []u8 = _zag_strdup(body.data[0..body.len]);
     list.free[u8](&body);
     return out;
 }
@@ -231,7 +235,7 @@ fn mcp_tool_result(text: []u8, is_err: bool) []u8 {
     } else {
         mcp_append(&out, "}],\"isError\":false}");
     }
-    let r: []u8 = out.data[0..out.len];
+    let r: []u8 = _zag_strdup(out.data[0..out.len]);
     list.free[u8](&out);
     return r;
 }
@@ -270,7 +274,14 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, cmd);
         return true;
     }
+    if (_zag_strcmp(name, "triton_mutate") == 1) {
+        let cmd: []u8 = mcp_find_str(body, "command");
+        if (cmd.len == 0) { return false; }
+        mcp_append(out, cmd);
+        return true;
+    }
     if (_zag_strcmp(name, "triton_help") == 1) { mcp_append(out, "help"); return true; }
+    if (_zag_strcmp(name, "triton_capabilities") == 1) { mcp_append(out, "capabilities"); return true; }
     if (_zag_strcmp(name, "triton_demo") == 1) { mcp_append(out, "demo"); return true; }
     if (_zag_strcmp(name, "triton_list") == 1) { mcp_append(out, "list"); return true; }
     if (_zag_strcmp(name, "triton_status") == 1) { mcp_append(out, "status"); return true; }
@@ -284,7 +295,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         let y: i32 = mcp_find_int(body, "y");
         let z: i32 = mcp_find_int(body, "z");
         let rot: i32 = mcp_find_int(body, "rot");
-        if (kind.len == 0 || x < 0 || y < 0 || z < 0) { return false; }
+        if (kind.len == 0 || x < 0 - 2048 || y < 0 - 2048 || z < 0 - 2048) { return false; }
         if (rot < 0) { rot = 0; }
         mcp_append(out, "place ");
         mcp_append(out, kind);
@@ -390,8 +401,18 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
     return false;
 }
 
-fn mcp_tools_list_json() []u8 {
+fn mcp_tools_legacy_json() []u8 {
     return "{\"tools\":[{\"name\":\"triton_command\",\"description\":\"Run any native agent command (place, route, sim, save, ...)\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}},{\"name\":\"triton_help\",\"description\":\"List agent commands and component kinds\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_demo\",\"description\":\"Load the reference photonic processor design\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_list\",\"description\":\"List components and waveguides\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_undo\",\"description\":\"Undo last edit (shared journal with GUI)\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_redo\",\"description\":\"Redo last undone edit\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_view\",\"description\":\"GUI live bus: selection, hover, camera, tool (requires ./run.sh)\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_pick\",\"description\":\"Voxel at GUI ghost or hover cell\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_place_here\",\"description\":\"Place component at GUI ghost/hover cell\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\"},\"rot\":{\"type\":\"integer\"}},\"required\":[\"kind\"]}},{\"name\":\"triton_place_on\",\"description\":\"Place on plate using local lx,lz offsets\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\"},\"plate_id\":{\"type\":\"integer\"},\"lx\":{\"type\":\"integer\"},\"lz\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"}},\"required\":[\"kind\",\"plate_id\",\"lx\",\"lz\"]}},{\"name\":\"triton_place\",\"description\":\"Place plate|chamber|soh|emitter|detector on the lattice\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"},\"z\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"}},\"required\":[\"kind\",\"x\",\"y\",\"z\"]}},{\"name\":\"triton_route\",\"description\":\"Route waveguide between ports\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"from_comp\":{\"type\":\"integer\"},\"from_port\":{\"type\":\"integer\"},\"to_comp\":{\"type\":\"integer\"},\"to_port\":{\"type\":\"integer\"}},\"required\":[\"from_comp\",\"from_port\",\"to_comp\",\"to_port\"]}},{\"name\":\"triton_sim_step\",\"description\":\"Advance simulation by n symbols\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"n\":{\"type\":\"integer\"}}}},{\"name\":\"triton_sim_state\",\"description\":\"Live trit states\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_save\",\"description\":\"Save design (default: live session .zpa)\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"triton_open\",\"description\":\"Open design (default: live session .zpa)\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"triton_render\",\"description\":\"Render BMP screenshot\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}},{\"name\":\"triton_test\",\"description\":\"Run engine|smoke|build verification\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"enum\":[\"engine\",\"smoke\",\"build\"]}},\"required\":[\"name\"]}},{\"name\":\"triton_status\",\"description\":\"Design and simulation status\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_coords\",\"description\":\"Component origins and port coordinates\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_power\",\"description\":\"Optical power / interference state\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_perf\",\"description\":\"Place+route+render micro-benchmark ms\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"triton_kinds\",\"description\":\"Component kinds, footprints, ports\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}";
+}
+
+fn mcp_tools_list_json() []u8 {
+    let base: []u8 = mcp_tools_legacy_json();
+    let out: list.ArrayList[u8] = list.make[u8](base.len + 512);
+    mcp_append(&out, base[0..base.len - 2]);
+    mcp_append(&out, ",{\"name\":\"triton_mutate\",\"description\":\"Run one idempotent revision-checked native mutation\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"idempotency_key\":{\"type\":\"string\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"command\",\"idempotency_key\",\"expected_revision\"]}}]}");
+    let result: []u8 = _zag_strdup(out.data[0..out.len]);
+    list.free[u8](&out);
+    return result;
 }
 
 fn mcp_dispatch(a: *App, msg: []u8) void {
@@ -414,6 +435,28 @@ fn mcp_dispatch(a: *App, msg: []u8) void {
         if (!mcp_tool_cmd(name, msg, &cmd)) {
             list.free[u8](&cmd);
             mcp_send_response(id, mcp_tool_result("unknown tool or bad arguments", true));
+            return;
+        }
+        if (_zag_strcmp(name, "triton_mutate") == 1) {
+            let key: []u8 = mcp_find_str(msg, "idempotency_key");
+            let rev: i32 = mcp_find_int(msg, "expected_revision");
+            if (key.len == 0 || rev < 0) {
+                list.free[u8](&cmd);
+                mcp_send_response(id, mcp_tool_result("E_REQUEST_ENVELOPE idempotency_key and expected_revision required", true));
+                return;
+            }
+            let wrapped: list.ArrayList[u8] = list.make[u8](cmd.len + key.len + 48);
+            mcp_append(&wrapped, "request ");
+            mcp_append(&wrapped, key);
+            mcp_append(&wrapped, " ");
+            mcp_append(&wrapped, _zag_i64_to_str(rev as i64));
+            mcp_append(&wrapped, " ");
+            mcp_append(&wrapped, cmd.data[0..cmd.len]);
+            list.free[u8](&cmd);
+            let raw2: []u8 = agent_capture_line(a, wrapped.data[0..wrapped.len]);
+            list.free[u8](&wrapped);
+            let text2: []u8 = mcp_body_text(raw2);
+            mcp_send_response(id, mcp_tool_result(text2, mcp_is_err(raw2)));
             return;
         }
         let raw: []u8 = agent_capture_line(a, cmd.data[0..cmd.len]);

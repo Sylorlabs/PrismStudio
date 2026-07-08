@@ -310,15 +310,19 @@ The user and agent must be able to perform the same core project operations.
       `TRITON_PROJECT_ROOT`, `E_PATH_OUTSIDE_ROOT`, and
       `agent-path-confinement` prove rejected traversal leaves no output file.
 - [ ] Redact credentials, X11 cookies, environment secrets, and private content.
-- [ ] Record actor, request, validated arguments, result, affected IDs, and undo
-      token in an append-only audit log.
+- [x] Record actor, request, validated arguments, result, affected IDs, and undo
+      token in an append-only audit log. Evidence: `agent-audit-result` verifies
+      a successful validated placement record with every field.
 
 ### 8.2 Public Agent API
 
 - [ ] Provide schema-described operations for create/open/save/close project,
       list/get/place/move/rotate/delete components, connect/disconnect/reroute,
       inspect models, run checks, simulate, trace, render, export, undo, and redo.
-- [ ] Give every mutation an idempotency key and transactional result.
+- [x] Give every mutation an idempotency key and transactional result. Evidence:
+      unkeyed project mutations fail with `E_IDEMPOTENCY_REQUIRED`; CLI `request`
+      and MCP `triton_mutate` return revision/key/undo/affected metadata and
+      byte-inert replay results.
 - [ ] Return stable machine-readable error codes plus human-readable diagnostics.
 - [x] Add project revision preconditions to prevent lost updates. Evidence:
       `TRITON_EXPECT_REV`, stable `E_REV_CONFLICT`, and the
@@ -326,7 +330,9 @@ The user and agent must be able to perform the same core project operations.
 - [ ] Stream long-running progress and support safe cancellation.
 - [ ] Validate MCP, CLI, pipe, and in-process commands through one command layer.
 - [ ] Prevent tools from bypassing design rules or persistence invariants.
-- [ ] Add capability negotiation and protocol versioning.
+- [x] Add capability negotiation and protocol versioning. Evidence: native
+      `capabilities` reports protocol/grants/revision/limits and `mcp-protocol`
+      verifies MCP `2024-11-05` initialization plus bounded framed calls.
 - [ ] Add complete examples that construct and verify the reference PCU.
 
 ### 8.3 Agent Verification

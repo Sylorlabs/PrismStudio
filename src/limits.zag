@@ -1,6 +1,8 @@
 // limits.zag — centralized resource ceilings for untrusted project/tool input.
 fn limit_agent_request_bytes() i32 { return 4096; }
 fn limit_agent_script_bytes() i32 { return 1048576; }
+fn limit_mcp_header_bytes() i32 { return 8192; }
+fn limit_mcp_body_bytes() i32 { return 1048576; }
 fn limit_project_bytes() i32 { return 16777216; }
 fn limit_project_line_bytes() i32 { return 65536; }
 fn limit_project_components() i32 { return 100000; }

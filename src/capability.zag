@@ -71,3 +71,14 @@ fn audit_append(state: []u8, line: []u8, required: i64) void {
     }
     list.free[u8](&cp);
 }
+
+fn audit_append_result(line: []u8, result: []u8, required: i64, rev: i64, affected: i32) void {
+    let detail: []u8 = _zag_str_concat(line, " result=");
+    let d2: []u8 = _zag_str_concat(detail, result);
+    let d3: []u8 = _zag_str_concat(d2, " revision=");
+    let d4: []u8 = _zag_str_concat(d3, _zag_i64_to_str(rev));
+    let d5: []u8 = _zag_str_concat(d4, " affected_id=");
+    let d6: []u8 = _zag_str_concat(d5, _zag_i64_to_str(affected as i64));
+    let d7: []u8 = _zag_str_concat(d6, " undo_token=");
+    audit_append("success", _zag_str_concat(d7, _zag_i64_to_str(rev)), required);
+}

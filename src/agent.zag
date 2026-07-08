@@ -178,7 +178,7 @@ fn tok_i64(line: []u8, t: Tok) i64 {
 fn agent_help() void {
     agent_ok0();
     _zag_println("# triton agent commands");
-    _zag_println("ping | help | quit");
+    _zag_println("ping | help | capabilities | quit");
     _zag_println("new | demo | open <file.zpa> | save <file.zpa> | list_files");
     _zag_println("place <kind> <x> <y> <z> [rot] | place_here <kind> [rot] | place_on <kind> <plate> <lx> <lz> [rot]");
     _zag_println("delete <id> | route <fc> <fp> <tc> <tp>");
@@ -191,6 +191,19 @@ fn agent_help() void {
     _zag_println("trace <out.trace> <steps>  (deterministic engine trace)");
     _zag_println("test engine | test smoke | build");
     _zag_println("kinds: plate chamber soh emitter detector");
+    agent_dot();
+}
+
+fn agent_capabilities(a: *App) void {
+    agent_ok0();
+    _zag_println("protocol triton-agent-1");
+    _zag_print("capability_bits "); _zag_println(_zag_i64_to_str(cap_load()));
+    _zag_println("mutation_idempotency TRITON_IDEMPOTENCY");
+    _zag_println("revision_precondition TRITON_EXPECT_REV");
+    _zag_print("revision "); _zag_println(_zag_i64_to_str(a.*.session_rev));
+    _zag_print("max_request_bytes "); _zag_println(_zag_i64_to_str(limit_agent_request_bytes() as i64));
+    if (_zag_getenv("TRITON_PROJECT_ROOT").len > 0) { _zag_println("project_root_scope enabled"); }
+    else { _zag_println("project_root_scope disabled"); }
     agent_dot();
 }
 
@@ -229,15 +242,16 @@ fn agent_is_mutation(line: []u8, toks: *list.ArrayList[Tok]) bool {
         tok_eq(line, verb, "place_on") || tok_eq(line, verb, "route") ||
         tok_eq(line, verb, "delete") || tok_eq(line, verb, "del") ||
         tok_eq(line, verb, "undo") || tok_eq(line, verb, "redo") ||
-        tok_eq(line, verb, "save")) { return true; }
+        tok_eq(line, verb, "save") || tok_eq(line, verb, "open")) { return true; }
     return tok_eq(line, verb, "flash") && toks.*.len >= 2 &&
         tok_eq(line, list.get[Tok](toks, 1), "import");
 }
 
 fn agent_revision_precondition(a: *App) bool {
     let raw: []u8 = _zag_getenv("TRITON_EXPECT_REV");
-    if (raw.len == 0) { return true; }
-    let expected: i64 = _zag_str_to_i64(raw);
+    if (raw.len == 0 && a.*.request_expected_rev < 0) { return true; }
+    let expected: i64 = a.*.request_expected_rev;
+    if (expected < 0) { expected = _zag_str_to_i64(raw); }
     let current: i64 = session_read_rev();
     if (expected == current && expected == a.*.session_rev) { return true; }
     let msg: []u8 = _zag_str_concat("E_REV_CONFLICT expected=", _zag_i64_to_str(expected));
@@ -261,7 +275,11 @@ fn agent_idempotency_key_valid(key: []u8) bool {
 
 fn agent_idempotency_prepare(a: *App) i32 {
     let key: []u8 = _zag_getenv("TRITON_IDEMPOTENCY");
-    if (key.len == 0) { a.*.request_idempotency = ""; return 0; }
+    if (a.*.request_enveloped) { key = a.*.request_idempotency; }
+    if (key.len == 0) {
+        agent_err("E_IDEMPOTENCY_REQUIRED use request <key> <revision> <command>");
+        return 0 - 1;
+    }
     if (!agent_idempotency_key_valid(key)) {
         agent_err("E_IDEMPOTENCY_KEY expected 1..64 letters, digits, dot, dash, underscore");
         return 0 - 1;
@@ -275,6 +293,21 @@ fn agent_idempotency_prepare(a: *App) i32 {
     }
     a.*.request_idempotency = key;
     return 0;
+}
+
+fn agent_mutation_ok(a: *App, msg: []u8, affected: i32) void {
+    let out: []u8 = _zag_str_concat(msg, " revision=");
+    let o2: []u8 = _zag_str_concat(out, _zag_i64_to_str(a.*.session_rev));
+    let o3: []u8 = _zag_str_concat(o2, " idempotency_key=");
+    let key: []u8 = a.*.request_idempotency;
+    if (key.len == 0) { key = "legacy"; }
+    let o4: []u8 = _zag_str_concat(o3, key);
+    let o5: []u8 = _zag_str_concat(o4, " undo_token=");
+    let o6: []u8 = _zag_str_concat(o5, _zag_i64_to_str(a.*.session_rev));
+    let o7: []u8 = _zag_str_concat(o6, " affected_id=");
+    let result: []u8 = _zag_str_concat(o7, _zag_i64_to_str(affected as i64));
+    audit_append_result(a.*.request_command, msg, a.*.request_required, a.*.session_rev, affected);
+    agent_ok1(result);
 }
 
 fn agent_coords(a: *App) void {
@@ -538,11 +571,8 @@ fn agent_place(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     session_after_edit(a);
     let ci: i32 = scene_comp_index(a.*.scene, id);
     let nm: []u8 = a.*.scene.*.comps.data[ci].name_;
-    _zag_print("OK id=");
-    _zag_print(_zag_i64_to_str(id as i64));
-    _zag_print(" name=");
-    _zag_println(nm);
-    agent_flush();
+    let msg: []u8 = _zag_str_concat("id=", _zag_i64_to_str(id as i64));
+    agent_mutation_ok(a, _zag_str_concat(_zag_str_concat(msg, " name="), nm), id);
 }
 
 fn agent_route(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
@@ -573,9 +603,7 @@ fn agent_route(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     let gid: i32 = scene_add_guide(a.*.scene, fc, fp, tc, tp, path);
     op_add_guide(&a.*.jrn, a.*.scene, gid);
     session_after_edit(a);
-    _zag_print("OK id=");
-    _zag_println(_zag_i64_to_str(gid as i64));
-    agent_flush();
+    agent_mutation_ok(a, _zag_str_concat("id=", _zag_i64_to_str(gid as i64)), gid);
 }
 
 fn agent_sim_state(a: *App) void {
@@ -651,6 +679,8 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         tok_eq(line, verb, "undo") || tok_eq(line, verb, "redo")) { required = cap_edit(); }
     if (tok_eq(line, verb, "flash") && toks.*.len >= 2 &&
         tok_eq(line, list.get[Tok](toks, 1), "import")) { required = cap_edit(); }
+    a.*.request_command = line;
+    a.*.request_required = required;
     audit_append("request", line, required);
     if (!cap_allowed(required)) {
         audit_append("denied", line, required);
@@ -668,6 +698,7 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
 
     if (tok_eq(line, verb, "ping")) { agent_ok1("pong"); return; }
     if (tok_eq(line, verb, "help")) { agent_help(); return; }
+    if (tok_eq(line, verb, "capabilities")) { agent_capabilities(a); return; }
     if (tok_eq(line, verb, "quit") || tok_eq(line, verb, "exit")) {
         agent_ok1("bye");
         a.*.quit = true;
@@ -677,13 +708,13 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         app_new_design(a);
         a.*.file_ = _zag_strdup(session_zpa_path());
         session_after_edit(a);
-        agent_ok1("cleared");
+        agent_mutation_ok(a, "cleared", 0 - 1);
         return;
     }
     if (tok_eq(line, verb, "demo")) {
         demo_load(a);
         session_after_edit(a);
-        agent_ok1("demo loaded");
+        agent_mutation_ok(a, "demo loaded", 0 - 1);
         return;
     }
     if (tok_eq(line, verb, "view")) {
@@ -717,11 +748,8 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         session_after_edit(a);
         let ci: i32 = scene_comp_index(a.*.scene, id);
         let nm: []u8 = a.*.scene.*.comps.data[ci].name_;
-        _zag_print("OK id=");
-        _zag_print(_zag_i64_to_str(id as i64));
-        _zag_print(" name=");
-        _zag_println(nm);
-        agent_flush();
+        let pmsg: []u8 = _zag_str_concat("id=", _zag_i64_to_str(id as i64));
+        agent_mutation_ok(a, _zag_str_concat(_zag_str_concat(pmsg, " name="), nm), id);
         return;
     }
     if (tok_eq(line, verb, "place_on")) {
@@ -742,11 +770,8 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         op_add_comp(&a.*.jrn, a.*.scene, id);
         session_after_edit(a);
         let ci: i32 = scene_comp_index(a.*.scene, id);
-        _zag_print("OK id=");
-        _zag_print(_zag_i64_to_str(id as i64));
-        _zag_print(" name=");
-        _zag_println(a.*.scene.*.comps.data[ci].name_);
-        agent_flush();
+        let pmsg2: []u8 = _zag_str_concat("id=", _zag_i64_to_str(id as i64));
+        agent_mutation_ok(a, _zag_str_concat(_zag_str_concat(pmsg2, " name="), a.*.scene.*.comps.data[ci].name_), id);
         return;
     }
     if (tok_eq(line, verb, "list")) {
@@ -771,7 +796,7 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         op_del_comp(&a.*.jrn, a.*.scene, id);
         scene_remove(a.*.scene, id);
         session_after_edit(a);
-        agent_ok1("deleted");
+        agent_mutation_ok(a, "deleted", id);
         return;
     }
     if (tok_eq(line, verb, "undo")) {
@@ -780,7 +805,7 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
             sim_reset(a.*.sim, a.*.scene);
             app_frame_all(a);
             session_after_edit(a);
-            agent_ok1("undo");
+            agent_mutation_ok(a, "undo", 0 - 1);
         } else {
             agent_err("nothing to undo");
         }
@@ -792,7 +817,7 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
             sim_reset(a.*.sim, a.*.scene);
             app_frame_all(a);
             session_after_edit(a);
-            agent_ok1("redo");
+            agent_mutation_ok(a, "redo", 0 - 1);
         } else {
             agent_err("nothing to redo");
         }
@@ -831,7 +856,7 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
             a.*.file_ = _zag_strdup(path);
             a.*.dirty = false;
             session_push(a);
-            agent_ok1("saved");
+            agent_mutation_ok(a, "saved", 0 - 1);
         } else { agent_err("save failed"); }
         return;
     }
@@ -850,7 +875,7 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
             a.*.dirty = false;
             app_frame_all(a);
             session_push(a);
-            agent_ok1("opened");
+            agent_mutation_ok(a, "opened", 0 - 1);
         } else { agent_err("open failed"); }
         return;
     }
@@ -952,7 +977,7 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
             let m2: []u8 = _zag_str_concat(msg, " components=");
             let m3: []u8 = _zag_str_concat(m2, _zag_i64_to_str(a.*.scene.*.comps.len as i64));
             let m4: []u8 = _zag_str_concat(m3, " verification_failures=");
-            agent_ok1(_zag_str_concat(m4, _zag_i64_to_str(failures as i64)));
+            agent_mutation_ok(a, _zag_str_concat(m4, _zag_i64_to_str(failures as i64)), 0 - 1);
             return;
         }
         if (tok_eq(line, sub, "verify")) {
@@ -1005,6 +1030,37 @@ fn agent_load_i32_le(buf: []u8, off: i32) i32 {
     return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
 }
 
+fn agent_dispatch_line(a: *App, line: []u8) void {
+    let toks: list.ArrayList[Tok] = list.make[Tok](16);
+    tokenize(line, &toks);
+    if (toks.len > 0 && tok_eq(line, list.get[Tok](toks, 0), "request")) {
+        if (toks.len < 4) {
+            agent_err("E_REQUEST_ENVELOPE usage: request <key> <expected_revision> <command>");
+        } else {
+            let rev: i64 = tok_i64(line, list.get[Tok](toks, 2));
+            if (tok_eq(line, list.get[Tok](toks, 2), "current")) { rev = session_read_rev(); }
+            if (rev < 0) {
+                agent_err("E_REQUEST_ENVELOPE expected_revision must be nonnegative");
+            } else {
+                a.*.request_idempotency = tok_slice(line, list.get[Tok](toks, 1));
+                a.*.request_expected_rev = rev;
+                a.*.request_enveloped = true;
+                let inner: []u8 = line[list.get[Tok](toks, 3).off..line.len];
+                let inner_toks: list.ArrayList[Tok] = list.make[Tok](16);
+                tokenize(inner, &inner_toks);
+                agent_dispatch(a, inner, &inner_toks);
+                list.free[Tok](&inner_toks);
+                a.*.request_idempotency = "";
+                a.*.request_expected_rev = 0 - 1;
+                a.*.request_enveloped = false;
+            }
+        }
+    } else {
+        agent_dispatch(a, line, &toks);
+    }
+    list.free[Tok](&toks);
+}
+
 // Run one agent command with stdout captured via pipe (for native MCP).
 fn agent_capture_line(a: *App, line: []u8) []u8 {
     if (line.len > limit_agent_request_bytes()) { return "ERR E_REQUEST_LIMIT command exceeds 4096 bytes"; }
@@ -1031,10 +1087,7 @@ fn agent_capture_line(a: *App, line: []u8) []u8 {
     _zag_raw_syscall(33, wfd, 1, 0, 0, 0, 0);
     _zag_raw_syscall(3, wfd, 0, 0, 0, 0, 0);
 
-    let toks: list.ArrayList[Tok] = list.make[Tok](16);
-    tokenize(line, &toks);
-    agent_dispatch(a, line, &toks);
-    list.free[Tok](&toks);
+    agent_dispatch_line(a, line);
     _zag_flush();
 
     _zag_raw_syscall(33, saved, 1, 0, 0, 0, 0);
@@ -1061,7 +1114,7 @@ fn agent_capture_line(a: *App, line: []u8) []u8 {
     while (out.len > 0 && (out.data[out.len - 1] as i32) == 10) {
         out.len = out.len - 1;
     }
-    let text: []u8 = out.data[0..out.len];
+    let text: []u8 = _zag_strdup(out.data[0..out.len]);
     list.free[u8](&out);
     return text;
 }
@@ -1072,10 +1125,7 @@ fn agent_run_line(a: *App, line: []u8) void {
         return;
     }
     session_pull(a);
-    let toks: list.ArrayList[Tok] = list.make[Tok](16);
-    tokenize(line, &toks);
-    agent_dispatch(a, line, &toks);
-    list.free[Tok](&toks);
+    agent_dispatch_line(a, line);
 }
 
 fn agent_run_script(a: *App, path: []u8) void {
