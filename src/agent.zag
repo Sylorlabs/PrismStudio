@@ -909,6 +909,9 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
             let n: i32 = 1;
             if (toks.*.len >= 3) { n = tok_i64(line, list.get[Tok](toks, 2)) as i32; }
             if (n < 1) { n = 1; }
+            if (n > limit_simulation_steps_per_request()) {
+                agent_err("E_SIM_LIMIT steps must be 1..100000"); return;
+            }
             sim_recompile(a.*.sim, a.*.scene);
             let i: i32 = 0;
             while (i < n) {

@@ -476,8 +476,9 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
 
 ## 14. Phase K — Security, Robustness, and Performance
 
-- [ ] Define limits for project size, graph depth, route search, trace history,
-      simulation steps, image dimensions, and agent request size.
+- [x] Define limits for project size, graph depth, route search, trace history,
+      simulation steps, image dimensions, and agent request size. Evidence:
+      centralized `src/limits.zag` ceilings and `bounded-inputs` rejection gate.
 - [ ] Test malicious/corrupt files, integer boundaries, path traversal, protocol
       fuzz, command injection, oversized inputs, and resource exhaustion.
 - [ ] Ensure project content cannot become executable host commands.

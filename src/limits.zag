@@ -3,8 +3,14 @@ fn limit_agent_request_bytes() i32 { return 4096; }
 fn limit_agent_script_bytes() i32 { return 1048576; }
 fn limit_project_bytes() i32 { return 16777216; }
 fn limit_project_line_bytes() i32 { return 65536; }
+fn limit_project_components() i32 { return 100000; }
+fn limit_project_guides() i32 { return 200000; }
+fn limit_graph_path_points() i32 { return 4096; }
+fn limit_route_search_nodes() i32 { return 262144; }
 fn limit_flash_fir_bytes() i32 { return 4194304; }
 fn limit_flash_ops() i32 { return 256; }
+fn limit_trace_history_symbols() i32 { return 192; }
 fn limit_trace_steps() i32 { return 100000; }
+fn limit_simulation_steps_per_request() i32 { return 100000; }
 fn limit_image_dimension() i32 { return 4096; }
 fn limit_image_pixels() i64 { return 16777216; }

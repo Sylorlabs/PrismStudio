@@ -908,7 +908,7 @@ fn design_load_into(s: *Scene, path: []u8) bool {
                     name_ = _zag_strdup(line[stop + 1..line.len]);
                 }
                 let kidx: i32 = list.get[i64](nums, 1) as i32;
-                if (kidx < 0 || kidx >= kind_count() || s.*.comps.len >= 100000) { return false; }
+                if (kidx < 0 || kidx >= kind_count() || s.*.comps.len >= limit_project_components()) { return false; }
                 let logic_op: i32 = 0;
                 if (nums.len >= 10) { logic_op = list.get[i64](nums, 9) as i32; }
                 let origin: Vox = vox(list.get[i64](nums, 2) as i32, list.get[i64](nums, 3) as i32, list.get[i64](nums, 4) as i32);
@@ -943,11 +943,11 @@ fn design_load_into(s: *Scene, path: []u8) bool {
                 let to_p: i32 = list.get[i64](nums, 4) as i32;
                 let fci: i32 = scene_comp_index(s, from_c);
                 let tci: i32 = scene_comp_index(s, to_c);
-                if (n < 2 || n > 4096 || gid <= 0 || scene_guide_index(s, gid) >= 0 ||
+                if (n < 2 || n > limit_graph_path_points() || gid <= 0 || scene_guide_index(s, gid) >= 0 ||
                     fci < 0 || tci < 0 || from_p < 0 || to_p < 0 ||
                     from_p >= kind_port_count(s.*.comps.data[fci].kind) ||
                     to_p >= kind_port_count(s.*.comps.data[tci].kind) ||
-                    s.*.guides.len >= 200000) { return false; }
+                    s.*.guides.len >= limit_project_guides()) { return false; }
                 if (nums.len >= 6 + n * 3) {
                     let p: list.ArrayList[Vox] = list.make[Vox](n + 1);
                     let vi: i32 = 0;

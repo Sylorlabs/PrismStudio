@@ -11,8 +11,9 @@
 @import("components.zag")
 @import("scene.zag")
 @import("ternary.zag")
+@import("limits.zag")
 
-fn hist_len() i32 { return 192; }
+fn hist_len() i32 { return limit_trace_history_symbols(); }
 
 // Group velocity in the GeSn-clad guide, nm per ps (material data from the
 // component library — not a sim tunable).

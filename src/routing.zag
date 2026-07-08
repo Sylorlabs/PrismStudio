@@ -6,6 +6,7 @@
 @import("../std/hashmap.zag") as hm
 @import("voxel.zag")
 @import("scene.zag")
+@import("limits.zag")
 
 fn step_cost() i32 { return 10; }
 fn bend_cost() i32 { return 40; }
@@ -259,7 +260,7 @@ fn route_guide(s: *Scene, start: Vox, goal: Vox, out: *list.ArrayList[Vox]) bool
 
     let guard: i32 = 0;
     let running: bool = true;
-    while (guard < 262144 && running) {
+    while (guard < limit_route_search_nodes() && running) {
         let cur_i: i32 = r_open_best(pool, &heap);
         if (cur_i < 0) {
             running = false;
