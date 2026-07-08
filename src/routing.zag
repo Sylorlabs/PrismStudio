@@ -10,8 +10,8 @@
 
 fn step_cost() i32 { return 10; }
 fn bend_cost() i32 { return 40; }
-fn layer_min() i32 { return 1; }    // guides never tunnel through the substrate
-fn layer_max() i32 { return 12; }
+fn layer_min() i32 { return limit_waveguide_layer_min(); } // never tunnel through substrate
+fn layer_max() i32 { return limit_waveguide_layer_max(); }
 fn route_margin() i32 { return 6; } // search window padding around endpoints
 
 struct RNode {

@@ -167,6 +167,9 @@ fn flash_logic_expected(op: i32, a: i32, b: i32) i32 {
 }
 
 fn flash_verify_scene(s: *Scene, sim: *Sim) i32 {
+    let integrity: i32 = scene_validation_errors(s);
+    if (integrity > 0) { return integrity; }
+    if (!model_validate(s.*.model) || !model_complete(s.*.model)) { return 1; }
     sim_recompile(sim, s);
     let step: i32 = 0;
     while (step < 8) { sim_step(sim, s); step = step + 1; }

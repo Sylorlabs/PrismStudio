@@ -1,0 +1,33 @@
+@import("../src/flash_ir.zag")
+@import("../src/editops.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let s: *Scene = scene_new();
+    check("canonical reference project loads", design_load(s, "examples/flash_photonic_massive.zpa"), &failures);
+    check("canonical reference structure is valid", scene_validation_errors(s) == 0, &failures);
+    let sim: *Sim = sim_new();
+
+    let old_origin: Vox = s.*.comps.data[1].origin;
+    s.*.comps.data[1].origin.x = old_origin.x + 1;
+    check("geometry tamper fails verification", flash_verify_scene(s, sim) > 0, &failures);
+    s.*.comps.data[1].origin = old_origin;
+
+    let old_known: bool = s.*.model.group_index.known;
+    s.*.model.group_index.known = false;
+    check("model tamper fails verification", flash_verify_scene(s, sim) > 0, &failures);
+    s.*.model.group_index.known = old_known;
+
+    let old_to: i32 = s.*.guides.data[0].to_c;
+    s.*.guides.data[0].to_c = 999999;
+    check("connectivity tamper fails verification", flash_verify_scene(s, sim) > 0, &failures);
+    s.*.guides.data[0].to_c = old_to;
+
+    if (failures == 0) { _zag_println("REFERENCE TAMPER: ALL PASS"); return 0; }
+    _zag_println("REFERENCE TAMPER: FAILURES"); return 1;
+}

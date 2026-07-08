@@ -21,6 +21,7 @@ is the only GPU and drives the display.
 | E.native-automation | pass | native `--agent`, `--mcp`, `zagctl`; legacy Python client removed | Supported automation path is compiled Zag | Add capability enforcement |
 | E.flash-fir-import | pass | `flash import`; `src/flash_ir.zag`; `./verify.sh safe` | Flash FIR v1 maps to production components/routes without executing host code | Add UI import dialog and trace panel |
 | C.massive-flash-pcu | pass | `../flash/examples/photonic_massive.flash`; `flash-photonic` gate | 64 ops became 384 components including 64 memory tiles and 192 routed guides; zero detector mismatches | Extend all-vector oracle coverage |
+| C.reference-integrity | pass | `scene_validation_errors`; `reference-tamper` | Canonical PCU has zero structural errors; geometry, model, and connectivity mutations each fail verification | Add timing-margin report |
 | D.flash-ternary-ops | pass | chamber lattice ops 2/3/5/7; constant-trit emitters | Flash neg/add/mul/nand semantics and exhaustive truth tables pass | Add larger composed-network oracle |
 | D.simulation-modes | pass | `SimMode.Functional`, `SimMode.Physical`; `simulation-properties` | Functional behavior is independent of missing physical data; physical mode rejects it | Add deterministic trace capture |
 | D.property-oracle | pass | `probe/simulation_property_test.zag`; `simulation-properties` | Exhaustive Flash truth tables, explicit invalid states, delay linearity/rate monotonicity all pass | Add graph differential/metamorphic suites |

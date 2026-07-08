@@ -8,6 +8,7 @@
 @import("voxel.zag")
 @import("components.zag")
 @import("world.zag")
+@import("limits.zag")
 
 fn max_chambers_per_plate() i32 { return 64; }
 
@@ -733,4 +734,49 @@ fn scene_restore_guide(s: *Scene, g: Guide) void {
     scene_mark_topo_comp(s, g.from_c);
     scene_mark_topo_comp(s, g.to_c);
     scene_mark_topo_guides(s);
+}
+
+// Full database integrity pass used at trust boundaries and verification gates.
+fn scene_validation_errors(s: *Scene) i32 {
+    let errors: i32 = 0;
+    let ci: i32 = 0;
+    while (ci < s.*.comps.len) {
+        let c: Comp = s.*.comps.data[ci];
+        if (c.id <= 0 || scene_comp_index(s, c.id) != ci ||
+            scene_can_place_ext(s, c.kind, c.size, c.origin, c.rot, c.id) != 0) { errors = errors + 1; }
+        let cells: list.ArrayList[Vox] = list.make[Vox](8);
+        scene_cells_comp(c, &cells);
+        let vi: i32 = 0;
+        while (vi < cells.len) {
+            if (scene_cell_owner(s, cells.data[vi]) != c.id) { errors = errors + 1; }
+            vi = vi + 1;
+        }
+        list.free[Vox](&cells);
+        ci = ci + 1;
+    }
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) {
+        let g: Guide = s.*.guides.data[gi];
+        let fi: i32 = scene_comp_index(s, g.from_c);
+        let ti: i32 = scene_comp_index(s, g.to_c);
+        if (g.id <= 0 || scene_guide_index(s, g.id) != gi || fi < 0 || ti < 0 ||
+            g.from_p < 0 || g.to_p < 0 || g.path.len < 2 || g.path.len > limit_graph_path_points()) {
+            errors = errors + 1;
+        } else if (g.from_p >= kind_port_count(s.*.comps.data[fi].kind) ||
+            g.to_p >= kind_port_count(s.*.comps.data[ti].kind) ||
+            !vox_eq(g.path.data[0], comp_port_attach(s.*.comps.data[fi], g.from_p)) ||
+            !vox_eq(g.path.data[g.path.len - 1], comp_port_attach(s.*.comps.data[ti], g.to_p))) {
+            errors = errors + 1;
+        } else {
+            let pi: i32 = 0;
+            while (pi < g.path.len) {
+                let v: Vox = g.path.data[pi];
+                if (v.y < limit_waveguide_layer_min() || v.y > limit_waveguide_layer_max() ||
+                    (pi > 0 && vox_manhattan(g.path.data[pi - 1], v) != 1)) { errors = errors + 1; }
+                pi = pi + 1;
+            }
+        }
+        gi = gi + 1;
+    }
+    return errors;
 }

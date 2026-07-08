@@ -10,6 +10,7 @@ probe/move_dbg
 probe/x11_pixel_pack_test
 probe/ui_prefs_test
 probe/simulation_property_test
+probe/reference_tamper_test
 probe/gpu_test
 probe/gpu_submit_test
 probe/gpu_compute_test
