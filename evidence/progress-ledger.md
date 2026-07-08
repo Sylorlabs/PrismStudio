@@ -31,6 +31,8 @@ is the only GPU and drives the display.
 | G.corruption | pass | project v2 checksum; `corrupt project checksum rejected` | Modified project byte rejected before scene mutation | Add recovery journal UX |
 | E.capability-default | pass | `src/capability.zag`; `agent-capability-denial` | default read/inspect/simulate; unauthorized placement leaves project hash unchanged | Add scoped/expiring grants |
 | E.path-confinement | pass | `TRITON_PROJECT_ROOT`; `agent-path-confinement` | Outside-root and lexical parent traversal writes rejected with stable error; no file created | Add symlink-safe descriptor-relative access |
+| E.revision-precondition | pass | `TRITON_EXPECT_REV`; `agent-revision-conflict` | Stale client leaves project bytes/revision unchanged; refresh then succeeds | Add atomic cross-process commit lock |
+| E.idempotency | partial | `TRITON_IDEMPOTENCY`; persistent `.idem`; `agent-idempotency` | Successful replay is byte/revision inert; malformed keys rejected | Require keys on every public mutation and expose in MCP schema |
 | E.audit-log | partial | append-only request/denial records with actor and required capability | command results/affected IDs/undo tokens not yet recorded | Complete mutation result records |
 | F.x11-live-baseline | pass | `./verify.sh safe`; `--x11-selftest` on `DISPLAY=:0` | Motion, modifier, key, button, WM_DELETE, and PutImage round trip passed | Add resize/focus/reopen coverage |
 | F.x11-interleaving | pass | `X11.synth_seen`; live selftest | Synthetic proof no longer flakes when real pointer events interleave | Add resize/focus synthetic cases |

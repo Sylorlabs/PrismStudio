@@ -37,6 +37,44 @@ fn session_jrn_path() []u8 {
     return ".triton/live.jrn";
 }
 
+fn session_idem_path() []u8 { return _zag_str_concat(session_zpa_path(), ".idem"); }
+
+fn session_idem_lookup(key: []u8) i64 {
+    let raw: []u8 = _zag_read_file(session_idem_path());
+    let i: i32 = 0;
+    while (i < raw.len) {
+        let st: i32 = i;
+        while (i < raw.len && (raw[i] as i32) != 32 && (raw[i] as i32) != 10) { i = i + 1; }
+        let key_end: i32 = i;
+        while (i < raw.len && (raw[i] as i32) == 32) { i = i + 1; }
+        let rev_st: i32 = i;
+        while (i < raw.len && (raw[i] as i32) != 10) { i = i + 1; }
+        let same: bool = key_end - st == key.len;
+        let k: i32 = 0;
+        while (same && k < key.len) { if (raw[st + k] != key[k]) { same = false; } k = k + 1; }
+        if (same && rev_st < i) { return _zag_str_to_i64(raw[rev_st..i]); }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn session_idem_record(key: []u8, rev: i64) void {
+    if (key.len == 0 || session_idem_lookup(key) >= 0) { return; }
+    let record: []u8 = _zag_str_concat(_zag_str_concat(_zag_str_concat(key, " "), _zag_i64_to_str(rev)), "\n");
+    let path: []u8 = session_idem_path();
+    let cp: list.ArrayList[u8] = list.make[u8](path.len + 1);
+    let i: i32 = 0;
+    while (i < path.len) { list.push[u8](&cp, path[i]); i = i + 1; }
+    list.push[u8](&cp, 0);
+    let fd: i64 = _zag_raw_syscall(2, cp.data as i64, 1089, 420, 0, 0, 0);
+    if (fd >= 0) {
+        let _w: i64 = _zag_raw_syscall(1, fd, _zag_slice_ptr(record) as i64, record.len as i64, 0, 0, 0);
+        let _s: i64 = _zag_raw_syscall(74, fd, 0, 0, 0, 0, 0);
+        let _c: i64 = _zag_raw_syscall(3, fd, 0, 0, 0, 0, 0);
+    }
+    list.free[u8](&cp);
+}
+
 fn session_sync_journal(a: *App) void {
     let jpath: []u8 = session_jrn_path();
     if (_zag_file_exists(jpath) == 1) {
@@ -177,6 +215,7 @@ fn session_push(a: *App) void {
         a.*.title_dirty = true;
         a.*.session_rev = a.*.session_rev + 1;
         session_write_rev(a.*.session_rev);
+        session_idem_record(a.*.request_idempotency, a.*.session_rev);
         session_write_bus(a);
     }
 }

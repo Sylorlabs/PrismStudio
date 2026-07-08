@@ -312,7 +312,9 @@ The user and agent must be able to perform the same core project operations.
       inspect models, run checks, simulate, trace, render, export, undo, and redo.
 - [ ] Give every mutation an idempotency key and transactional result.
 - [ ] Return stable machine-readable error codes plus human-readable diagnostics.
-- [ ] Add project revision preconditions to prevent lost updates.
+- [x] Add project revision preconditions to prevent lost updates. Evidence:
+      `TRITON_EXPECT_REV`, stable `E_REV_CONFLICT`, and the
+      `agent-revision-conflict` byte/revision immutability gate.
 - [ ] Stream long-running progress and support safe cancellation.
 - [ ] Validate MCP, CLI, pipe, and in-process commands through one command layer.
 - [ ] Prevent tools from bypassing design rules or persistence invariants.
@@ -326,7 +328,9 @@ The user and agent must be able to perform the same core project operations.
 - [x] Prove unauthorized requests leave project bytes and revision unchanged.
       Evidence: `agent-capability-denial` hashes the project before/after.
 - [ ] Prove every successful mutation is undoable and auditable.
-- [ ] Run two-client revision-conflict and recovery tests.
+- [x] Run two-client revision-conflict and recovery tests. Evidence: a stale
+      client is rejected without mutation, then succeeds after refreshing to
+      the committed revision in `agent-revision-conflict`.
 - [ ] Run an agent-only end-to-end PCU construction and verification test.
 - [ ] Compare the agent-created project with the canonical expected artifact.
 - [ ] Test crash recovery during a multi-operation transaction.

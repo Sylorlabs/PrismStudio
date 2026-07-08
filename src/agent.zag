@@ -215,7 +215,65 @@ fn agent_status(a: *App) void {
     let m16: []u8 = _zag_str_concat(m15, " undo=");
     let m17: []u8 = _zag_str_concat(m16, _zag_i64_to_str(journal_undo_len(&a.*.jrn) as i64));
     let m18: []u8 = _zag_str_concat(m17, " redo=");
-    agent_ok1(_zag_str_concat(m18, _zag_i64_to_str(journal_redo_len(&a.*.jrn) as i64)));
+    let m19: []u8 = _zag_str_concat(m18, _zag_i64_to_str(journal_redo_len(&a.*.jrn) as i64));
+    let m20: []u8 = _zag_str_concat(m19, " revision=");
+    agent_ok1(_zag_str_concat(m20, _zag_i64_to_str(a.*.session_rev)));
+}
+
+fn agent_is_mutation(line: []u8, toks: *list.ArrayList[Tok]) bool {
+    if (toks.*.len == 0) { return false; }
+    let verb: Tok = list.get[Tok](toks, 0);
+    if (tok_eq(line, verb, "new") || tok_eq(line, verb, "demo") ||
+        tok_eq(line, verb, "place") || tok_eq(line, verb, "place_here") ||
+        tok_eq(line, verb, "place_on") || tok_eq(line, verb, "route") ||
+        tok_eq(line, verb, "delete") || tok_eq(line, verb, "del") ||
+        tok_eq(line, verb, "undo") || tok_eq(line, verb, "redo") ||
+        tok_eq(line, verb, "save")) { return true; }
+    return tok_eq(line, verb, "flash") && toks.*.len >= 2 &&
+        tok_eq(line, list.get[Tok](toks, 1), "import");
+}
+
+fn agent_revision_precondition(a: *App) bool {
+    let raw: []u8 = _zag_getenv("TRITON_EXPECT_REV");
+    if (raw.len == 0) { return true; }
+    let expected: i64 = _zag_str_to_i64(raw);
+    let current: i64 = session_read_rev();
+    if (expected == current && expected == a.*.session_rev) { return true; }
+    let msg: []u8 = _zag_str_concat("E_REV_CONFLICT expected=", _zag_i64_to_str(expected));
+    let m2: []u8 = _zag_str_concat(msg, " current=");
+    agent_err(_zag_str_concat(m2, _zag_i64_to_str(current)));
+    return false;
+}
+
+fn agent_idempotency_key_valid(key: []u8) bool {
+    if (key.len == 0 || key.len > 64) { return false; }
+    let i: i32 = 0;
+    while (i < key.len) {
+        let c: i32 = key[i] as i32;
+        let ok: bool = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) ||
+            (c >= 97 && c <= 122) || c == 45 || c == 46 || c == 95;
+        if (!ok) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn agent_idempotency_prepare(a: *App) i32 {
+    let key: []u8 = _zag_getenv("TRITON_IDEMPOTENCY");
+    if (key.len == 0) { a.*.request_idempotency = ""; return 0; }
+    if (!agent_idempotency_key_valid(key)) {
+        agent_err("E_IDEMPOTENCY_KEY expected 1..64 letters, digits, dot, dash, underscore");
+        return 0 - 1;
+    }
+    let committed: i64 = session_idem_lookup(key);
+    if (committed >= 0) {
+        let msg: []u8 = _zag_str_concat("replay idempotency_key=", key);
+        let m2: []u8 = _zag_str_concat(msg, " revision=");
+        agent_ok1(_zag_str_concat(m2, _zag_i64_to_str(committed)));
+        return 1;
+    }
+    a.*.request_idempotency = key;
+    return 0;
 }
 
 fn agent_coords(a: *App) void {
@@ -597,6 +655,14 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         audit_append("denied", line, required);
         agent_err("E_CAP_DENIED explicit capability grant required");
         return;
+    }
+    if (agent_is_mutation(line, toks)) {
+        let idem: i32 = agent_idempotency_prepare(a);
+        if (idem != 0) { return; }
+        if (!agent_revision_precondition(a)) {
+            audit_append("revision-conflict", line, required);
+            return;
+        }
     }
 
     if (tok_eq(line, verb, "ping")) { agent_ok1("pong"); return; }
