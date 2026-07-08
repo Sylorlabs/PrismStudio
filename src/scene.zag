@@ -20,6 +20,7 @@ struct Comp {
     visible: bool,
     wl_nm: f64,    // WDM channel (emitters)
     preset: i32,   // emitter symbol-pattern preset
+    logic_op: i32, // chamber transfer: 0 cavity, Flash lattice op otherwise
     name_: []u8,
 }
 
@@ -358,6 +359,7 @@ fn scene_place(s: *Scene, k: Kind, origin: Vox, rot: i32) i32 {
         .visible = true,
         .wl_nm = s.*.model.chamber_resonance_nm.value,
         .preset = 0,
+        .logic_op = 0,
         .name_ = nm,
     };
     if (k == Kind.Emitter) {

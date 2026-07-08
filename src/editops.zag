@@ -195,7 +195,7 @@ fn uop_empty() UOp {
     let c: Comp = Comp{
         .id = 0, .kind = Kind.Plate, .origin = vox(0, 0, 0), .rot = 0,
         .size = kind_fp(Kind.Plate),
-        .visible = true, .wl_nm = 0.0, .preset = 0, .name_ = "",
+        .visible = true, .wl_nm = 0.0, .preset = 0, .logic_op = 0, .name_ = "",
     };
     return UOp{
         .kind = 0, .comp = c,
@@ -448,6 +448,7 @@ fn jrn_ser_comp_fields(out: *list.ArrayList[u8], c: Comp) void {
     ser_int(out, vis);
     ser_int(out, c.preset as i64);
     ser_int(out, (c.wl_nm * 1000.0) as i64);
+    ser_int(out, c.logic_op as i64);
     ser_int(out, c.size.x as i64);
     ser_int(out, c.size.y as i64);
     ser_int(out, c.size.z as i64);
@@ -548,6 +549,9 @@ fn journal_save(j: *Journal, path: []u8) bool {
 }
 
 fn jrn_comp_from(nums: list.ArrayList[i64], name_: []u8) Comp {
+    let size_base: i32 = 9;
+    let logic_op: i32 = 0;
+    if (nums.len >= 13) { logic_op = list.get[i64](nums, 9) as i32; size_base = 10; }
     return Comp{
         .id = list.get[i64](nums, 0) as i32,
         .kind = kind_at(list.get[i64](nums, 1) as i32),
@@ -557,12 +561,13 @@ fn jrn_comp_from(nums: list.ArrayList[i64], name_: []u8) Comp {
             list.get[i64](nums, 4) as i32),
         .rot = list.get[i64](nums, 5) as i32,
         .size = vox(
-            list.get[i64](nums, 9) as i32,
-            list.get[i64](nums, 10) as i32,
-            list.get[i64](nums, 11) as i32),
+            list.get[i64](nums, size_base) as i32,
+            list.get[i64](nums, size_base + 1) as i32,
+            list.get[i64](nums, size_base + 2) as i32),
         .visible = list.get[i64](nums, 6) == 1,
         .wl_nm = (list.get[i64](nums, 8) as f64) / 1000.0,
         .preset = list.get[i64](nums, 7) as i32,
+        .logic_op = logic_op,
         .name_ = _zag_strdup(name_),
     };
 }
@@ -756,6 +761,7 @@ fn design_save(s: *Scene, path: []u8) bool {
         ser_int(&out, vis);
         ser_int(&out, c.preset as i64);
         ser_int(&out, (c.wl_nm * 1000.0) as i64);
+        ser_int(&out, c.logic_op as i64);
         ser_text(&out, "|");
         ser_text(&out, c.name_);
         ser_text(&out, "\n");
@@ -839,6 +845,8 @@ fn design_load(s: *Scene, path: []u8) bool {
                     name_ = _zag_strdup(line[stop + 1..line.len]);
                 }
                 let kidx: i32 = list.get[i64](nums, 1) as i32;
+                let logic_op: i32 = 0;
+                if (nums.len >= 10) { logic_op = list.get[i64](nums, 9) as i32; }
                 let c: Comp = Comp{
                     .id = list.get[i64](nums, 0) as i32,
                     .kind = kind_at(kidx),
@@ -848,6 +856,7 @@ fn design_load(s: *Scene, path: []u8) bool {
                     .visible = list.get[i64](nums, 6) == 1,
                     .wl_nm = (list.get[i64](nums, 8) as f64) / 1000.0,
                     .preset = list.get[i64](nums, 7) as i32,
+                    .logic_op = logic_op,
                     .name_ = name_,
                 };
                 scene_restore_comp(s, c);

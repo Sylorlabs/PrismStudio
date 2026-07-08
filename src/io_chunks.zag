@@ -60,6 +60,7 @@ fn ser_comp_line(out: *list.ArrayList[u8], c: Comp) void {
     ser_int(out, vis);
     ser_int(out, c.preset as i64);
     ser_int(out, (c.wl_nm * 1000.0) as i64);
+    ser_int(out, c.logic_op as i64);
     ser_text(out, "|");
     ser_text(out, c.name_);
     ser_text(out, "\n");
@@ -163,6 +164,8 @@ fn io_parse_comp_line(s: *Scene, line: []u8, nums: *list.ArrayList[i64], counts:
         name_ = _zag_strdup(line[stop + 1..line.len]);
     }
     let kidx: i32 = list.get[i64](nums.*, 1) as i32;
+    let logic_op: i32 = 0;
+    if (nums.*.len >= 10) { logic_op = list.get[i64](nums.*, 9) as i32; }
     let c: Comp = Comp{
         .id = list.get[i64](nums.*, 0) as i32,
         .kind = kind_at(kidx),
@@ -171,6 +174,7 @@ fn io_parse_comp_line(s: *Scene, line: []u8, nums: *list.ArrayList[i64], counts:
         .visible = list.get[i64](nums.*, 6) == 1,
         .wl_nm = (list.get[i64](nums.*, 8) as f64) / 1000.0,
         .preset = list.get[i64](nums.*, 7) as i32,
+        .logic_op = logic_op,
         .name_ = name_,
     };
     scene_restore_comp(s, c);

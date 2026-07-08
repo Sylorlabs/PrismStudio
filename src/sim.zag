@@ -94,6 +94,9 @@ fn guide_phase_for(s: *Scene, length_nm: f64, wl_nm: f64) f64 {
 
 // Emitter symbol pattern presets: 16-trit streams encoded as strings.
 fn preset_pattern(preset: i32) []u8 {
+    if (preset == 4) { return "----------------"; }
+    if (preset == 5) { return "0000000000000000"; }
+    if (preset == 6) { return "++++++++++++++++"; }
     let p: i32 = preset % 4;
     if (p < 0) { p = p + 4; }
     if (p == 1) { return "++--++--0+0-++--"; }
@@ -120,6 +123,9 @@ struct SNode {
     in_sum: i32,     // demodulated trit sum (detectors: coherent receiver)
     out_t: i32,      // output trit this symbol
     prev_t: i32,     // previous output (cavity feedback)
+    logic_op: i32,
+    in_a: i32,
+    in_b: i32,
     hist: list.ArrayList[i32],   // ring of last hist_len() output trits
 }
 
@@ -127,6 +133,7 @@ struct SGuide {
     guide_id: i32,
     from_c: i32,
     to_c: i32,
+    to_p: i32,
     delay: i32,
     ph_re: f64,                  // carrier phase factor e^{i*phi} for this
     ph_im: f64,                  //   guide's length at its source wavelength
@@ -213,6 +220,9 @@ fn sim_recompile(sim: *Sim, s: *Scene) void {
             .in_sum = 0,
             .out_t = 0,
             .prev_t = 0,
+            .logic_op = c.logic_op,
+            .in_a = 0,
+            .in_b = 0,
             .hist = list.make[i32](hist_len()),
         };
         if (c.kind == Kind.Chamber) { n.soh = scene_soh_adjacent(s, c.id); }
@@ -250,6 +260,7 @@ fn sim_build_sguide(sim: *Sim, s: *Scene, g: Guide) SGuide {
         .guide_id = g.id,
         .from_c = g.from_c,
         .to_c = g.to_c,
+        .to_p = g.to_p,
         .delay = delay,
         .ph_re = cos(phi),
         .ph_im = sin(phi),
@@ -276,6 +287,8 @@ fn sim_reset(sim: *Sim, s: *Scene) void {
         n.*.in_sum = 0;
         n.*.out_t = 0;
         n.*.prev_t = 0;
+        n.*.in_a = 0;
+        n.*.in_b = 0;
         let hi: i32 = 0;
         while (hi < hist_len()) {
             list.set[i32](&n.*.hist, hi, 0);
@@ -313,6 +326,8 @@ fn sim_step(sim: *Sim, s: *Scene) void {
         sim.*.nodes.data[i].in_re = 0.0;
         sim.*.nodes.data[i].in_im = 0.0;
         sim.*.nodes.data[i].in_sum = 0;
+        sim.*.nodes.data[i].in_a = 0;
+        sim.*.nodes.data[i].in_b = 0;
         i = i + 1;
     }
     let gi: i32 = 0;
@@ -328,6 +343,8 @@ fn sim_step(sim: *Sim, s: *Scene) void {
             n0.*.in_re = n0.*.in_re + a * g.*.ph_re;
             n0.*.in_im = n0.*.in_im + a * g.*.ph_im;
             n0.*.in_sum = n0.*.in_sum + arrived;
+            if (g.*.to_p == 0) { n0.*.in_a = arrived; }
+            if (g.*.to_p == 1) { n0.*.in_b = arrived; }
         }
         gi = gi + 1;
     }
@@ -350,7 +367,22 @@ fn sim_step(sim: *Sim, s: *Scene) void {
             let re: f64 = n.*.in_re;
             if (n.*.soh > 0) { re = re + (n.*.prev_t * n.*.soh) as f64; }
             n.*.prev_t = n.*.out_t;
-            n.*.out_t = trit_from_field(re);
+            if (n.*.logic_op == 3) {
+                let raw: i32 = n.*.in_a + n.*.in_b;
+                if (raw > 1) { raw = raw - 3; }
+                if (raw < 0 - 1) { raw = raw + 3; }
+                n.*.out_t = raw;
+            } else if (n.*.logic_op == 5) {
+                n.*.out_t = n.*.in_a * n.*.in_b;
+            } else if (n.*.logic_op == 7) {
+                let andv: i32 = n.*.in_a;
+                if (n.*.in_b < andv) { andv = n.*.in_b; }
+                n.*.out_t = 0 - andv;
+            } else if (n.*.logic_op == 2) {
+                n.*.out_t = 0 - n.*.in_a;
+            } else {
+                n.*.out_t = trit_from_field(re);
+            }
         }
         if (n.*.kind == Kind.Detector) {
             // Coherent homodyne readout: per-carrier demodulation, so the

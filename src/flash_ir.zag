@@ -1,0 +1,185 @@
+// flash_ir.zag — Flash FIR v1 importer and photonic execution verifier.
+// FIR is Flash's general hardware IR; this module contains no Flash-compiler
+// behavior and does not execute host commands.
+
+@import("../std/list.zag") as list
+@import("scene.zag")
+@import("routing.zag")
+@import("sim.zag")
+
+struct FlashOp {
+    tag: []u8,
+    lattice_op: i32,
+    a: i32,
+    b: i32,
+    expected: i32,
+}
+
+struct FlashIr {
+    raw: []u8,
+    ops: list.ArrayList[FlashOp],
+    valid: bool,
+}
+
+fn fir_contains(hay: []u8, needle: []u8) bool {
+    if (needle.len < 1 || hay.len < needle.len) { return false; }
+    let i: i32 = 0;
+    while (i <= hay.len - needle.len) {
+        let ok: bool = true;
+        let j: i32 = 0;
+        while (j < needle.len) {
+            if (hay[i + j] != needle[j]) { ok = false; }
+            j = j + 1;
+        }
+        if (ok) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn fir_find(hay: []u8, needle: []u8) i32 {
+    if (needle.len < 1 || hay.len < needle.len) { return 0 - 1; }
+    let i: i32 = 0;
+    while (i <= hay.len - needle.len) {
+        let ok: bool = true;
+        let j: i32 = 0;
+        while (j < needle.len) {
+            if (hay[i + j] != needle[j]) { ok = false; }
+            j = j + 1;
+        }
+        if (ok) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn fir_i32(line: []u8, key: []u8) i32 {
+    let needle: []u8 = _zag_str_concat(key, " = ");
+    let at: i32 = fir_find(line, needle);
+    if (at < 0) { return 0; }
+    let st: i32 = at + needle.len;
+    let en: i32 = st;
+    while (en < line.len && (line[en] as i32) != ',' &&
+        (line[en] as i32) != '}' && (line[en] as i32) != 'u' &&
+        (line[en] as i32) != 'm' && (line[en] as i32) != 32) { en = en + 1; }
+    if (en <= st) { return 0; }
+    return _zag_str_to_i64(line[st..en]) as i32;
+}
+
+fn fir_quoted(line: []u8, key: []u8) []u8 {
+    let needle: []u8 = _zag_str_concat(key, " = \"");
+    let at: i32 = fir_find(line, needle);
+    if (at < 0) { return ""; }
+    let st: i32 = at + needle.len;
+    let en: i32 = st;
+    while (en < line.len && (line[en] as i32) != 34) { en = en + 1; }
+    return line[st..en];
+}
+
+fn fir_phase_trit(microrad: i32) i32 {
+    if (microrad > 300000) { return 1; }
+    if (microrad < 0 - 300000) { return 0 - 1; }
+    return 0;
+}
+
+fn flash_ir_load(path: []u8) FlashIr {
+    let raw: []u8 = _zag_read_file(path);
+    let ir: FlashIr = FlashIr{ .raw = raw, .ops = list.make[FlashOp](32), .valid = false };
+    if (raw.len <= 0 || !fir_contains(raw, "# flash ir v1") || !fir_contains(raw, "[ir]")) { return ir; }
+    let pos: i32 = 0;
+    while (pos < raw.len) {
+        let end: i32 = pos;
+        while (end < raw.len && (raw[end] as i32) != 10) { end = end + 1; }
+        let line: []u8 = raw[pos..end];
+        if (fir_contains(line, "kind = \"route\"") && fir_contains(line, "lattice_op = ")) {
+            let op: i32 = fir_i32(line, "lattice_op");
+            if (op == 2 || op == 3 || op == 5 || op == 7) {
+                list.push[FlashOp](&ir.ops, FlashOp{
+                    .tag = fir_quoted(line, "op"),
+                    .lattice_op = op,
+                    .a = fir_phase_trit(fir_i32(line, "phase_a_rad")),
+                    .b = fir_phase_trit(fir_i32(line, "phase_b_rad")),
+                    .expected = fir_i32(line, "pol"),
+                });
+            }
+        }
+        pos = end + 1;
+    }
+    ir.valid = ir.ops.len > 0 && ir.ops.len <= 256;
+    return ir;
+}
+
+fn flash_preset(t: i32) i32 {
+    if (t < 0) { return 4; }
+    if (t > 0) { return 6; }
+    return 5;
+}
+
+fn flash_route(s: *Scene, from_id: i32, from_p: i32, to_id: i32, to_p: i32) bool {
+    let fi: i32 = scene_comp_index(s, from_id);
+    let ti: i32 = scene_comp_index(s, to_id);
+    if (fi < 0 || ti < 0) { return false; }
+    let path: list.ArrayList[Vox] = list.make[Vox](32);
+    if (!route_guide(s, comp_port_attach(s.*.comps.data[fi], from_p),
+        comp_port_attach(s.*.comps.data[ti], to_p), &path)) { return false; }
+    return scene_add_guide(s, from_id, from_p, to_id, to_p, path) > 0;
+}
+
+fn flash_build_scene(s: *Scene, ir: *FlashIr) bool {
+    if (!ir.*.valid) { return false; }
+    let i: i32 = 0;
+    while (i < ir.*.ops.len) {
+        let op: FlashOp = ir.*.ops.data[i];
+        let ox: i32 = (i % 8) * 12;
+        let oz: i32 = (i / 8) * 12;
+        let plate: i32 = scene_place(s, Kind.Plate, vox(ox, 0, oz), 0);
+        let ea: i32 = scene_place(s, Kind.Emitter, vox(ox, 1, oz + 1), 0);
+        let eb: i32 = scene_place(s, Kind.Emitter, vox(ox, 1, oz + 5), 0);
+        let chamber: i32 = scene_place(s, Kind.Chamber, vox(ox + 3, 1, oz + 3), 0);
+        let detector: i32 = scene_place(s, Kind.Detector, vox(ox + 7, 1, oz + 4), 0);
+        if (plate < 0 || ea < 0 || eb < 0 || chamber < 0 || detector < 0) { return false; }
+        s.*.comps.data[scene_comp_index(s, ea)].preset = flash_preset(op.a);
+        s.*.comps.data[scene_comp_index(s, eb)].preset = flash_preset(op.b);
+        s.*.comps.data[scene_comp_index(s, chamber)].logic_op = op.lattice_op;
+        s.*.comps.data[scene_comp_index(s, detector)].preset = op.expected + 8;
+        if (!flash_route(s, ea, 0, chamber, 0)) { return false; }
+        if (!flash_route(s, eb, 0, chamber, 1)) { return false; }
+        if (!flash_route(s, chamber, 3, detector, 0)) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn flash_logic_expected(op: i32, a: i32, b: i32) i32 {
+    if (op == 3) {
+        let raw: i32 = a + b;
+        if (raw > 1) { raw = raw - 3; }
+        if (raw < 0 - 1) { raw = raw + 3; }
+        return raw;
+    }
+    if (op == 5) { return a * b; }
+    if (op == 7) { let v: i32 = a; if (b < v) { v = b; } return 0 - v; }
+    if (op == 2) { return 0 - a; }
+    return 0;
+}
+
+fn flash_verify_scene(s: *Scene, sim: *Sim) i32 {
+    sim_recompile(sim, s);
+    let step: i32 = 0;
+    while (step < 8) { sim_step(sim, s); step = step + 1; }
+    let failures: i32 = 0;
+    let checked: i32 = 0;
+    let i: i32 = 0;
+    while (i < s.*.comps.len) {
+        let c: Comp = s.*.comps.data[i];
+        if (c.kind == Kind.Detector && c.preset >= 7 && c.preset <= 9) {
+            checked = checked + 1;
+            let ni: i32 = sim_node_index(sim, c.id);
+            let expected: i32 = c.preset - 8;
+            if (ni < 0 || sim.*.nodes.data[ni].out_t != expected) { failures = failures + 1; }
+        }
+        i = i + 1;
+    }
+    if (checked == 0) { return 0 - 1; }
+    return failures;
+}

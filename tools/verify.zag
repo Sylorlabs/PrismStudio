@@ -30,6 +30,7 @@ fn main() i32 {
     if (!run_suite("x11-pixel-pack", "rm -f probe/x11_pixel_pack_test.new && ../zag/zag-poc/znc probe/x11_pixel_pack_test.zag -o probe/x11_pixel_pack_test.new && mv -f probe/x11_pixel_pack_test.new probe/x11_pixel_pack_test && ./probe/x11_pixel_pack_test")) { fails = fails + 1; }
     if (!run_suite("headless-render", "./zagpa --smoke /tmp/triton_verify_smoke.bmp")) { fails = fails + 1; }
     if (!run_suite("agent-protocol", "./zagpa --agent examples/agent_demo.tcmd")) { fails = fails + 1; }
+    if (!run_suite("flash-photonic", "rm -f /tmp/triton_flash_gate.zpa /tmp/triton_flash_gate.zpa.rev /tmp/triton_flash_gate.zpa.jrn && (cd ../flash && ./flashc examples/photonic_massive.flash --target ppu32 >/dev/null) && TRITON_SESSION=/tmp/triton_flash_gate.zpa ./zagpa --agent --once 'flash import ../flash/examples/photonic_massive.fir' | rg -q 'ops=64 components=320 verification_failures=0' && TRITON_SESSION=/tmp/triton_flash_gate.zpa ./zagpa --agent --once 'flash verify' | rg -q 'Flash photonic execution verified'")) { fails = fails + 1; }
     if (!run_suite("unsupported-claim-audit", "! rg -n '110 GHz|9[.]09 ps|2100 MHz|40 CUs|renderD128|Radeon RX|Navi 10' README.md src probe tools --glob '!device_model.zag' --glob '!verify.zag'")) { fails = fails + 1; }
     if (!run_suite("pure-zag-tree", "test -z \"$(find src std tools probe -type f \\( -name '*.c' -o -name '*.h' -o -name '*.py' -o -name '*.zig' \\) -print -quit)\"")) { fails = fails + 1; }
 

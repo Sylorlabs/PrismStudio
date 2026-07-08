@@ -55,6 +55,9 @@ case "$cmd" in
         fi
         exec "$ZAGPA" --agent --once "sim $1"
         ;;
+    flash)
+        exec "$ZAGPA" --agent --once "flash $*"
+        ;;
     test)
         exec "$ZAGPA" --agent --once "test $1"
         ;;

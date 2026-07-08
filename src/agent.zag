@@ -27,6 +27,7 @@ extern fn _zag_read_fd(fd: i64, buf: *i8, n: i64) i64;
 @import("demo.zag")
 @import("session.zag")
 @import("ternary.zag")
+@import("flash_ir.zag")
 
 struct Tok {
     off: i32,
@@ -144,6 +145,7 @@ fn agent_help() void {
     _zag_println("undo | redo | view | pick | open [file.zpa] | save [file.zpa]  (default: live session)");
     _zag_println("sim step [n] | sim reset | sim state | render <out.bmp>");
     _zag_println("status | coords | power | perf | kinds");
+    _zag_println("flash import <program.fir> | flash verify");
     _zag_println("test engine | test smoke | build");
     _zag_println("kinds: plate chamber soh emitter detector");
     agent_dot();
@@ -543,6 +545,7 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     }
     if (tok_eq(line, verb, "new")) {
         app_new_design(a);
+        a.*.file_ = _zag_strdup(session_zpa_path());
         session_after_edit(a);
         agent_ok1("cleared");
         return;
@@ -764,6 +767,35 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
             return;
         }
         agent_err("sim: use step, reset, or state");
+        return;
+    }
+    if (tok_eq(line, verb, "flash")) {
+        if (toks.*.len < 2) { agent_err("usage: flash import <program.fir> | flash verify"); return; }
+        let sub: Tok = list.get[Tok](toks, 1);
+        if (tok_eq(line, sub, "import")) {
+            if (toks.*.len < 3) { agent_err("usage: flash import <program.fir>"); return; }
+            let ir: FlashIr = flash_ir_load(tok_slice(line, list.get[Tok](toks, 2)));
+            if (!ir.valid) { agent_err("invalid, empty, or oversized Flash FIR v1"); return; }
+            app_new_design(a);
+            a.*.file_ = _zag_strdup(session_zpa_path());
+            if (!flash_build_scene(a.*.scene, &ir)) { agent_err("Flash FIR placement or routing failed"); return; }
+            let failures: i32 = flash_verify_scene(a.*.scene, a.*.sim);
+            session_after_edit(a);
+            let msg: []u8 = _zag_str_concat("ops=", _zag_i64_to_str(ir.ops.len as i64));
+            let m2: []u8 = _zag_str_concat(msg, " components=");
+            let m3: []u8 = _zag_str_concat(m2, _zag_i64_to_str(a.*.scene.*.comps.len as i64));
+            let m4: []u8 = _zag_str_concat(m3, " verification_failures=");
+            agent_ok1(_zag_str_concat(m4, _zag_i64_to_str(failures as i64)));
+            return;
+        }
+        if (tok_eq(line, sub, "verify")) {
+            let failures: i32 = flash_verify_scene(a.*.scene, a.*.sim);
+            if (failures < 0) { agent_err("active design is not a Flash photonic import"); }
+            else if (failures == 0) { agent_ok1("Flash photonic execution verified"); }
+            else { agent_err(_zag_str_concat("Flash mismatches=", _zag_i64_to_str(failures as i64))); }
+            return;
+        }
+        agent_err("flash: use import or verify");
         return;
     }
     if (tok_eq(line, verb, "test")) {

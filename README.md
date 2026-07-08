@@ -5,6 +5,8 @@ for spatial balanced-ternary optical processor designs. It currently provides a
 native X11 workbench, CPU reference renderer, voxel design-rule engine, 3D
 waveguide router, symbolic/phase-aware simulator, project persistence, undo/redo,
 and native line/MCP automation.
+Flash hardware IR (`.fir`) can be imported as a real routed photonic design and
+verified against the compiler-recorded balanced-ternary results.
 
 Triton is software for design-model verification. It does not claim that the
 illustrative reference device has been fabricated, measured, or laboratory
@@ -24,6 +26,7 @@ No C compiler, libc, Xlib, Mesa, LLVM, or Python service is used by Triton.
 ./run.sh               # native X11 workbench
 ./zagctl repl          # native line protocol
 ./zagctl mcp           # native MCP server
+./zagctl flash import ../flash/examples/photonic_massive.fir
 ```
 
 Set `ZNC=/absolute/path/to/znc` to override the default

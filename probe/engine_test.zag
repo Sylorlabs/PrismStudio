@@ -255,6 +255,14 @@ fn main() i32 {
     check("roundtrip: physical model values preserved",
         s2.*.model.pitch_nm.value == s.*.model.pitch_nm.value &&
         s2.*.model.emitter_rate_ghz.value == s.*.model.emitter_rate_ghz.value, &fails);
+    let logic_ci: i32 = scene_comp_index(s, ch);
+    s.*.comps.data[logic_ci].logic_op = 5;
+    check("save Flash chamber operation", design_save(s, "/tmp/triton_engine_logic.zpa"), &fails);
+    let s3: *Scene = scene_new();
+    check("load Flash chamber operation", design_load(s3, "/tmp/triton_engine_logic.zpa"), &fails);
+    check("roundtrip: Flash chamber operation preserved",
+        s3.*.comps.data[scene_comp_index(s3, ch)].logic_op == 5, &fails);
+    s.*.comps.data[logic_ci].logic_op = 0;
 
     // ── journal persistence ──
     let jj: Journal = journal_new();
