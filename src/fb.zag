@@ -261,6 +261,47 @@ fn fb_write_shm(f: *FB, path: []u8) void {
     if (rc != 0) { _zag_eprintln("fb: /dev/shm write failed"); }
 }
 
+// Binary PPM dump: deliberately dependency-free and independent of X11.
+fn fb_write_ppm(f: *FB, path: []u8) void {
+    let header: []u8 = _zag_str_concat(_zag_str_concat(_zag_str_concat("P6\n", _zag_i64_to_str(f.*.w as i64)), " "), _zag_str_concat(_zag_i64_to_str(f.*.h as i64), "\n255\n"));
+    let out: list.ArrayList[u8] = list.make[u8](header.len + f.*.w * f.*.h * 3);
+    let hi: i32 = 0;
+    while (hi < header.len) { push_u8(&out, header[hi]); hi = hi + 1; }
+    let i: i32 = 0;
+    while (i < f.*.w * f.*.h) {
+        let c: i64 = f.*.px.data[i];
+        push_u8(&out, col_r(c) as u8);
+        push_u8(&out, col_g(c) as u8);
+        push_u8(&out, col_b(c) as u8);
+        i = i + 1;
+    }
+    let rc: i32 = _zag_write_file(path, out.data[0..out.len]);
+    if (rc != 0) { _zag_eprintln("fb: ppm write failed"); }
+    list.free[u8](&out);
+}
+
+fn fb_test_pattern(f: *FB) void {
+    fb_clip_reset(f);
+    fill_rect(f, 0, 0, f.*.w, f.*.h, rgb(12, 12, 16));
+    let x: i32 = 0;
+    while (x < f.*.w) {
+        if (x % 32 == 0) { vline(f, x, 0, f.*.h, rgb(48, 48, 56)); }
+        x = x + 1;
+    }
+    let y: i32 = 0;
+    while (y < f.*.h) {
+        if (y % 32 == 0) { hline(f, 0, y, f.*.w, rgb(48, 48, 56)); }
+        y = y + 1;
+    }
+    fill_rect(f, 8, 8, 64, 64, rgb(255, 0, 0));
+    fill_rect(f, f.*.w - 72, 8, 64, 64, rgb(0, 255, 0));
+    fill_rect(f, 8, f.*.h - 72, 64, 64, rgb(0, 0, 255));
+    fill_rect(f, f.*.w - 72, f.*.h - 72, 64, 64, rgb(255, 255, 255));
+    hline(f, 0, f.*.h / 2, f.*.w, rgb(255, 255, 0));
+    vline(f, f.*.w / 2, 0, f.*.h, rgb(255, 255, 0));
+    rect_outline(f, 0, 0, f.*.w, f.*.h, rgb(255, 0, 255));
+}
+
 // BMP screenshot (24-bit, bottom-up) for smoke verification.
 fn fb_write_bmp(f: *FB, path: []u8) void {
     let w: i32 = f.*.w;

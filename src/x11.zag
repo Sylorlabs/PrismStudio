@@ -173,6 +173,8 @@ struct X11 {
     root: i64,
     root_visual: i64,
     root_depth: i32,
+    pixmap_bpp: i32,
+    scanline_pad: i32,
     max_req_bytes: i64,
     // our objects
     wid: i64,
@@ -401,6 +403,7 @@ fn x11_connect(w: i32, h: i32, title: []u8) *X11 {
         .ok = false,
         .rid_base = 0, .rid_incr = 1, .rid_next = 0,
         .root = 0, .root_visual = 0, .root_depth = 24,
+        .pixmap_bpp = 32, .scanline_pad = 32,
         .max_req_bytes = 16384,
         .wid = 0, .gcid = 0,
         .wm_protocols = 0, .wm_delete = 0,
@@ -465,6 +468,15 @@ fn x11_connect(w: i32, h: i32, title: []u8) *X11 {
     x.*.root = rd32(&reply, screen_off);
     x.*.root_visual = rd32(&reply, screen_off + 32);
     x.*.root_depth = rd8(&reply, screen_off + 38);
+    let fi: i32 = 0;
+    while (fi < num_formats) {
+        let fmt: i32 = voff + fi * 8;
+        if (rd8(&reply, fmt) == x.*.root_depth) {
+            x.*.pixmap_bpp = rd8(&reply, fmt + 1);
+            x.*.scanline_pad = rd8(&reply, fmt + 2);
+        }
+        fi = fi + 1;
+    }
     list.free[u8](&reply);
 
     // ── CreateWindow ──
@@ -932,10 +944,15 @@ fn x11_put_frame_rect(x: *X11, px: *i64, fw: i32, fh: i32, rx: i32, ry: i32, rw:
         while (yy < rh) {
             let src_row: i32 = (ry + yy) * fw + rx;
             let dst_off: i64 = ((ry + yy) * fw + rx) as i64 * 4;
-            let band32: *i32 = (x.*.band.data as i64) as *i32;
+            let d: *u8 = x.*.band.data;
             let xx: i32 = 0;
             while (xx < rw) {
-                band32[xx] = (px[src_row + xx] as i32) & 16777215;
+                let v: i64 = px[src_row + xx];
+                let di: i32 = xx * 4;
+                d[di] = (v & 255) as u8;
+                d[di + 1] = ((v >> 8) & 255) as u8;
+                d[di + 2] = ((v >> 16) & 255) as u8;
+                d[di + 3] = 0;
                 xx = xx + 1;
             }
             _zag_memcpy((x.*.shm_addr + dst_off) as *i8, x.*.band.data as *i8, row_bytes);
@@ -980,13 +997,18 @@ fn x11_put_frame_rect(x: *X11, px: *i64, fw: i32, fh: i32, rx: i32, ry: i32, rw:
         xw16(b, 0);
         b.*.len = 24 + data_bytes;
 
-        let dst32: *i32 = (b.*.data as i64 + 24) as *i32;
+        let d: *u8 = b.*.data;
         let row: i32 = 0;
         while (row < rows) {
             let src_row: i32 = (ry + y + row) * fw + rx;
             let xx: i32 = 0;
             while (xx < rw) {
-                dst32[row * rw + xx] = (px[src_row + xx] as i32) & 16777215;
+                let v: i64 = px[src_row + xx];
+                let di: i32 = 24 + (row * rw + xx) * 4;
+                d[di] = (v & 255) as u8;
+                d[di + 1] = ((v >> 8) & 255) as u8;
+                d[di + 2] = ((v >> 16) & 255) as u8;
+                d[di + 3] = 0;
                 xx = xx + 1;
             }
             row = row + 1;

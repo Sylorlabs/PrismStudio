@@ -11,6 +11,19 @@ fn pack_px(px: *i64, i: i32) i32 {
     return (px[i] as i32) & 16777215;
 }
 
+fn pack_bytes(dst: *u8, px: *i64, n: i32) void {
+    let i: i32 = 0;
+    while (i < n) {
+        let v: i64 = px[i];
+        let d: i32 = i * 4;
+        dst[d] = (v & 255) as u8;
+        dst[d + 1] = ((v >> 8) & 255) as u8;
+        dst[d + 2] = ((v >> 16) & 255) as u8;
+        dst[d + 3] = 0;
+        i = i + 1;
+    }
+}
+
 fn main() i32 {
     let fails: i32 = 0;
     let px: list.ArrayList[i64] = list.make[i64](4);
@@ -33,6 +46,16 @@ fn main() i32 {
     let odd: i64 = (pack_px(px.data, 2) as i64);
     check("odd final pixel has zero upper half", (odd >> 32) == 0, &fails);
 
+    let bytes: list.ArrayList[u8] = list.make[u8](12);
+    bytes.len = 12;
+    pack_bytes(bytes.data, px.data, 3);
+    check("red/green/blue bytes are contiguous",
+        bytes.data[0] == 255 && bytes.data[1] == 0 && bytes.data[2] == 0 && bytes.data[3] == 0 &&
+        bytes.data[4] == 0 && bytes.data[5] == 255 && bytes.data[6] == 0 && bytes.data[7] == 0 &&
+        bytes.data[8] == 0 && bytes.data[9] == 0 && bytes.data[10] == 255 && bytes.data[11] == 0,
+        &fails);
+
+    list.free[u8](&bytes);
     list.free[i64](&px);
     if (fails == 0) { _zag_println("X11 PIXEL PACK: ALL PASS"); return 0; }
     _zag_println("X11 PIXEL PACK: FAILURES");

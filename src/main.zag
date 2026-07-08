@@ -21,6 +21,24 @@
 
 fn fb_path() []u8 { return "/dev/shm/zagpa_fb.bin"; }
 
+fn arg_has(want: []u8) bool {
+    let i: i32 = 1;
+    while (i < _zag_argc()) {
+        if (_zag_strcmp(_zag_arg(i), want) == 1) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn arg_after(want: []u8, fallback: []u8) []u8 {
+    let i: i32 = 1;
+    while (i + 1 < _zag_argc()) {
+        if (_zag_strcmp(_zag_arg(i), want) == 1) { return _zag_arg(i + 1); }
+        i = i + 1;
+    }
+    return fallback;
+}
+
 // ── stdin line reader ─────────────────────────────────────────────────────────
 
 struct LineBuf {
@@ -216,6 +234,25 @@ fn run_x11() i32 {
     a.*.inp.w = x.*.win_w;
     a.*.inp.h = x.*.win_h;
     app_frame(a, 0.016);
+    if (arg_has("--test-pattern")) { fb_test_pattern(&a.*.f); }
+    if (arg_has("--dump-frame")) {
+        let dump: []u8 = arg_after("--dump-frame", "out.ppm");
+        fb_write_ppm(&a.*.f, dump);
+        _zag_print("ui: wrote CPU framebuffer "); _zag_println(dump);
+    }
+    if (arg_has("--ui-debug")) {
+        _zag_println("ui: renderer=cpu backend=x11");
+        _zag_print("ui: window_width="); _zag_println(_zag_i64_to_str(x.*.win_w as i64));
+        _zag_print("ui: window_height="); _zag_println(_zag_i64_to_str(x.*.win_h as i64));
+        _zag_print("ui: framebuffer_width="); _zag_println(_zag_i64_to_str(a.*.f.w as i64));
+        _zag_print("ui: framebuffer_height="); _zag_println(_zag_i64_to_str(a.*.f.h as i64));
+        _zag_print("ui: bytes_per_pixel="); _zag_println(_zag_i64_to_str((x.*.pixmap_bpp / 8) as i64));
+        _zag_print("ui: stride="); _zag_println(_zag_i64_to_str((a.*.f.w * (x.*.pixmap_bpp / 8)) as i64));
+        _zag_print("ui: depth="); _zag_println(_zag_i64_to_str(x.*.root_depth as i64));
+        _zag_print("ui: bits_per_pixel="); _zag_println(_zag_i64_to_str(x.*.pixmap_bpp as i64));
+        _zag_print("ui: scanline_pad="); _zag_println(_zag_i64_to_str(x.*.scanline_pad as i64));
+        _zag_println("ui: pixel_format=0x00RRGGBB scale=1");
+    }
     x11_put_frame(x, a.*.f.px.data, a.*.f.w, a.*.f.h);
     x11_pump(x);
 
@@ -254,6 +291,7 @@ fn run_x11() i32 {
 
             let t0: i64 = _zag_clock_monotonic_ms();
             app_frame(a, dt);
+            if (arg_has("--test-pattern")) { fb_test_pattern(&a.*.f); }
             // while orbiting, blit every other frame — halves display cost on weak GPUs
             let do_blit: bool = true;
             if (a.*.cam_drag && (a.*.frame & 1) == 1) { do_blit = false; }
