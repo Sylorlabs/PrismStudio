@@ -267,7 +267,9 @@ directly into memory.
 - [x] Add property tests for components, routing delay, and graph execution.
       Evidence: `simulation-properties` exhausts operations and checks delay
       linearity, rate monotonicity, invalid-state propagation, and mode behavior.
-- [ ] Add differential tests between incremental and full recomputation.
+- [x] Add differential tests between incremental and full recomputation.
+      Evidence: `simulation-properties` compares every node history and guide
+      delay-line state before and after 24 post-edit symbols.
 - [ ] Add metamorphic tests for translation, equivalent routing, and benign
       serialization changes.
 - [x] Add golden traces for the reference PCU. Evidence:

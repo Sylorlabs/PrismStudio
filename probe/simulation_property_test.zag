@@ -1,6 +1,8 @@
 @import("../std/list.zag") as list
 @import("../std/hashmap.zag") as hm
 @import("../src/flash_ir.zag")
+@import("../src/editops.zag")
+@import("../src/sim_region.zag")
 
 fn check(name_: []u8, ok: bool, failures: *i32) void {
     if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
@@ -15,6 +17,36 @@ fn oracle(op: i32, a: i32, b: i32) i32 {
     if (raw > 1) { raw = raw - 3; }
     if (raw < 0 - 1) { raw = raw + 3; }
     return raw;
+}
+
+fn sim_state_equal(a: *Sim, b: *Sim) bool {
+    if (a.*.symbol != b.*.symbol || a.*.nodes.len != b.*.nodes.len ||
+        a.*.sguides.len != b.*.sguides.len || a.*.clock_ghz != b.*.clock_ghz) { return false; }
+    let i: i32 = 0;
+    while (i < a.*.nodes.len) {
+        let an: SNode = a.*.nodes.data[i];
+        let bi: i32 = sim_node_index(b, an.comp_id);
+        if (bi < 0) { return false; }
+        let bn: SNode = b.*.nodes.data[bi];
+        if (an.kind != bn.kind || an.soh != bn.soh || an.out_t != bn.out_t ||
+            an.prev_t != bn.prev_t || an.in_sum != bn.in_sum || an.in_a != bn.in_a ||
+            an.in_b != bn.in_b || an.logic_op != bn.logic_op || an.hist.len != bn.hist.len) { return false; }
+        let hi: i32 = 0;
+        while (hi < an.hist.len) { if (an.hist.data[hi] != bn.hist.data[hi]) { return false; } hi = hi + 1; }
+        i = i + 1;
+    }
+    let gi: i32 = 0;
+    while (gi < a.*.sguides.len) {
+        let ag: SGuide = a.*.sguides.data[gi];
+        let bj: i32 = sim_find_in(b.*.sguides, ag.guide_id);
+        if (bj < 0) { return false; }
+        let bg: SGuide = b.*.sguides.data[bj];
+        if (ag.delay != bg.delay || ag.head != bg.head || ag.arrived != bg.arrived || ag.ring.len != bg.ring.len) { return false; }
+        let ri: i32 = 0;
+        while (ri < ag.ring.len) { if (ag.ring.data[ri] != bg.ring.data[ri]) { return false; } ri = ri + 1; }
+        gi = gi + 1;
+    }
+    return true;
 }
 
 fn main() i32 {
@@ -55,6 +87,32 @@ fn main() i32 {
     check("physical mode rejects incomplete model", !sim.*.model_ok, &failures);
     sim.*.mode = SimMode.Functional; sim_recompile(sim, s);
     check("functional mode is independent of physical completeness", sim.*.model_ok, &failures);
+
+    let ds: *Scene = scene_new();
+    let dp: i32 = scene_place(ds, Kind.Plate, vox(0, 0, 0), 0);
+    let de: i32 = scene_place(ds, Kind.Emitter, vox(1, 1, 2), 0);
+    let dc: i32 = scene_place(ds, Kind.Chamber, vox(4, 1, 3), 0);
+    let dd: i32 = scene_place(ds, Kind.Detector, vox(7, 1, 4), 0);
+    let built: bool = dp > 0 && de > 0 && dc > 0 && dd > 0 &&
+        flash_route(ds, de, 0, dc, 0) && flash_route(ds, dc, 3, dd, 0);
+    let inc: *Sim = sim_new();
+    sim_recompile_region(inc, ds);
+    let warm: i32 = 0;
+    while (warm < 8) { sim_step(inc, ds); warm = warm + 1; }
+    let isolated: i32 = scene_place(ds, Kind.Plate, vox(500, 0, 500), 0);
+    sim_recompile_region(inc, ds);
+    let saved: bool = design_save(ds, "/tmp/triton_sim_differential.zpa");
+    let fs: *Scene = scene_new();
+    let reloaded: bool = design_load(fs, "/tmp/triton_sim_differential.zpa");
+    let full: *Sim = sim_new();
+    sim_recompile(full, fs);
+    warm = 0;
+    while (warm < 8) { sim_step(full, fs); warm = warm + 1; }
+    check("incremental/full setup valid", built && isolated > 0 && saved && reloaded, &failures);
+    check("incremental equals full after benign topology edit", sim_state_equal(inc, full), &failures);
+    let more: i32 = 0;
+    while (more < 24) { sim_step(inc, ds); sim_step(full, fs); more = more + 1; }
+    check("incremental/full remain equal after stepping", sim_state_equal(inc, full), &failures);
 
     if (failures == 0) { _zag_println("SIMULATION PROPERTIES: ALL PASS"); return 0; }
     _zag_println("SIMULATION PROPERTIES: FAILURES"); return 1;
