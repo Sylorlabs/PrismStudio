@@ -5,6 +5,8 @@ fn limit_mcp_header_bytes() i32 { return 8192; }
 fn limit_mcp_body_bytes() i32 { return 1048576; }
 fn limit_project_bytes() i32 { return 16777216; }
 fn limit_project_line_bytes() i32 { return 65536; }
+fn limit_journal_bytes() i32 { return 16777216; }
+fn limit_journal_operations() i32 { return 256; }
 fn limit_project_components() i32 { return 100000; }
 fn limit_project_guides() i32 { return 200000; }
 fn limit_graph_path_points() i32 { return 4096; }

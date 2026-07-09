@@ -276,8 +276,9 @@ directly into memory.
 - [x] Add differential tests between incremental and full recomputation.
       Evidence: `simulation-properties` compares every node history and guide
       delay-line state before and after 24 post-edit symbols.
-- [ ] Add metamorphic tests for translation, equivalent routing, and benign
-      serialization changes.
+- [x] Add metamorphic tests for translation, equivalent routing, and benign
+      serialization changes. Evidence: `simulation-properties` compares complete
+      node histories and guide rings for all three transformations.
 - [x] Add golden traces for the reference PCU. Evidence:
       `examples/flash_photonic_massive.trace.txt` and `deterministic-trace`.
 - [ ] Report uncertainty instead of manufacturing false precision.
@@ -323,7 +324,9 @@ The user and agent must be able to perform the same core project operations.
       unkeyed project mutations fail with `E_IDEMPOTENCY_REQUIRED`; CLI `request`
       and MCP `triton_mutate` return revision/key/undo/affected metadata and
       byte-inert replay results.
-- [ ] Return stable machine-readable error codes plus human-readable diagnostics.
+- [x] Return stable machine-readable error codes plus human-readable diagnostics.
+      Evidence: all agent failures carry an `E_*` token; `agent-error-codes`
+      verifies generic, mode-specific, and envelope diagnostics through production.
 - [x] Add project revision preconditions to prevent lost updates. Evidence:
       `TRITON_EXPECT_REV`, stable `E_REV_CONFLICT`, and the
       `agent-revision-conflict` byte/revision immutability gate.
@@ -491,10 +494,16 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
 - [x] Define limits for project size, graph depth, route search, trace history,
       simulation steps, image dimensions, and agent request size. Evidence:
       centralized `src/limits.zag` ceilings and `bounded-inputs` rejection gate.
-- [ ] Test malicious/corrupt files, integer boundaries, path traversal, protocol
+- [x] Test malicious/corrupt files, integer boundaries, path traversal, protocol
       fuzz, command injection, oversized inputs, and resource exhaustion.
-- [ ] Ensure project content cannot become executable host commands.
-- [ ] Fuzz parsers and serializers with a stable corpus and regression artifacts.
+      Evidence: `engine`, `parser-corpus`, `protocol-parser`,
+      `security-regression`, `agent-path-confinement`, and `bounded-inputs`.
+- [x] Ensure project content cannot become executable host commands. Evidence:
+      `security-regression` loads, preserves, saves, and exports a shell-shaped
+      component name while proving its sentinel command never executes.
+- [x] Fuzz parsers and serializers with a stable corpus and regression artifacts.
+      Evidence: checked-in project/FIR/journal corpus, deterministic project byte
+      mutations with accepted-case reserialization, and MCP boundary corpus.
 - [ ] Run leak and handle-lifetime tests across edit/open/close cycles.
 - [ ] Establish workload-based performance budgets from measured baselines.
 - [ ] Fail regressions statistically and retain raw benchmark samples.
@@ -502,13 +511,18 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
 
 ## 15. Phase L — Documentation and Release Truth
 
-- [ ] Rewrite README claims to separate implemented, experimental, planned,
-      simulated, measured, and physically validated behavior.
-- [ ] Document the exact supported build/run/test workflow.
-- [ ] Document project format, physical-model schema, units, provenance, agent
-      capability model, command protocol, and recovery behavior.
+- [x] Rewrite README claims to separate implemented, experimental, planned,
+      simulated, measured, and physically validated behavior. Evidence:
+      `README.md` evidence levels and explicit software-only/GPU status.
+- [x] Document the exact supported build/run/test workflow. Evidence: supported
+      commands and self-hosted compiler path in `README.md`.
+- [x] Document project format, physical-model schema, units, provenance, agent
+      capability model, command protocol, and recovery behavior. Evidence:
+      `docs/FORMATS_AUTOMATION_RECOVERY.md`.
 - [ ] Generate the compatibility and benchmark tables from evidence.
-- [ ] Document known limitations and unsupported configurations.
+- [x] Document known limitations and unsupported configurations. Evidence:
+      README GPU status plus explicit unimplemented recovery guarantees in the
+      format/automation/recovery document.
 - [ ] Document how to reproduce the reference PCU and all verification results.
 - [ ] Remove stale probe-era and marketing language.
 - [ ] Add release notes tied to verified behavior, not commit count.

@@ -11,6 +11,11 @@ fi
 cmd="${1:-help}"
 shift || true
 
+mutate() {
+    key="${TRITON_IDEMPOTENCY:-zagctl-$$-$RANDOM}"
+    exec "$ZAGPA" --agent --once "request $key current $*"
+}
+
 case "$cmd" in
     repl)
         exec "$ZAGPA" --agent
@@ -28,23 +33,29 @@ case "$cmd" in
     cmd)
         exec "$ZAGPA" --agent --once "$*"
         ;;
-    ping|help|demo|new|list|list_files|status|coords|power|perf|kinds|build)
+    demo|new)
+        mutate "$cmd $*"
+        ;;
+    ping|help|list|list_files|status|coords|power|perf|kinds|build)
         exec "$ZAGPA" --agent --once "$cmd $*"
         ;;
     place)
-        exec "$ZAGPA" --agent --once "place $1 $2 $3 $4 ${5:-0}"
+        mutate "place $1 $2 $3 $4 ${5:-0}"
         ;;
     route)
-        exec "$ZAGPA" --agent --once "route $1 $2 $3 $4"
+        mutate "route $1 $2 $3 $4"
         ;;
     delete|del)
-        exec "$ZAGPA" --agent --once "delete $1"
+        mutate "delete $1"
+        ;;
+    undo|redo)
+        mutate "$cmd"
         ;;
     open)
-        exec "$ZAGPA" --agent --once "open $1"
+        mutate "open $1"
         ;;
     save)
-        exec "$ZAGPA" --agent --once "save $1"
+        mutate "save $1"
         ;;
     render)
         exec "$ZAGPA" --agent --once "render $1"
@@ -59,6 +70,9 @@ case "$cmd" in
         exec "$ZAGPA" --agent --once "sim $1"
         ;;
     flash)
+        if [ "${1:-}" = "import" ]; then
+            mutate "flash $*"
+        fi
         exec "$ZAGPA" --agent --once "flash $*"
         ;;
     test)

@@ -116,14 +116,6 @@ fn parse_kind_name(s: []u8) i32 {
     return 0 - 1;
 }
 
-fn kind_slug(k: Kind) []u8 {
-    if (k == Kind.Plate) { return "plate"; }
-    if (k == Kind.Chamber) { return "chamber"; }
-    if (k == Kind.Soh) { return "soh"; }
-    if (k == Kind.Emitter) { return "emitter"; }
-    return "detector";
-}
-
 fn agent_flush() void { _zag_flush(); }
 
 fn agent_ok1(msg: []u8) void {
@@ -139,7 +131,12 @@ fn agent_ok0() void {
 
 fn agent_err(msg: []u8) void {
     _zag_print("ERR ");
-    _zag_println(msg);
+    if (msg.len >= 2 && (msg[0] as i32) == 'E' && (msg[1] as i32) == '_') {
+        _zag_println(msg);
+    } else {
+        _zag_print("E_COMMAND ");
+        _zag_println(msg);
+    }
     agent_flush();
 }
 
@@ -1073,7 +1070,7 @@ fn agent_capture_line(a: *App, line: []u8) []u8 {
     let prc: i64 = _zag_raw_syscall(22, fds.data as i64, 0, 0, 0, 0, 0);
     if (prc < 0) {
         list.free[u8](&fds);
-        return "ERR capture pipe failed";
+        return "ERR E_CAPTURE pipe failed";
     }
     let rfd: i64 = agent_load_i32_le(fds.data[0..8], 0) as i64;
     let wfd: i64 = agent_load_i32_le(fds.data[0..8], 4) as i64;
@@ -1082,7 +1079,7 @@ fn agent_capture_line(a: *App, line: []u8) []u8 {
     let saved: i64 = _zag_raw_syscall(32, 1, 0, 0, 0, 0, 0);
     if (saved < 0) {
         _zag_raw_syscall(3, rfd, 0, 0, 0, 0, 0);
-        return "ERR capture dup failed";
+        return "ERR E_CAPTURE dup failed";
     }
     _zag_raw_syscall(33, wfd, 1, 0, 0, 0, 0);
     _zag_raw_syscall(3, wfd, 0, 0, 0, 0, 0);

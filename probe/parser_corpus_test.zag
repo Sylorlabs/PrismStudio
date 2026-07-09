@@ -1,0 +1,70 @@
+@import("../std/list.zag") as list
+@import("../src/flash_ir.zag")
+@import("../src/editops.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let project_paths: list.ArrayList[[]u8] = list.make[[]u8](4);
+    list.push[[]u8](&project_paths, "corpus/project/bad_version.zpa");
+    list.push[[]u8](&project_paths, "corpus/project/bad_kind.zpa");
+    list.push[[]u8](&project_paths, "corpus/project/bad_coordinate.zpa");
+    list.push[[]u8](&project_paths, "corpus/project/bad_guide.zpa");
+    let corpus_ok: bool = true;
+    let i: i32 = 0;
+    while (i < project_paths.len) {
+        let s: *Scene = scene_new();
+        let keep: i32 = scene_place(s, Kind.Plate, vox(300 + i * 20, 0, 0), 0);
+        if (design_load(s, project_paths.data[i]) || s.*.comps.len != 1 || scene_comp_index(s, keep) < 0) {
+            corpus_ok = false;
+        }
+        i = i + 1;
+    }
+    check("stable malformed project corpus rejected transactionally", corpus_ok, &failures);
+
+    let f1: FlashIr = flash_ir_load("corpus/flash/bad_header.fir");
+    let f2: FlashIr = flash_ir_load("corpus/flash/bad_operation.fir");
+    check("stable malformed FIR corpus rejected", !f1.valid && !f2.valid, &failures);
+
+    let js: *Scene = scene_new();
+    let jp: i32 = scene_place(js, Kind.Plate, vox(0, 0, 0), 0);
+    let jj: Journal = journal_new();
+    op_add_comp(&jj, js, jp);
+    let jlen: i32 = jj.undo.len;
+    check("bad journal version rejected transactionally",
+        !journal_load(&jj, "corpus/journal/bad_version.jrn") && jj.undo.len == jlen, &failures);
+    check("truncated journal guide rejected transactionally",
+        !journal_load(&jj, "corpus/journal/truncated_guide.jrn") && jj.undo.len == jlen, &failures);
+
+    let base_scene: *Scene = scene_new();
+    let _p: i32 = scene_place(base_scene, Kind.Plate, vox(0, 0, 0), 0);
+    let _e: i32 = scene_place(base_scene, Kind.Emitter, vox(1, 1, 2), 0);
+    check("fuzz seed serializes", design_save(base_scene, "/tmp/triton_fuzz_seed.zpa"), &failures);
+    let seed: []u8 = _zag_read_file("/tmp/triton_fuzz_seed.zpa");
+    let fuzz_ok: bool = seed.len > 16;
+    let round: i32 = 0;
+    while (round < 32 && fuzz_ok) {
+        let mutated: []u8 = _zag_strdup(seed);
+        let at: i32 = 6 + ((round * 37) % (mutated.len - 6));
+        mutated[at] = mutated[at] ^ ((round % 7) + 1) as u8;
+        _zag_write_file("/tmp/triton_fuzz_case.zpa", mutated);
+        let target: *Scene = scene_new();
+        let keep2: i32 = scene_place(target, Kind.Plate, vox(500, 0, round * 8), 0);
+        let accepted: bool = design_load(target, "/tmp/triton_fuzz_case.zpa");
+        if (!accepted && (target.*.comps.len != 1 || scene_comp_index(target, keep2) < 0)) { fuzz_ok = false; }
+        if (accepted) {
+            if (!design_save(target, "/tmp/triton_fuzz_roundtrip.zpa")) { fuzz_ok = false; }
+            let again: *Scene = scene_new();
+            if (!design_load(again, "/tmp/triton_fuzz_roundtrip.zpa")) { fuzz_ok = false; }
+        }
+        round = round + 1;
+    }
+    check("deterministic project mutation fuzz remains safe", fuzz_ok, &failures);
+
+    if (failures == 0) { _zag_println("PARSER CORPUS: ALL PASS"); return 0; }
+    _zag_println("PARSER CORPUS: FAILURES"); return 1;
+}

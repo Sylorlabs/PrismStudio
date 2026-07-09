@@ -44,6 +44,14 @@ fn model_kind_rate_ghz(m: DeviceModel, k: Kind) f64 {
 
 fn kind_count() i32 { return 5; }
 
+fn kind_slug(k: Kind) []u8 {
+    if (k == Kind.Plate) { return "plate"; }
+    if (k == Kind.Chamber) { return "chamber"; }
+    if (k == Kind.Soh) { return "soh"; }
+    if (k == Kind.Emitter) { return "emitter"; }
+    return "detector";
+}
+
 fn kind_index(k: Kind) i32 {
     return switch (k) {
         .Plate => 0,

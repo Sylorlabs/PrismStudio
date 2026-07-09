@@ -1,0 +1,19 @@
+@import("../src/workspace.zag")
+@import("../src/mcp.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    check("valid Content-Length parsed", mcp_parse_content_length("Content-Length: 12\r\n\r\n") == 12, &failures);
+    check("oversized Content-Length rejected", mcp_parse_content_length("Content-Length: 1048577\r\n\r\n") < 0, &failures);
+    check("overflowing Content-Length rejected", mcp_parse_content_length("Content-Length: 999999999999999999999\r\n\r\n") < 0, &failures);
+    check("overflowing JSON integer rejected", mcp_find_int("{\"n\":999999999999999999999}", "n") < 0, &failures);
+    check("truncated JSON string rejected", mcp_find_str("{\"command\":\"unterminated}", "command").len == 0, &failures);
+    check("missing JSON key rejected", mcp_find_int("{\"x\":1}", "revision") < 0, &failures);
+    if (failures == 0) { _zag_println("PROTOCOL PARSER: ALL PASS"); return 0; }
+    _zag_println("PROTOCOL PARSER: FAILURES"); return 1;
+}

@@ -1,0 +1,28 @@
+@import("../src/export.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let sentinel: []u8 = "/tmp/triton_project_content_executed";
+    let cp: list.ArrayList[u8] = io_cpath(sentinel);
+    let _u: i64 = _zag_raw_syscall(87, cp.data as i64, 0, 0, 0, 0, 0);
+    list.free[u8](&cp);
+
+    let hostile: []u8 = "zpa 1\nc 1 0 0 0 0 0 1 0 1550000 0 |$(touch /tmp/triton_project_content_executed)\n";
+    _zag_write_file("/tmp/triton_hostile_content.zpa", hostile);
+    let s: *Scene = scene_new();
+    check("hostile text project loads as data", design_load(s, "/tmp/triton_hostile_content.zpa"), &failures);
+    check("hostile component name remains literal",
+        s.*.comps.len == 1 && _zag_strcmp(s.*.comps.data[0].name_,
+            "$(touch /tmp/triton_project_content_executed)") == 1, &failures);
+    let sim: *Sim = sim_new();
+    check("hostile text exports without execution", export_all(s, sim, "/tmp/triton_hostile_export"), &failures);
+    check("project content did not execute", _zag_file_exists(sentinel) == 0, &failures);
+
+    if (failures == 0) { _zag_println("SECURITY REGRESSION: ALL PASS"); return 0; }
+    _zag_println("SECURITY REGRESSION: FAILURES"); return 1;
+}

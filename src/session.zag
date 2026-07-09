@@ -267,7 +267,7 @@ fn session_open_default(a: *App) void {
 fn session_agent_view() void {
     let raw: []u8 = _zag_read_file(session_bus_path());
     if (raw.len <= 0) {
-        _zag_println("ERR no live.bus (start ./run.sh for GUI awareness)");
+        _zag_println("ERR E_LIVE_BUS no live.bus (start ./run.sh for GUI awareness)");
         return;
     }
     _zag_println("OK");

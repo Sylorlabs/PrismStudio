@@ -35,6 +35,12 @@ generated local MCP configuration grants `all` deliberately and identifies its
 actor; deployments should narrow that value. Requests and denials are appended
 to `.triton/audit.log` (or `TRITON_AUDIT`).
 
+Project mutations use `request <idempotency-key> <expected-revision> <command>`.
+`zagctl` creates this envelope automatically using the current revision; set
+`TRITON_IDEMPOTENCY` to a stable caller key when retrying. MCP clients use the
+advertised `triton_mutate` tool. Successful results include revision,
+idempotency key, affected ID, and undo token. Unkeyed mutations are rejected.
+
 Set `ZNC=/absolute/path/to/znc` to override the default
 `../zag/zag-poc/znc`. The current environment and exact compiler hash used for
 release evidence are recorded in `evidence/progress-ledger.md`.
@@ -78,3 +84,5 @@ evidence/             master-plan ledger and release evidence index
 
 The complete implementation and acceptance contract is in `masterplan.md`.
 Unchecked items are incomplete regardless of whether a narrower test passes.
+Project format, model evidence, agent/MCP contracts, and recovery behavior are
+documented in `docs/FORMATS_AUTOMATION_RECOVERY.md`.

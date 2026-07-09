@@ -49,6 +49,25 @@ fn sim_state_equal(a: *Sim, b: *Sim) bool {
     return true;
 }
 
+fn build_test_network(dx: i32, dz: i32) *Scene {
+    let s: *Scene = scene_new();
+    let p: i32 = scene_place(s, Kind.Plate, vox(dx, 0, dz), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(dx + 1, 1, dz + 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(dx + 4, 1, dz + 3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(dx + 7, 1, dz + 4), 0);
+    if (p > 0 && e > 0 && c > 0 && d > 0) {
+        let _r1: bool = flash_route(s, e, 0, c, 0);
+        let _r2: bool = flash_route(s, c, 3, d, 0);
+    }
+    return s;
+}
+
+fn run_steps(sim: *Sim, s: *Scene, count: i32) void {
+    sim_recompile(sim, s);
+    let i: i32 = 0;
+    while (i < count) { sim_step(sim, s); i = i + 1; }
+}
+
 fn main() i32 {
     let failures: i32 = 0;
     check("unknown glyph", _zag_strcmp(trit_glyph(signal_unknown()), "?") == 1, &failures);
@@ -113,6 +132,32 @@ fn main() i32 {
     let more: i32 = 0;
     while (more < 24) { sim_step(inc, ds); sim_step(full, fs); more = more + 1; }
     check("incremental/full remain equal after stepping", sim_state_equal(inc, full), &failures);
+
+    let trans_a: *Scene = build_test_network(0, 0);
+    let trans_b: *Scene = build_test_network(100, 100);
+    let trans_sa: *Sim = sim_new(); let trans_sb: *Sim = sim_new();
+    run_steps(trans_sa, trans_a, 32); run_steps(trans_sb, trans_b, 32);
+    check("translation preserves photonic simulation", sim_state_equal(trans_sa, trans_sb), &failures);
+
+    let eq_a: *Scene = build_test_network(0, 0);
+    let eq_b: *Scene = build_test_network(0, 0);
+    let alt_ok: bool = eq_b.*.guides.len > 0 && eq_b.*.guides.data[0].path.len == 3;
+    if (alt_ok) {
+        let g: *Guide = &eq_b.*.guides.data[0];
+        let st: Vox = g.*.path.data[0]; let en: Vox = g.*.path.data[2];
+        if (g.*.path.data[1].x == st.x) { g.*.path.data[1] = vox(en.x, st.y, st.z); }
+        else { g.*.path.data[1] = vox(st.x, st.y, en.z); }
+    }
+    let eq_sa: *Sim = sim_new(); let eq_sb: *Sim = sim_new();
+    run_steps(eq_sa, eq_a, 32); run_steps(eq_sb, eq_b, 32);
+    check("equivalent shortest routing preserves simulation",
+        alt_ok && scene_validation_errors(eq_b) == 0 && sim_state_equal(eq_sa, eq_sb), &failures);
+
+    check("metamorphic fixture saves", design_save(eq_a, "/tmp/triton_metamorphic.zpa"), &failures);
+    let ser: *Scene = scene_new();
+    let ser_ok: bool = design_load(ser, "/tmp/triton_metamorphic.zpa");
+    let ser_sim: *Sim = sim_new(); run_steps(ser_sim, ser, 32);
+    check("benign serialization preserves simulation", ser_ok && sim_state_equal(eq_sa, ser_sim), &failures);
 
     if (failures == 0) { _zag_println("SIMULATION PROPERTIES: ALL PASS"); return 0; }
     _zag_println("SIMULATION PROPERTIES: FAILURES"); return 1;
