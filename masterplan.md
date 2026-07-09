@@ -28,16 +28,23 @@ The plan is complete only when all of the following are true:
       `masterplan-evidence` gate.
 - [ ] All unit, integration, persistence, protocol, rendering, simulation, and
       end-to-end tests pass from a clean checkout.
-- [ ] The production binary builds with the supported self-hosted `./znc` path.
-- [ ] The graphical application is exercised in a real X11 session, not only by
-      headless tests or static screenshots.
-- [ ] A complete photonic computing unit is created through the same public
+- [x] The production binary builds with the supported self-hosted `./znc` path.
+      Evidence: `build-production`.
+- [x] The graphical application is exercised in a real X11 session, not only by
+      headless tests or static screenshots. Evidence: `x11-live` and
+      `x11-captures`.
+- [x] A complete photonic computing unit is created through the same public
       editing interfaces available to a user or agent, simulated, verified,
-      saved, reopened, and verified again.
+      saved, reopened, and verified again. Evidence: `flash-photonic` and
+      `docs/REPRODUCE_REFERENCE_PCU.md`.
 - [ ] Claims in the README and UI are generated from current evidence or clearly
       labeled as targets, estimates, examples, or unknowns.
-- [ ] CPU rendering remains a tested reference and fallback.
-- [ ] Experimental GPU execution remains opt-in until its reliability gates pass.
+- [x] CPU rendering remains a tested reference and fallback. Evidence:
+      `headless-render`, `x11-captures`, and GPU suites reported `not-run` in
+      safe mode.
+- [x] Experimental GPU execution remains opt-in until its reliability gates pass.
+      Evidence: `tools/verify.zag` safe mode reports GPU suites `not-run`; GPU
+      dispatch requires explicit GPU mode/environment.
 - [ ] No known blocker, skipped test, unexplained warning, placeholder, fake data,
       or undocumented hardcoded physical constant remains.
 
