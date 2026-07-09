@@ -354,7 +354,9 @@ The user and agent must be able to perform the same core project operations.
 - [x] Add capability negotiation and protocol versioning. Evidence: native
       `capabilities` reports protocol/grants/revision/limits and `mcp-protocol`
       verifies MCP `2024-11-05` initialization plus bounded framed calls.
-- [ ] Add complete examples that construct and verify the reference PCU.
+- [x] Add complete examples that construct and verify the reference PCU.
+      Evidence: `examples/agent_demo.tcmd`, `docs/REPRODUCE_REFERENCE_PCU.md`,
+      and `flash-photonic`.
 
 ### 8.3 Agent Verification
 
