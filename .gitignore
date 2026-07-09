@@ -14,6 +14,7 @@ probe/reference_tamper_test
 probe/security_regression_test
 probe/parser_corpus_test
 probe/protocol_parser_test
+probe/masterplan_evidence_test
 probe/gpu_test
 probe/gpu_submit_test
 probe/gpu_compute_test
