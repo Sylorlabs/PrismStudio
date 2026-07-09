@@ -439,7 +439,10 @@ The user and agent must be able to perform the same core project operations.
 - [x] Add deterministic frame capture and pixel-diff tooling. Evidence:
       `frame-diff` renders two fixed-state CPU frames, verifies zero pixel
       delta, mutates one pixel, and verifies the diff count detects it.
-- [ ] Add picking tests at viewport edges, occlusion boundaries, and high zoom.
+- [x] Add picking tests at viewport edges, occlusion boundaries, and high zoom.
+      Evidence: `picking` gate proves nearer-wins occlusion, empty/safe viewport
+      corners and boundary pixel, and center picks under high zoom in both
+      perspective and orthographic modes.
 
 ### 9.3 Real UI Testing
 

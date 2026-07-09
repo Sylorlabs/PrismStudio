@@ -41,3 +41,4 @@ probe/shortcuts_test
 probe/boxselect_test
 probe/ortho_test
 probe/copypaste_test
+probe/picking_test

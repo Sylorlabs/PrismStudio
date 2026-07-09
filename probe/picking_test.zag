@@ -1,0 +1,62 @@
+// picking_test.zag — 3D pick correctness at occlusion boundaries, high zoom, and
+// viewport edges (Masterplan Section 9.2 / Phase F).
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn comp_center(a: *App, id: i32) Vec3 {
+    let ci: i32 = scene_comp_index(a.*.scene, id);
+    let c: Comp = a.*.scene.*.comps.data[ci];
+    let e: Vox = comp_ext(c);
+    return v3((c.origin.x as f64) + (e.x as f64) * 0.5,
+              (c.origin.y as f64) + (e.y as f64) * 0.5,
+              (c.origin.z as f64) + (e.z as f64) * 0.5);
+}
+
+fn pick_at_center(a: *App, vp: Rect, id: i32) i32 {
+    let sp: P3 = vp_proj(a.*.cam, vp, comp_center(a, id));
+    if (!sp.ok) { return 0 - 2; }
+    return vp_pick_comp(a.*.scene, a.*.cam, vp, sp.x as i32, sp.y as i32);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let a: *App = app_new(1024, 640);
+    let plate: i32 = scene_place(a.*.scene, Kind.Plate, vox(0, 0, 0), 0);
+    let cham: i32 = scene_place(a.*.scene, Kind.Chamber, vox(3, 1, 3), 0);
+    let _em: i32 = scene_place(a.*.scene, Kind.Emitter, vox(6, 1, 6), 0);
+    app_frame_all(a);
+    app_frame(a, 0.016);   // cam_update
+    let vp: Rect = zone_center(a);
+
+    // Occlusion: the chamber sits on the plate, so picking at the chamber's
+    // projected center must return the chamber (nearer), not the plate behind it.
+    check("occlusion: nearer component wins the pick", pick_at_center(a, vp, cham) == cham, &failures);
+
+    // Viewport-edge robustness: the four corners are empty after framing.
+    check("edge: top-left corner picks nothing",
+        vp_pick_comp(a.*.scene, a.*.cam, vp, vp.x + 1, vp.y + 1) < 0, &failures);
+    check("edge: bottom-right corner picks nothing",
+        vp_pick_comp(a.*.scene, a.*.cam, vp, vp.x + vp.w - 2, vp.y + vp.h - 2) < 0, &failures);
+    check("edge: exact boundary pixel is safe",
+        vp_pick_comp(a.*.scene, a.*.cam, vp, vp.x, vp.y) < 0, &failures);
+
+    // High zoom: pull the camera in close; center picks must still resolve.
+    a.*.cam.target = comp_center(a, cham);
+    a.*.cam.dist = 5.0;
+    app_frame(a, 0.016);   // cam_update with the new distance
+    check("high zoom: chamber still picks at its center", pick_at_center(a, vp, cham) == cham, &failures);
+
+    // Orthographic picking at high zoom stays consistent too.
+    a.*.cam.ortho = true;
+    app_frame(a, 0.016);
+    check("high zoom + orthographic: chamber still picks", pick_at_center(a, vp, cham) == cham, &failures);
+
+    if (failures == 0) { _zag_println("PICKING: ALL PASS"); return 0; }
+    _zag_println("PICKING: FAILURES"); return 1;
+}
