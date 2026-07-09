@@ -8,6 +8,7 @@ probe/saveload_test
 probe/hm_dbg
 probe/move_dbg
 probe/x11_pixel_pack_test
+probe/fb_bounds_test
 probe/ui_prefs_test
 probe/ui_tokens_test
 probe/simulation_property_test

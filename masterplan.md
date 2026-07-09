@@ -453,7 +453,9 @@ The user and agent must be able to perform the same core project operations.
       tie-breaking behavior.
 - [ ] Add golden scenes for every primitive and UI layer.
 - [ ] Add randomized scene tests with deterministic seeds.
-- [ ] Verify bounds and canaries around framebuffer operations.
+- [x] Verify bounds and canaries around framebuffer operations. Evidence:
+      `fb-bounds` covers clipped point, fill, blend, line, and text operations
+      preserving sentinel pixels outside the active clip.
 - [ ] Benchmark scene update, rasterization, UI/text, blit, and present separately.
 - [ ] Keep benchmark claims in generated reports with hardware/software metadata.
 - [ ] Preserve the CPU renderer as permanent fallback and differential oracle.

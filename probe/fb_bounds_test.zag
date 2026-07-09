@@ -1,0 +1,57 @@
+@import("../src/fb.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn px(f: *FB, x: i32, y: i32) i64 {
+    return f.*.px.data[y * f.*.w + x];
+}
+
+fn set_all(f: *FB, c: i64) void {
+    fb_clip_reset(f);
+    fill_rect(f, 0, 0, f.*.w, f.*.h, c);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let canary: i64 = rgb(17, 19, 23);
+    let mark: i64 = rgb(220, 30, 40);
+    let f: FB = fb_new(16, 16);
+    set_all(&f, canary);
+    fb_clip(&f, 4, 4, 12, 12);
+
+    px_set(&f, 0 - 1, 8, mark);
+    px_set(&f, 8, 0 - 1, mark);
+    px_set(&f, 16, 8, mark);
+    px_set(&f, 8, 16, mark);
+    fill_rect(&f, 0 - 20, 0 - 20, 8, 8, mark);
+    blend_rect(&f, 12, 12, 20, 20, mark, 128);
+    draw_text(&f, 0 - 40, 0 - 40, "offscreen", mark);
+    check("out-of-clip point and primitive writes keep corner canaries",
+        px(&f, 0, 0) == canary && px(&f, 15, 0) == canary &&
+        px(&f, 0, 15) == canary && px(&f, 15, 15) == canary, &failures);
+
+    fill_rect(&f, 2, 2, 8, 8, mark);
+    check("clipped fill writes inside active clip", px(&f, 4, 4) == mark && px(&f, 9, 9) == mark, &failures);
+    check("clipped fill preserves outside active clip",
+        px(&f, 3, 4) == canary && px(&f, 4, 3) == canary &&
+        px(&f, 12, 9) == canary && px(&f, 9, 12) == canary, &failures);
+
+    set_all(&f, canary);
+    fb_clip(&f, 4, 4, 12, 12);
+    line2d(&f, 0 - 8, 8, 24, 8, mark);
+    check("clipped line touches only clipped span",
+        px(&f, 4, 8) == mark && px(&f, 11, 8) == mark &&
+        px(&f, 3, 8) == canary && px(&f, 12, 8) == canary, &failures);
+
+    set_all(&f, canary);
+    fb_clip(&f, 4, 4, 12, 12);
+    draw_text(&f, 2, 5, "A", mark);
+    check("clipped text preserves left canary and draws visible glyph",
+        px(&f, 3, 5) == canary && px(&f, 4, 5) != canary, &failures);
+
+    if (failures == 0) { _zag_println("FB BOUNDS: ALL PASS"); return 0; }
+    _zag_println("FB BOUNDS: FAILURES"); return 1;
+}
