@@ -32,6 +32,7 @@ is the only GPU and drives the display.
 | G.deterministic-exports | pass | `examples/flash_photonic_massive.{bom,netlist,models,report}.txt`; `flash-photonic` | Regenerated project and all four exports compare byte-for-byte with maintained artifacts | Add render pixel-diff gate |
 | G.atomic-save | pass | `atomic_write_file`; engine failure injection | temp write, file fsync, close, rename; failed rename retained destination and removed temp | Add parent-directory fsync and crash-stage matrix |
 | G.corruption | pass | project v2 checksum; `corrupt project checksum rejected` | Modified project byte rejected before scene mutation | Add recovery journal UX |
+| G.project-version-roundtrip | pass | `engine`; `zpa 1` legacy fixture; `zpa 2` save/load | Current v2 round-trips deterministically; legacy v1 loads, migrates to v2, reloads, and preserves IDs | Add future-version migration fixtures when schemas change |
 | E.capability-default | pass | `src/capability.zag`; `agent-capability-denial` | default read/inspect/simulate; unauthorized placement leaves project hash unchanged | Add scoped/expiring grants |
 | E.path-confinement | pass | `TRITON_PROJECT_ROOT`; `agent-path-confinement` | Outside-root and lexical parent traversal writes rejected with stable error; no file created | Add symlink-safe descriptor-relative access |
 | E.revision-precondition | pass | `TRITON_EXPECT_REV`; `agent-revision-conflict` | Stale client leaves project bytes/revision unchanged; refresh then succeeds | Add atomic cross-process commit lock |

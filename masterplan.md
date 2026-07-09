@@ -443,7 +443,9 @@ The user and agent must be able to perform the same core project operations.
 - [x] Export human-readable design summaries and machine-readable netlists.
       Evidence: maintained BOM, netlist, models, and report artifacts.
 - [ ] Ensure diagnostic bundles exclude sensitive scene contents by default.
-- [ ] Add round-trip tests for every supported project version.
+- [x] Add round-trip tests for every supported project version. Evidence:
+      `engine` covers current `zpa 2` save/load and legacy `zpa 1` load,
+      migration to v2, hash-backed reload, and identity preservation.
 
 ## 11. Phase H — CPU Renderer as Reference
 

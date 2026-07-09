@@ -255,6 +255,21 @@ fn main() i32 {
     check("roundtrip: physical model values preserved",
         s2.*.model.pitch_nm.value == s.*.model.pitch_nm.value &&
         s2.*.model.emitter_rate_ghz.value == s.*.model.emitter_rate_ghz.value, &fails);
+    _zag_write_file("/tmp/triton_legacy_v1.zpa",
+        "zpa 1\nc 1 0 120 0 0 0 1 0 1550000 0 |legacy-plate\nc 2 1 121 1 2 0 1 0 1550000 0 |legacy-emitter\n");
+    let legacy: *Scene = scene_new();
+    check("roundtrip: legacy zpa1 loads", design_load(legacy, "/tmp/triton_legacy_v1.zpa"), &fails);
+    check("roundtrip: legacy zpa1 component identity",
+        legacy.*.comps.len == 2 && scene_comp_index(legacy, 1) >= 0 && scene_comp_index(legacy, 2) >= 0, &fails);
+    check("roundtrip: legacy zpa1 migrates to v2", design_save(legacy, "/tmp/triton_legacy_v1_migrated.zpa"), &fails);
+    let migrated_raw: []u8 = _zag_read_file("/tmp/triton_legacy_v1_migrated.zpa");
+    check("roundtrip: migrated project has v2 header",
+        migrated_raw.len > 5 && _zag_strcmp(migrated_raw[0..5], "zpa 2") == 1, &fails);
+    let migrated: *Scene = scene_new();
+    check("roundtrip: migrated v2 reloads", design_load(migrated, "/tmp/triton_legacy_v1_migrated.zpa"), &fails);
+    check("roundtrip: migrated identity preserved",
+        migrated.*.comps.len == legacy.*.comps.len && scene_comp_index(migrated, 1) >= 0 &&
+        scene_comp_index(migrated, 2) >= 0, &fails);
     let logic_ci: i32 = scene_comp_index(s, ch);
     s.*.comps.data[logic_ci].logic_op = 5;
     check("save Flash chamber operation", design_save(s, "/tmp/triton_engine_logic.zpa"), &fails);
