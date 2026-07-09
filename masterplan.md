@@ -321,7 +321,10 @@ The user and agent must be able to perform the same core project operations.
       `src/capability.zag` and `agent-negotiation`.
 - [x] Default to read/inspect/simulate; require an explicit grant for mutation.
       Evidence: `src/capability.zag`, `agent-capability-denial`.
-- [ ] Scope grants to project, session, operation class, path, and expiration.
+- [x] Scope grants to project, session, operation class, path, and expiration.
+      Evidence: `agent-scoped-grants` proves `TRITON_GRANT` project/session/
+      operation/path/expiration constraints deny mismatches while allowing a
+      matching scoped save.
 - [ ] Make high-impact actions previewable and ask-before-write by default.
 - [ ] Support user-configurable always-allow and deny rules without bypassing
       hard safety limits.

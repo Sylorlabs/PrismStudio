@@ -34,6 +34,7 @@ is the only GPU and drives the display.
 | G.corruption | pass | project v2 checksum; `corrupt project checksum rejected` | Modified project byte rejected before scene mutation | Add recovery journal UX |
 | G.project-version-roundtrip | pass | `engine`; `zpa 1` legacy fixture; `zpa 2` save/load | Current v2 round-trips deterministically; legacy v1 loads, migrates to v2, reloads, and preserves IDs | Add future-version migration fixtures when schemas change |
 | E.capability-default | pass | `src/capability.zag`; `agent-capability-denial` | default read/inspect/simulate; unauthorized placement leaves project hash unchanged | Add scoped/expiring grants |
+| E.scoped-grants | pass | `TRITON_GRANT`; `agent-scoped-grants` | Optional grant narrowing enforces project, session, operation class, path prefix, and monotonic expiration while preserving coarse `TRITON_CAPS` | Add persisted user-facing grant editor |
 | E.path-confinement | pass | `TRITON_PROJECT_ROOT`; `agent-path-confinement` | Outside-root and lexical parent traversal writes rejected with stable error; no file created | Add symlink-safe descriptor-relative access |
 | E.revision-precondition | pass | `TRITON_EXPECT_REV`; `agent-revision-conflict` | Stale client leaves project bytes/revision unchanged; refresh then succeeds | Add atomic cross-process commit lock |
 | E.idempotency | pass | mandatory CLI `request`; MCP `triton_mutate`; persistent `.idem` | Unkeyed mutation rejected; first result carries transaction metadata; replay is byte/revision inert | Add atomic cross-process key reservation |

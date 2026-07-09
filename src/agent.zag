@@ -187,6 +187,7 @@ fn agent_help() void {
     _zag_println("export <prefix>  (writes BOM, netlist, models, report)");
     _zag_println("trace <out.trace> <steps>  (deterministic engine trace)");
     _zag_println("test engine | test smoke | build");
+    _zag_println("TRITON_GRANT may narrow grants: project= session= ops= path= expires_after_ms=");
     _zag_println("kinds: plate chamber soh emitter detector");
     agent_dot();
 }
@@ -201,6 +202,8 @@ fn agent_capabilities(a: *App) void {
     _zag_print("max_request_bytes "); _zag_println(_zag_i64_to_str(limit_agent_request_bytes() as i64));
     if (_zag_getenv("TRITON_PROJECT_ROOT").len > 0) { _zag_println("project_root_scope enabled"); }
     else { _zag_println("project_root_scope disabled"); }
+    if (_zag_getenv("TRITON_GRANT").len > 0) { _zag_println("scoped_grant enabled"); }
+    else { _zag_println("scoped_grant disabled"); }
     agent_dot();
 }
 
@@ -242,6 +245,123 @@ fn agent_is_mutation(line: []u8, toks: *list.ArrayList[Tok]) bool {
         tok_eq(line, verb, "save") || tok_eq(line, verb, "open")) { return true; }
     return tok_eq(line, verb, "flash") && toks.*.len >= 2 &&
         tok_eq(line, list.get[Tok](toks, 1), "import");
+}
+
+fn agent_starts_with(s: []u8, prefix: []u8) bool {
+    if (s.len < prefix.len) { return false; }
+    let i: i32 = 0;
+    while (i < prefix.len) {
+        if (s[i] != prefix[i]) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn agent_field_value(raw: []u8, key: []u8) []u8 {
+    let i: i32 = 0;
+    while (i < raw.len) {
+        while (i < raw.len && (raw[i] as i32) == 32) { i = i + 1; }
+        let st: i32 = i;
+        while (i < raw.len && (raw[i] as i32) != 32) { i = i + 1; }
+        let end: i32 = i;
+        if (end > st + key.len && raw[st + key.len] == 61) {
+            let same: bool = true;
+            let k: i32 = 0;
+            while (k < key.len) {
+                if (raw[st + k] != key[k]) { same = false; }
+                k = k + 1;
+            }
+            if (same) { return raw[st + key.len + 1..end]; }
+        }
+    }
+    return "";
+}
+
+fn agent_class_for_required(required: i64) []u8 {
+    if (required == cap_read()) { return "read"; }
+    if (required == cap_inspect()) { return "inspect"; }
+    if (required == cap_simulate()) { return "simulate"; }
+    if (required == cap_edit()) { return "edit"; }
+    if (required == cap_save()) { return "save"; }
+    if (required == cap_export()) { return "export"; }
+    if (required == cap_execute()) { return "execute-local"; }
+    if (required == cap_admin()) { return "admin"; }
+    return "unknown";
+}
+
+fn agent_list_contains_csv(raw: []u8, item: []u8) bool {
+    let i: i32 = 0;
+    while (i <= raw.len) {
+        let st: i32 = i;
+        while (i < raw.len && raw[i] != 44) { i = i + 1; }
+        if (i - st == item.len) {
+            let same: bool = true;
+            let k: i32 = 0;
+            while (k < item.len) {
+                if (raw[st + k] != item[k]) { same = false; }
+                k = k + 1;
+            }
+            if (same) { return true; }
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn agent_request_path(line: []u8, toks: *list.ArrayList[Tok]) []u8 {
+    if (toks.*.len == 0) { return ""; }
+    let verb: Tok = list.get[Tok](toks, 0);
+    if ((tok_eq(line, verb, "save") || tok_eq(line, verb, "open") ||
+        tok_eq(line, verb, "render") || tok_eq(line, verb, "export") ||
+        tok_eq(line, verb, "trace")) && toks.*.len >= 2) {
+        return tok_slice(line, list.get[Tok](toks, 1));
+    }
+    if (tok_eq(line, verb, "flash") && toks.*.len >= 3 &&
+        tok_eq(line, list.get[Tok](toks, 1), "import")) {
+        return tok_slice(line, list.get[Tok](toks, 2));
+    }
+    return "";
+}
+
+fn agent_path_under_scope(path: []u8, scope: []u8) bool {
+    if (scope.len == 0) { return true; }
+    if (path.len < scope.len) { return false; }
+    if (!agent_starts_with(path, scope)) { return false; }
+    return path.len == scope.len || scope[scope.len - 1] == 47 || path[scope.len] == 47;
+}
+
+fn agent_scoped_grant_allowed(line: []u8, toks: *list.ArrayList[Tok], required: i64) bool {
+    let raw: []u8 = _zag_getenv("TRITON_GRANT");
+    if (raw.len == 0) { return true; }
+    let project: []u8 = agent_field_value(raw, "project");
+    if (project.len > 0 && _zag_strcmp(project, _zag_getenv("TRITON_PROJECT_ROOT")) != 1) {
+        agent_err("E_GRANT_SCOPE project mismatch");
+        return false;
+    }
+    let session: []u8 = agent_field_value(raw, "session");
+    if (session.len > 0 && _zag_strcmp(session, session_zpa_path()) != 1) {
+        agent_err("E_GRANT_SCOPE session mismatch");
+        return false;
+    }
+    let ops: []u8 = agent_field_value(raw, "ops");
+    if (ops.len > 0 && !agent_list_contains_csv(ops, agent_class_for_required(required))) {
+        agent_err("E_GRANT_SCOPE operation denied");
+        return false;
+    }
+    let scope_path: []u8 = agent_field_value(raw, "path");
+    if (scope_path.len > 0) {
+        let p: []u8 = agent_request_path(line, toks);
+        if (p.len == 0 || !agent_path_under_scope(p, scope_path)) {
+            agent_err("E_GRANT_SCOPE path denied");
+            return false;
+        }
+    }
+    let expires: []u8 = agent_field_value(raw, "expires_after_ms");
+    if (expires.len > 0 && _zag_str_to_i64(expires) <= _zag_clock_monotonic_ms()) {
+        agent_err("E_GRANT_SCOPE expired");
+        return false;
+    }
+    return true;
 }
 
 fn agent_revision_precondition(a: *App) bool {
@@ -682,6 +802,10 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     if (!cap_allowed(required)) {
         audit_append("denied", line, required);
         agent_err("E_CAP_DENIED explicit capability grant required");
+        return;
+    }
+    if (!agent_scoped_grant_allowed(line, toks, required)) {
+        audit_append("grant-denied", line, required);
         return;
     }
     if (agent_is_mutation(line, toks)) {
