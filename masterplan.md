@@ -533,7 +533,8 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
       `flash-photonic`/`deterministic-trace` suites.
 - [x] Remove stale probe-era and marketing language. Evidence:
       `stale-language-audit` and `unsupported-claim-audit` gates.
-- [ ] Add release notes tied to verified behavior, not commit count.
+- [x] Add release notes tied to verified behavior, not commit count. Evidence:
+      `docs/RELEASE_NOTES.md`, safe-gate suite names, and explicit non-claims.
 
 ## 16. Final End-to-End Release Gate
 
