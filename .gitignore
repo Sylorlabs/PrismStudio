@@ -19,6 +19,9 @@ probe/protocol_parser_test
 probe/masterplan_evidence_test
 probe/frame_overlay_test
 probe/frame_diff_test
+probe/optimizer_test
+probe/opt_ui_test
+probe/opt_ui_shot
 probe/gpu_test
 probe/gpu_submit_test
 probe/gpu_compute_test

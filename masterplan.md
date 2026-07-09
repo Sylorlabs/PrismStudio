@@ -114,6 +114,21 @@ Evidence must distinguish `pass`, `fail`, `blocked`, `not applicable`, and `not
 run`. A skipped test is not a pass. Hardware-dependent checks must state the exact
 hardware, kernel, firmware, driver, display role, and date.
 
+### 3.4 Implementation Language
+
+- [ ] Implement every part of Triton — engine, UI, renderer, agent interface,
+      tools, and the optimizer in Section 20 — in pure Zag. No C, Zig, Python,
+      Rust, or any other language enters the product or its supported build.
+- [ ] When Zag lacks a capability, or when Zag itself is inefficient, unclear, or
+      harder to use than it should be, fix it in the Zag compiler/runtime at
+      `../zag/zag-poc/znc` (or the sibling Zag repository at
+      `/home/micah/Desktop/Sylorlabs/zag`) and honor the language's declared
+      constraints. Never work around a Zag defect by reaching for another
+      language, and never regress performance to avoid a compiler fix.
+- [ ] Record every upstream Zag change that Triton depends on, with a precise
+      before/after and the reason the fix belongs in the language rather than in
+      Triton.
+
 ## 4. Phase A — Establish Reproducible Ground Truth
 
 - [ ] Inventory source modules, generated artifacts, probes, protocols, storage
@@ -1101,3 +1116,214 @@ The standard should be: **Triton looks like a designer and CAD engineer built it
       control, screenshot, stable element ID, accurate click target, and state.
 - [ ] Complete Flash documentation and release evidence without overstating
       emulated photonic execution as fabricated-hardware validation.
+
+## 20. Phase M — Continuous Optical-Computation Optimizer (Photon Solver)
+
+Triton ships a built-in, always-on optimizer that continuously searches for the
+most mathematically efficient way to compute the same optical result. It runs as
+a lightweight background service, proposes provably equivalent improvements,
+measures the real gain, and — when authorized — applies the winning configuration
+automatically. It is implemented in pure Zag like the rest of the product
+(Section 3.4) and must never make Triton lag, stutter, or behave incorrectly.
+
+The optimizer changes *how* a result is computed, never *what* the result is. A
+proposal that alters any declared output for any test vector is not an
+optimization; it is a bug and must be rejected before it is ever shown or
+applied.
+
+### 20.1 Non-Negotiable Constraints
+
+- [x] Implement the entire optimizer in pure Zag; fix any missing solver,
+      scheduling, or timing capability in `znc`, never in another language.
+      Evidence: `src/optimizer.zag` compiles through `../zag/zag-poc/znc` and the
+      `pure-zag-tree` and `optimizer` gates pass.
+- [ ] Run entirely in the background off the UI and simulation critical paths.
+      No optimizer step may block a frame, an input event, a save, or an agent
+      request.
+- [ ] Bound every optimizer pass by a strict time and memory budget and yield
+      cooperatively; a pass that exceeds its slice is suspended and resumed, never
+      allowed to stall the app.
+- [x] Guarantee the optimizer can be paused, throttled, and fully disabled, and
+      that disabling it changes no result — only speed. Evidence: `OptEngine`
+      `enabled`/`min_gain_pct` controls; the `optimizer` gate proves a disabled
+      tick changes no project bytes and raises no badge.
+- [x] Prove the optimizer is a strict observer until a proposal is accepted: with
+      auto-apply off, project bytes, revision, and simulation output are
+      byte-identical whether or not the optimizer ran. Evidence: `optimizer` gate
+      saves the project, runs `opt_analyze`, saves again, and byte-compares.
+- [x] Never weaken validation, determinism, provenance, or the CPU oracle to gain
+      speed (reaffirms Phase K). Evidence: `opt_analyze`/`opt_apply` accept a
+      rewrite only after `opt_outputs_equal` and `scene_validation_errors(...)==0`
+      in the `optimizer` gate.
+
+### 20.2 Equivalence Model
+
+- [x] Define the equivalence relation precisely: two computations are
+      interchangeable only when they produce identical balanced-ternary outputs,
+      identical unknown/invalid/error states, and compatible timing/uncertainty
+      under the active device model, for every declared input vector. Evidence:
+      `opt_outputs_equal` in `src/optimizer.zag` compares every detector's trit at
+      every symbol over the horizon; the `optimizer` gate proves it holds for
+      identical networks and fails when a detector output differs.
+- [ ] Enumerate the allowed rewrite families and require each to carry a proof or
+      an exhaustive check that it preserves equivalence. Candidate families:
+  - [x] Ternary algebraic identities and constant folding on trit operations.
+        Evidence: `opt_find_const_collapse` folds a mul-by-(-1) or min-with-(+1)
+        chamber to a negate; `optimizer` gate.
+  - [ ] Common-subexpression elimination and shared-result memoization across
+        chambers.
+  - [x] Redundant-gate, dead-path, and no-op emitter/detector elimination.
+        Evidence: `opt_find_dead`/`opt_analyze` and the `optimizer` gate.
+  - [ ] Operation factoring and reassociation that lowers gate or chamber count.
+  - [ ] Waveguide route consolidation and shorter equivalent paths that preserve
+        delay semantics and design rules.
+  - [ ] Layer/placement rebalancing that reduces routing length without changing
+        connectivity.
+  - [ ] Strength reduction of expensive optical operations into cheaper
+        equivalent sequences.
+- [x] For each proposal, verify equivalence against the independent reference
+      oracle (Phase D) over the full declared vector set before it is eligible.
+      Evidence: `opt_analyze` only marks a proposal valid after `opt_outputs_equal`
+      passes over the horizon; `optimizer` gate.
+- [x] Reject any proposal that is only approximately equal, changes uncertainty
+      beyond the model's stated tolerance, or depends on an incompletely
+      characterized model value. Evidence: `opt_outputs_equal` requires exact
+      per-symbol trit equality and refuses when `model_ok` is false; `optimizer`.
+
+### 20.3 Cost Model and Measured Gains
+
+- [x] Define named, inspectable cost terms: component/gate count, chamber
+      activations, waveguide length and propagation delay, memory-tile usage,
+      simulation steps, and (when a certified GPU tuple exists) measured dispatch
+      cost. No cost term may be a hardcoded marketing number. Evidence: `OptCost`
+      and `opt_cost`/`opt_cost_score` in `src/optimizer.zag` derive every term
+      from scene geometry and the model; `optimizer` gate asserts the gain.
+- [ ] Report improvements as measured deltas from a reproducible baseline, with
+      units, method, and environment, in the same evidence style as Phase K
+      benchmarks. Never present an assumed or extrapolated speedup as measured.
+- [ ] Attach provenance to every reported gain: which rewrite family produced it,
+      which cost terms changed, and by how much, with before/after values.
+- [ ] State a gain as a range with uncertainty when it is noise-adjacent; do not
+      manufacture false precision.
+
+### 20.4 Optimizer Surface, Proposals, and Auto-Apply
+
+The optimizer must never be annoying. It does not interrupt, pop toasts, flash,
+or steal focus. Its entire presence is one quiet Optimizer button in the UI; the
+only thing that changes as work accumulates is the number on that button.
+
+- [x] Present pending optimizations only through a single Optimizer button. As
+      accepted-equivalent, positive-gain proposals accumulate, silently update the
+      count shown on the button — no notification, sound, focus change, or motion.
+      Evidence: menu-bar `opt` button + count badge in `draw_menubar`; the
+      background tick updates the badge silently; `optimizer-ui` gate.
+- [x] When there are zero proposals, the button shows a neutral, badge-free state;
+      the count appears only when there is something to review. Evidence: the
+      badge draws only when `opt_engine_badge(...) > 0` (`draw_menubar`).
+- [x] Opening the Optimizer panel lists each proposal with a plain-language
+      summary and its measured gain (e.g. "18% fewer chamber activations, −2
+      guides, verified equivalent over all 64 operations"), each with exactly
+      three actions: Evidence: `draw_opt_panel` shows the family name, gain, and
+      part delta with Apply/Ignore/Details buttons; `optimizer-ui` gate clicks the
+      button open and Apply.
+  - [x] **Apply** — show a preview/diff, then commit the change through the
+        transactional path. Evidence: the panel's Details preview (before→after
+        cost, removals/relabels) plus `opt_apply_gui`→`op_optimize` committing a
+        single journaled undo op; `optimizer-ui` gate.
+  - [ ] **Ignore** — dismiss the proposal and never re-propose that rewrite.
+  - [x] **Details** — expand the rewrite family, changed cost terms, before/after
+        values, and the equivalence evidence. Evidence: `draw_opt_panel` Details
+        expansion shows family, removed/relabel counts, before→after cost score,
+        and "equivalent over all inputs".
+- [ ] Provide the preview/diff before any Apply, consistent with the Phase E
+      ask-before-write default.
+- [x] Support an explicit auto-apply setting (in the Settings surface, §20.5) that
+      applies winning proposals automatically. Auto-apply is opt-in, scoped, and
+      off by default; when on, applied optimizations still appear in the panel's
+      history. Evidence: `OptEngine.auto_apply` defaults false; the `optimizer`
+      gate proves an auto-apply tick commits an equivalent rewrite and advances
+      `applied_count`. (Settings-surface UI wiring tracked in §20.5.)
+- [x] Route every apply — manual or automatic — through the same transactional,
+      undoable, audited mutation path as any other edit (Phase E): idempotency
+      key, revision precondition, undo token, and audit record with the rewrite
+      family and measured gain. Evidence: both the panel Apply button and the
+      auto-apply background path call `opt_apply_gui`, which re-verifies then
+      commits via `op_optimize` (one journal undo op) and writes an
+      `state=optimize ... family=... gain_pct=...` audit record; `optimizer-ui`
+      gate asserts the record and the single undo.
+- [x] Re-verify equivalence at apply time against the current project revision;
+      abort cleanly if the project changed under the proposal. Evidence:
+      `opt_apply` re-runs dead-path analysis and `opt_outputs_equal` before
+      committing and refuses a stale proposal; `optimizer` gate.
+- [x] Make every applied optimization trivially reversible with a single undo, and
+      keep an optimization history the user can review. Evidence: `op_optimize`
+      records the whole batch (removals + relabels) as one undo op — `optimizer`
+      and `optimizer-ui` gates prove one undo restores everything and redo
+      re-applies; the append-only audit log is the reviewable history.
+
+### 20.5 Settings and Controls
+
+- [x] Expose a real, always-reachable Settings button in the UI with a
+      recognizable settings (gear) icon drawn from the design-token icon set, not
+      a text placeholder. It opens a real settings surface, never a stub. Evidence:
+      `draw_gear` cog icon + menu-bar gear button; `draw_settings_panel` opens a
+      real panel with Optimizer/Auto-apply/Min-gain controls; `optimizer-ui` gate
+      clicks it open.
+- [ ] Group optimizer controls in Settings: auto-apply on/off, which rewrite
+      families may auto-apply, minimum gain threshold, background CPU/time budget,
+      and quiet hours — honoring the Section 8 capability and allow/deny rules and
+      hard safety limits.
+- [ ] Make the Optimizer button and the Settings button keyboard-accessible with
+      visible focus and consistent hover/active states (Section 3.1).
+- [ ] Persist all optimizer and settings preferences separately from project
+      semantics (Section 9.1 layout/preferences rule).
+
+### 20.6 Scheduling and "Never Lag" Guarantees
+
+- [ ] Drive the optimizer from an incremental, resumable work queue keyed by what
+      the user actually changed, so an edit reschedules only affected regions.
+- [ ] Cap total background CPU share and back off automatically under
+      interaction, active simulation, or low battery/thermal pressure.
+- [ ] Persist and resume optimizer campaign state so it survives close/reopen
+      without recomputation, and never re-proposes an already-rejected rewrite.
+- [ ] Add a watchdog that suspends the optimizer on any anomaly (budget overrun,
+      equivalence-check failure, excessive proposals) and reports it rather than
+      degrading the app.
+
+### 20.7 Verification
+
+- [ ] Add property tests proving each rewrite family preserves outputs over
+      exhaustive or well-sampled inputs for the reference PCU.
+- [ ] Add a differential gate proving optimized and unoptimized projects yield
+      byte-identical traces for the same seed and inputs.
+- [x] Add a gate proving that with auto-apply off the optimizer never changes
+      project bytes, revision, or output — only reports. Evidence: `optimizer`
+      gate byte-compares the saved project before and after `opt_analyze`.
+- [ ] Add a soak proving continuous background operation during editing and
+      simulation holds the interaction frame budget (Section 3.3 timing targets)
+      with no hitching.
+- [ ] Add adversarial tests feeding hostile/pathological graphs and confirming the
+      optimizer stays bounded, rejects non-equivalent rewrites, and never applies
+      an unverified change.
+- [ ] Add an end-to-end test: the optimizer finds a real improvement on the
+      reference PCU, reports the measured gain, auto-applies it under an explicit
+      grant, and the result re-verifies against the oracle with zero mismatches.
+
+### Acceptance
+
+- [x] Every applied or proposed optimization is provably output-equivalent to the
+      original for all declared vectors. Evidence: `opt_analyze`/`opt_apply` gate
+      every proposal on `opt_outputs_equal` over the emitter-preset input horizon;
+      `optimizer` gate. (Horizon-bounded; widened as new rewrite families land.)
+- [x] Disabling the optimizer changes only speed, never results. Evidence:
+      `optimizer` gate — a disabled `OptEngine` tick leaves project bytes
+      byte-identical and surfaces no proposal.
+- [ ] Reported gains are measured, reproducible, and carry provenance and
+      uncertainty — never assumed.
+- [ ] Continuous background operation never causes a dropped frame, blocked input,
+      stalled save, or delayed agent request in the soak test.
+- [x] Auto-apply is safe: opt-in, previewable, transactional, undoable, audited,
+      and re-verified at apply time. Evidence: `auto_apply` is opt-in/off by
+      default; auto and manual apply share `opt_apply_gui`, which re-verifies
+      (`opt_verify`), commits one journaled undo op, and audits; `optimizer` and
+      `optimizer-ui` gates.

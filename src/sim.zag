@@ -173,6 +173,25 @@ fn sim_new() *Sim {
     });
 }
 
+// Release a sim and every ring/history buffer it owns. Mirrors the teardown at
+// the top of sim_recompile; the pointer must not be used afterwards.
+fn sim_free(sim: *Sim) void {
+    let i: i32 = 0;
+    while (i < sim.*.nodes.len) {
+        list.free[i32](&sim.*.nodes.data[i].hist);
+        i = i + 1;
+    }
+    let gi: i32 = 0;
+    while (gi < sim.*.sguides.len) {
+        list.free[i32](&sim.*.sguides.data[gi].ring);
+        gi = gi + 1;
+    }
+    list.free[SNode](&sim.*.nodes);
+    list.free[SGuide](&sim.*.sguides);
+    hm.int_free[i32](&sim.*.nidx);
+    _zag_free(sim as *i8);
+}
+
 // Symbol period of the current fabric (ps); 0 when no active parts exist.
 fn sim_period_ps(sim: *Sim) f64 {
     if (sim.*.clock_ghz <= 0.0) { return 0.0; }

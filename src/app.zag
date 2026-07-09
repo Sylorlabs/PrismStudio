@@ -16,6 +16,7 @@
 @import("viewport.zag")
 @import("tiles.zag")
 @import("editops.zag")
+@import("optimizer.zag")
 
 // tools
 fn tool_select() i32 { return 0; }
@@ -101,6 +102,10 @@ struct App {
     pmx: i32,
     pmy: i32,
     tile_cache: TileCache,
+    opt: *OptEngine,        // background optical-computation optimizer (Section 20)
+    opt_open: bool,         // Optimizer proposal panel open
+    opt_details: bool,      // proposal details expanded
+    settings_open: bool,    // Settings panel open
 }
 
 fn app_new(w: i32, h: i32) *App {
@@ -161,6 +166,10 @@ fn app_new(w: i32, h: i32) *App {
         .pmx = 0,
         .pmy = 0,
         .tile_cache = tiles_cache_new(),
+        .opt = opt_engine_new(),
+        .opt_open = false,
+        .opt_details = false,
+        .settings_open = false,
     });
     a.*.inp.w = w;
     a.*.inp.h = h;
@@ -298,6 +307,16 @@ fn status_h() i32 { return 22; }
 
 fn zone_menu(a: *App) Rect {
     return rect(0, 0, a.*.inp.w, menu_h());
+}
+
+// Menu-bar Settings gear and Optimizer button, anchored to the right edge.
+fn zone_settings_gear(a: *App) Rect {
+    return rect(a.*.inp.w - 30, 0, 26, menu_h());
+}
+
+fn zone_opt_btn(a: *App) Rect {
+    let g: Rect = zone_settings_gear(a);
+    return rect(g.x - 66, g.y, 62, g.h);
 }
 
 fn zone_status(a: *App) Rect {

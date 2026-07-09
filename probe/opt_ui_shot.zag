@@ -1,0 +1,22 @@
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn main() i32 {
+    let a: *App = app_new(1024, 640);
+    let _p: i32 = scene_place(a.*.scene, Kind.Plate, vox(0, 0, 0), 0);
+    let _e: i32 = scene_place(a.*.scene, Kind.Emitter, vox(1, 1, 2), 0);
+    let _e2: i32 = scene_place(a.*.scene, Kind.Emitter, vox(3, 1, 2), 0);
+    let _c: i32 = scene_place(a.*.scene, Kind.Chamber, vox(5, 1, 3), 0);
+    let _d: i32 = scene_place(a.*.scene, Kind.Detector, vox(8, 1, 4), 0);
+    let _t: bool = opt_engine_tick(a.*.opt, a.*.scene);
+    a.*.opt_open = true;
+    a.*.opt_details = true;
+    app_frame(a, 0.016);
+    fb_write_bmp(&a.*.f, "/tmp/triton_opt_panel.bmp");
+    a.*.opt_open = false;
+    a.*.settings_open = true;
+    app_frame(a, 0.016);
+    fb_write_bmp(&a.*.f, "/tmp/triton_settings_panel.bmp");
+    _zag_println("wrote optimizer + settings panel screenshots");
+    return 0;
+}

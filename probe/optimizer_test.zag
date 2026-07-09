@@ -1,0 +1,263 @@
+// optimizer_test.zag — Photon Solver verification (Masterplan Section 20.6).
+// Proves: the analyze pass is a strict observer (bytes unchanged), a real dead-path
+// proposal is found/measured/applied, output-equivalence actually discriminates
+// equivalent from non-equivalent networks, and a clean scene yields no proposal.
+
+@import("../std/list.zag") as list
+@import("../std/hashmap.zag") as hm
+@import("../src/flash_ir.zag")
+@import("../src/editops.zag")
+@import("../src/optimizer.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn files_equal(pa: []u8, pb: []u8) bool {
+    let a: []u8 = _zag_read_file(pa);
+    let b: []u8 = _zag_read_file(pb);
+    if (a.len < 0 || b.len < 0 || a.len != b.len) { return false; }
+    let i: i32 = 0;
+    while (i < a.len) {
+        if (a[i] != b[i]) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// A working E->C->D chain plus two dead parts (an unrouted emitter and chamber).
+fn build_with_dead() *Scene {
+    let s: *Scene = scene_new();
+    let p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    let e2: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 6), 0);   // dead: no route
+    let c2: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 6), 0);   // dead: no route
+    let ok: bool = p > 0 && e > 0 && c > 0 && d > 0 && e2 > 0 && c2 > 0 &&
+        flash_route(s, e, 0, c, 0) && flash_route(s, c, 3, d, 0);
+    if (!ok) { _zag_println("  build_with_dead FAILED to construct"); }
+    return s;
+}
+
+// A mul (op5) chamber whose IN.B is driven by a dedicated constant -1 emitter,
+// plus a real input on IN.A and a detector — this collapses to a negate.
+fn build_const_mul() *Scene {
+    let s: *Scene = scene_new();
+    let p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let er: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);   // real input
+    let ec: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 5), 0);   // constant -1
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    let cci: i32 = scene_comp_index(s, c);
+    if (cci >= 0) { s.*.comps.data[cci].logic_op = 5; }            // mul
+    let eci: i32 = scene_comp_index(s, ec);
+    if (eci >= 0) { s.*.comps.data[eci].preset = 4; }             // constant -1
+    let ok: bool = p > 0 && er > 0 && ec > 0 && c > 0 && d > 0 &&
+        flash_route(s, er, 0, c, 0) && flash_route(s, ec, 0, c, 1) &&
+        flash_route(s, c, 3, d, 0);
+    if (!ok) { _zag_println("  build_const_mul FAILED to construct"); }
+    return s;
+}
+
+fn build_clean() *Scene {
+    let s: *Scene = scene_new();
+    let p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    // Negate op (phase-independent) so the detector tracks the emitter trit;
+    // the default cavity op can read dark under guide phase and mask inputs.
+    let ci: i32 = scene_comp_index(s, c);
+    if (ci >= 0) { s.*.comps.data[ci].logic_op = 2; }
+    let _ok: bool = p > 0 && e > 0 && c > 0 && d > 0 &&
+        flash_route(s, e, 0, c, 0) && flash_route(s, c, 3, d, 0);
+    return s;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    let s: *Scene = build_with_dead();
+    let dead_ids: list.ArrayList[i32] = list.make[i32](4);
+    opt_find_dead(s, &dead_ids);
+    check("dead-path analysis finds exactly the two orphan parts", dead_ids.len == 2, &failures);
+
+    // Observer guarantee: analyze must not change a single byte of the project.
+    let before: bool = design_save(s, "/tmp/triton_opt_before.zpa");
+    let p: OptProposal = opt_analyze(s);
+    let after: bool = design_save(s, "/tmp/triton_opt_after.zpa");
+    check("analyze is a strict observer (bytes unchanged)",
+        before && after && files_equal("/tmp/triton_opt_before.zpa", "/tmp/triton_opt_after.zpa"), &failures);
+
+    check("proposal is valid and output-equivalent", p.valid && p.equivalent, &failures);
+    check("proposal is dead-path elimination", p.family == opt_family_dead_path(), &failures);
+    check("proposal removes exactly the two dead parts", p.removed.len == 2, &failures);
+    check("measured gain is a positive percentage", opt_gain_percent(p) > 0, &failures);
+    check("gain lowers the cost score", opt_cost_score(p.after) < opt_cost_score(p.before), &failures);
+
+    // Apply through the mutation path, then re-verify.
+    let comps_before: i32 = s.*.comps.len;
+    let applied: bool = opt_apply(s, &p);
+    check("apply succeeds", applied, &failures);
+    check("apply removed two components", s.*.comps.len == comps_before - 2, &failures);
+    check("applied scene has zero structural errors", scene_validation_errors(s) == 0, &failures);
+
+    // Applying the same proposal again is inert: the parts are already gone.
+    let reapply: bool = opt_apply(s, &p);
+    check("re-applying a stale proposal is refused", !reapply, &failures);
+
+    // A second analysis of the cleaned scene finds nothing to do.
+    let p2: OptProposal = opt_analyze(s);
+    check("no proposal remains after applying", !p2.valid, &failures);
+    opt_proposal_free(&p2);
+    opt_proposal_free(&p);
+    list.free[i32](&dead_ids);
+    scene_free(s);
+
+    // Equivalence discriminates: identical builds match; a different emitter
+    // pattern diverges at the detector.
+    let a: *Scene = build_clean();
+    let b: *Scene = build_clean();
+    check("equivalence holds for identical networks", opt_outputs_equal(a, b, opt_horizon()), &failures);
+    // Force b's emitter onto a different symbol pattern.
+    let bei: i32 = 0;
+    while (bei < b.*.comps.len) {
+        if (b.*.comps.data[bei].kind == Kind.Emitter) { b.*.comps.data[bei].preset = 6; }
+        bei = bei + 1;
+    }
+    scene_mark_topo_full(b);
+    check("equivalence fails when detector outputs differ", !opt_outputs_equal(a, b, opt_horizon()), &failures);
+    scene_free(a);
+    scene_free(b);
+
+    // Clean scene: analyze must not invent a proposal.
+    let clean: *Scene = build_clean();
+    let pc: OptProposal = opt_analyze(clean);
+    check("clean scene yields no false proposal", !pc.valid, &failures);
+    opt_proposal_free(&pc);
+    scene_free(clean);
+
+    // ── rewrite family 2: constant-op collapse ───────────────────────────────
+    let cm: *Scene = build_const_mul();
+    let crem: list.ArrayList[i32] = list.make[i32](4);
+    let crel: list.ArrayList[OptRelabel] = list.make[OptRelabel](4);
+    opt_find_const_collapse(cm, &crem, &crel);
+    check("const-collapse finds the mul-by-(-1) chamber",
+        crem.len == 1 && crel.len == 1 && crel.data[0].new_op == 2, &failures);
+    let chamber_id: i32 = 0;
+    if (crel.len == 1) { chamber_id = crel.data[0].comp_id; }
+    let pcm: OptProposal = opt_analyze(cm);
+    check("analyze proposes constant-op collapse",
+        pcm.valid && pcm.family == opt_family_const_collapse(), &failures);
+    check("collapse reports a positive measured gain", opt_gain_percent(pcm) > 0, &failures);
+    let cm_c0: i32 = cm.*.comps.len;
+    let cm_g0: i32 = cm.*.guides.len;
+    let cap: bool = opt_apply(cm, &pcm);   // returns true only if output-equivalent
+    let cidx: i32 = scene_comp_index(cm, chamber_id);
+    check("collapse applied: constant emitter+guide removed, chamber is now negate",
+        cap && cm.*.comps.len == cm_c0 - 1 && cm.*.guides.len == cm_g0 - 1 &&
+        cidx >= 0 && cm.*.comps.data[cidx].logic_op == 2 &&
+        scene_validation_errors(cm) == 0, &failures);
+    opt_proposal_free(&pcm);
+    list.free[i32](&crem);
+    list.free[OptRelabel](&crel);
+    scene_free(cm);
+
+    // ── single-undo journaling of a batch optimization (Section 20.4) ─────────
+    let cmj: *Scene = build_const_mul();
+    let pj: OptProposal = opt_analyze(cmj);
+    let jrid: list.ArrayList[i32] = list.make[i32](4);
+    let jrnew: list.ArrayList[i32] = list.make[i32](4);
+    let jri: i32 = 0;
+    while (jri < pj.relabels.len) {
+        list.push[i32](&jrid, pj.relabels.data[jri].comp_id);
+        list.push[i32](&jrnew, pj.relabels.data[jri].new_op);
+        jri = jri + 1;
+    }
+    let jchamber: i32 = 0;
+    if (pj.relabels.len == 1) { jchamber = pj.relabels.data[0].comp_id; }
+    let jemitter: i32 = 0;
+    if (pj.removed.len == 1) { jemitter = pj.removed.data[0]; }
+    let jc0: i32 = cmj.*.comps.len;
+    let jg0: i32 = cmj.*.guides.len;
+    let jr: Journal = journal_new();
+    op_optimize(&jr, cmj, pj.removed, jrid, jrnew);
+    let jcidx: i32 = scene_comp_index(cmj, jchamber);
+    check("op_optimize applies the collapse (relabel + removal)",
+        cmj.*.comps.len == jc0 - 1 && cmj.*.guides.len == jg0 - 1 &&
+        jcidx >= 0 && cmj.*.comps.data[jcidx].logic_op == 2, &failures);
+    let jundone: bool = journal_undo(&jr, cmj);
+    let jcidx2: i32 = scene_comp_index(cmj, jchamber);
+    check("one undo reverts the whole optimization (op + part restored)",
+        jundone && cmj.*.comps.len == jc0 && cmj.*.guides.len == jg0 &&
+        jcidx2 >= 0 && cmj.*.comps.data[jcidx2].logic_op == 5 &&
+        scene_comp_index(cmj, jemitter) >= 0 && scene_validation_errors(cmj) == 0, &failures);
+    let jredone: bool = journal_redo(&jr, cmj);
+    let jcidx3: i32 = scene_comp_index(cmj, jchamber);
+    check("redo re-applies the optimization",
+        jredone && cmj.*.comps.len == jc0 - 1 &&
+        jcidx3 >= 0 && cmj.*.comps.data[jcidx3].logic_op == 2, &failures);
+    opt_proposal_free(&pj);
+    list.free[i32](&jrid);
+    list.free[i32](&jrnew);
+    scene_free(cmj);
+
+    // ── background engine (Sections 20.4, 20.5) ──────────────────────────────
+    // Manual mode: a tick surfaces a proposal by raising the badge, silently.
+    let m: *Scene = build_with_dead();
+    let eng: *OptEngine = opt_engine_new();
+    let changed1: bool = opt_engine_tick(eng, m);
+    check("first tick surfaces a proposal and raises the badge",
+        changed1 && opt_engine_badge(eng) == 1 && eng.*.has_pending, &failures);
+    let changed2: bool = opt_engine_tick(eng, m);
+    check("second tick does not churn the badge", !changed2 && opt_engine_badge(eng) == 1, &failures);
+    check("pending proposal exposes family and measured gain",
+        opt_engine_pending_family(eng) == opt_family_dead_path() && opt_engine_pending_gain(eng) > 0, &failures);
+    let mc0: i32 = m.*.comps.len;
+    let ap: bool = opt_engine_apply_pending(eng, m);
+    check("panel Apply commits and clears the badge",
+        ap && opt_engine_badge(eng) == 0 && !eng.*.has_pending && m.*.comps.len == mc0 - 2, &failures);
+    check("applied count advanced", eng.*.applied_count == 1, &failures);
+    opt_engine_free(eng);
+    scene_free(m);
+
+    // Disabled engine changes only speed, never a result (bytes unchanged).
+    let d0: *Scene = build_with_dead();
+    let deng: *OptEngine = opt_engine_new();
+    deng.*.enabled = false;
+    let db0: bool = design_save(d0, "/tmp/triton_opt_disabled_before.zpa");
+    let dch: bool = opt_engine_tick(deng, d0);
+    let db1: bool = design_save(d0, "/tmp/triton_opt_disabled_after.zpa");
+    check("disabled engine does nothing and touches no bytes",
+        !dch && opt_engine_badge(deng) == 0 && db0 && db1 &&
+        files_equal("/tmp/triton_opt_disabled_before.zpa", "/tmp/triton_opt_disabled_after.zpa"), &failures);
+    opt_engine_free(deng);
+    scene_free(d0);
+
+    // Auto-apply setting: a tick applies the winning proposal automatically.
+    let a0: *Scene = build_with_dead();
+    let aeng: *OptEngine = opt_engine_new();
+    aeng.*.auto_apply = true;
+    let ac0: i32 = a0.*.comps.len;
+    let ach: bool = opt_engine_tick(aeng, a0);
+    check("auto-apply tick applies and leaves no badge",
+        ach && opt_engine_badge(aeng) == 0 && aeng.*.applied_count == 1 &&
+        a0.*.comps.len == ac0 - 2 && scene_validation_errors(a0) == 0, &failures);
+    opt_engine_free(aeng);
+    scene_free(a0);
+
+    // Minimum-gain threshold suppresses proposals below the bar.
+    let g0: *Scene = build_with_dead();
+    let geng: *OptEngine = opt_engine_new();
+    geng.*.min_gain_pct = 100;   // unreachable
+    let gch: bool = opt_engine_tick(geng, g0);
+    check("gain threshold suppresses sub-threshold proposals",
+        !gch && opt_engine_badge(geng) == 0 && !geng.*.has_pending, &failures);
+    opt_engine_free(geng);
+    scene_free(g0);
+
+    if (failures == 0) { _zag_println("OPTIMIZER: ALL PASS"); return 0; }
+    _zag_println("OPTIMIZER: FAILURES"); return 1;
+}

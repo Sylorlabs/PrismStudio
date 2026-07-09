@@ -164,16 +164,21 @@ fn reroute_incident(s: *Scene, ids: *list.ArrayList[i32]) void {
 }
 
 // ── undo / redo journal ───────────────────────────────────────────────────────
-// op kinds: 1 add-comp, 2 del-comp, 3 add-guide, 4 del-guide, 5 move
+// op kinds: 1 add-comp, 2 del-comp, 3 add-guide, 4 del-guide, 5 move,
+//           6 optimize (batch: remove comps + relabel chamber ops as one undo)
 
 struct UOp {
     kind: i32,
     comp: Comp,                        // snapshot (1/2/5)
     old_origin: Vox,                   // 5
     new_origin: Vox,                   // 5
-    guides: list.ArrayList[Guide],     // cascaded/incident snapshots (2/5)
+    guides: list.ArrayList[Guide],     // cascaded/incident snapshots (2/5/6)
     guide: Guide,                      // 3/4
     has_guide: bool,
+    comps: list.ArrayList[Comp],       // 6: removed comp snapshots
+    relabel_ids: list.ArrayList[i32],  // 6: chambers whose op changed
+    relabel_old: list.ArrayList[i32],  // 6: logic_op before
+    relabel_new: list.ArrayList[i32],  // 6: logic_op after
 }
 
 struct Journal {
@@ -203,6 +208,10 @@ fn uop_empty() UOp {
         .old_origin = vox(0, 0, 0), .new_origin = vox(0, 0, 0),
         .guides = list.make[Guide](1),
         .guide = g, .has_guide = false,
+        .comps = list.make[Comp](1),
+        .relabel_ids = list.make[i32](1),
+        .relabel_old = list.make[i32](1),
+        .relabel_new = list.make[i32](1),
     };
 }
 
@@ -217,6 +226,15 @@ fn uop_free(op: *UOp) void {
     // ops own a strdup'd copy of the comp name (uop_empty's "" is a literal
     // with len 0, never freed)
     if (op.*.comp.name_.len > 0) { _zag_str_free(op.*.comp.name_); }
+    let ci: i32 = 0;
+    while (ci < op.*.comps.len) {
+        if (op.*.comps.data[ci].name_.len > 0) { _zag_str_free(op.*.comps.data[ci].name_); }
+        ci = ci + 1;
+    }
+    list.free[Comp](&op.*.comps);
+    list.free[i32](&op.*.relabel_ids);
+    list.free[i32](&op.*.relabel_old);
+    list.free[i32](&op.*.relabel_new);
 }
 
 fn journal_clear_redo(j: *Journal) void {
@@ -311,6 +329,72 @@ fn op_move(j: *Journal, s: *Scene, id: i32, delta: Vox) void {
     journal_push(j, op);
 }
 
+fn id_in_list(xs: list.ArrayList[i32], v: i32) bool {
+    let i: i32 = 0;
+    while (i < xs.len) {
+        if (xs.data[i] == v) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Record an optimizer application (removed components + chamber relabels) as ONE
+// undoable op, then perform it. A single undo reverts the whole optimization.
+// Snapshots must be taken BEFORE the mutation. `relabel_ids[i]` gets `relabel_new[i]`.
+fn op_optimize(j: *Journal, s: *Scene, removed: list.ArrayList[i32],
+               relabel_ids: list.ArrayList[i32], relabel_new: list.ArrayList[i32]) void {
+    let op: UOp = uop_empty();
+    op.kind = 6;
+    // removed components, with owned name copies
+    let i: i32 = 0;
+    while (i < removed.len) {
+        let ci: i32 = scene_comp_index(s, removed.data[i]);
+        if (ci >= 0) {
+            let c: Comp = s.*.comps.data[ci];
+            c.name_ = _zag_strdup(c.name_);
+            list.push[Comp](&op.comps, c);
+        }
+        i = i + 1;
+    }
+    // guides incident to any removed comp, deduped by visiting each guide once
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) {
+        let g: Guide = s.*.guides.data[gi];
+        if (id_in_list(removed, g.from_c) || id_in_list(removed, g.to_c)) {
+            list.push[Guide](&op.guides, guide_clone(g));
+        }
+        gi = gi + 1;
+    }
+    // relabels: capture the old op alongside the requested new op
+    let r: i32 = 0;
+    while (r < relabel_ids.len) {
+        let rci: i32 = scene_comp_index(s, relabel_ids.data[r]);
+        if (rci >= 0) {
+            list.push[i32](&op.relabel_ids, relabel_ids.data[r]);
+            list.push[i32](&op.relabel_old, s.*.comps.data[rci].logic_op);
+            list.push[i32](&op.relabel_new, relabel_new.data[r]);
+        }
+        r = r + 1;
+    }
+    journal_push(j, op);
+
+    // perform: relabel then remove (removals drop their incident guides)
+    let ra: i32 = 0;
+    while (ra < op.relabel_ids.len) {
+        let ci2: i32 = scene_comp_index(s, op.relabel_ids.data[ra]);
+        if (ci2 >= 0) {
+            s.*.comps.data[ci2].logic_op = op.relabel_new.data[ra];
+            scene_mark_topo_comp(s, op.relabel_ids.data[ra]);
+        }
+        ra = ra + 1;
+    }
+    let d: i32 = 0;
+    while (d < removed.len) {
+        scene_remove(s, removed.data[d]);
+        d = d + 1;
+    }
+}
+
 // apply the inverse of `op` to the scene (op moves undo->redo)
 fn journal_undo(j: *Journal, s: *Scene) bool {
     if (j.*.undo.len == 0) { return false; }
@@ -353,6 +437,30 @@ fn journal_undo(j: *Journal, s: *Scene) bool {
         }
         list.free[i32](&one);
     }
+    if (op.kind == 6) {
+        // revert relabels, restore removed comps, then their guides
+        let ri: i32 = 0;
+        while (ri < op.relabel_ids.len) {
+            let ci: i32 = scene_comp_index(s, op.relabel_ids.data[ri]);
+            if (ci >= 0) {
+                s.*.comps.data[ci].logic_op = op.relabel_old.data[ri];
+                scene_mark_topo_comp(s, op.relabel_ids.data[ri]);
+            }
+            ri = ri + 1;
+        }
+        let ci2: i32 = 0;
+        while (ci2 < op.comps.len) {
+            let rc: Comp = op.comps.data[ci2];
+            rc.name_ = _zag_strdup(op.comps.data[ci2].name_);
+            scene_restore_comp(s, rc);
+            ci2 = ci2 + 1;
+        }
+        let gi: i32 = 0;
+        while (gi < op.guides.len) {
+            scene_restore_guide(s, guide_clone(op.guides.data[gi]));
+            gi = gi + 1;
+        }
+    }
     list.push[UOp](&j.*.redo, op);
     return true;
 }
@@ -378,6 +486,23 @@ fn journal_redo(j: *Journal, s: *Scene) bool {
         );
         group_move(s, &one, fwd);
         list.free[i32](&one);
+    }
+    if (op.kind == 6) {
+        // re-apply relabels, then remove the comps again (drops their guides)
+        let ri: i32 = 0;
+        while (ri < op.relabel_ids.len) {
+            let ci: i32 = scene_comp_index(s, op.relabel_ids.data[ri]);
+            if (ci >= 0) {
+                s.*.comps.data[ci].logic_op = op.relabel_new.data[ri];
+                scene_mark_topo_comp(s, op.relabel_ids.data[ri]);
+            }
+            ri = ri + 1;
+        }
+        let ci2: i32 = 0;
+        while (ci2 < op.comps.len) {
+            scene_remove(s, op.comps.data[ci2].id);
+            ci2 = ci2 + 1;
+        }
     }
     list.push[UOp](&j.*.undo, op);
     return true;
@@ -572,7 +697,26 @@ fn jrn_ser_op(out: *list.ArrayList[u8], op: UOp) void {
     }
 }
 
+fn journal_has_opt(j: *Journal) bool {
+    let i: i32 = 0;
+    while (i < j.*.undo.len) { if (j.*.undo.data[i].kind == 6) { return true; } i = i + 1; }
+    let r: i32 = 0;
+    while (r < j.*.redo.len) { if (j.*.redo.data[r].kind == 6) { return true; } r = r + 1; }
+    return false;
+}
+
 fn journal_save(j: *Journal, path: []u8) bool {
+    // The batch-optimize op (kind 6) is not part of the on-disk journal format;
+    // rather than persist a partial, corruptible stack, write an empty journal so
+    // cross-restart undo is simply forfeited when an optimization is in history.
+    // In-session undo/redo (held in memory) is unaffected.
+    if (journal_has_opt(j)) {
+        let empty: list.ArrayList[u8] = list.make[u8](32);
+        ser_text(&empty, "jrn 1\nundo\nredo\n");
+        let eok: bool = atomic_write_file(path, empty.data[0..empty.len]);
+        list.free[u8](&empty);
+        return eok;
+    }
     let out: list.ArrayList[u8] = list.make[u8](1024);
     ser_text(&out, "jrn 1\nundo\n");
     let ui: i32 = 0;

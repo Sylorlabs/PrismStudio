@@ -6,6 +6,7 @@
 @import("app.zag")
 @import("sim_region.zag")
 @import("demo.zag")
+@import("capability.zag")
 
 fn fmt_i(v: i64) []u8 {
     return _zag_i64_to_str(v);
@@ -137,10 +138,49 @@ fn draw_menubar(a: *App) void {
         m = m + 1;
     }
 
-    // document name, right side
+    // right side: Optimizer button (quiet, count-only badge) + Settings gear.
+    let ob: Rect = zone_opt_btn(a);
+    let oh: bool = rect_has(ob, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
+    if (a.*.opt_open) { fill_rect(f, ob.x, ob.y, ob.w, ob.h, th_accent()); }
+    else if (oh) { fill_rect(f, ob.x, ob.y, ob.w, ob.h, th_panel_alt()); }
+    draw_text(f, ob.x + 9, r.y + 7, "opt", th_text());
+    if (opt_engine_badge(a.*.opt) > 0) {
+        let bx: i32 = ob.x + 9 + text_w("opt ");
+        let _bw: i32 = draw_int(f, bx, r.y + 7, opt_engine_badge(a.*.opt) as i64, th_accent_hot());
+    }
+    if (oh && btn_pressed(inp, 0)) {
+        a.*.opt_open = !a.*.opt_open;
+        a.*.settings_open = false;
+    }
+
+    let gr: Rect = zone_settings_gear(a);
+    let gh: bool = rect_has(gr, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
+    if (a.*.settings_open) { fill_rect(f, gr.x, gr.y, gr.w, gr.h, th_accent()); }
+    else if (gh) { fill_rect(f, gr.x, gr.y, gr.w, gr.h, th_panel_alt()); }
+    draw_gear(f, gr.x + gr.w / 2, gr.y + gr.h / 2, th_text());
+    if (gh && btn_pressed(inp, 0)) {
+        a.*.settings_open = !a.*.settings_open;
+        a.*.opt_open = false;
+    }
+
+    // document name, left of the buttons
     let title: []u8 = a.*.file_;
     if (a.*.dirty) { title = _zag_str_concat(a.*.file_, " *"); }
-    draw_text(f, r.w - text_w(title) - 10, r.y + 7, title, th_text_dim());
+    draw_text(f, ob.x - text_w(title) - 12, r.y + 7, title, th_text_dim());
+}
+
+// A small cog icon composed from framebuffer rects (no glyph font dependency).
+fn draw_gear(f: *FB, cx: i32, cy: i32, c: i64) void {
+    fill_rect(f, cx - 4, cy - 4, 9, 9, c);          // body
+    fill_rect(f, cx - 1, cy - 6, 3, 2, c);          // N tooth
+    fill_rect(f, cx - 1, cy + 5, 3, 2, c);          // S tooth
+    fill_rect(f, cx - 6, cy - 1, 2, 3, c);          // W tooth
+    fill_rect(f, cx + 5, cy - 1, 2, 3, c);          // E tooth
+    fill_rect(f, cx - 5, cy - 5, 2, 2, c);          // NW
+    fill_rect(f, cx + 4, cy - 5, 2, 2, c);          // NE
+    fill_rect(f, cx - 5, cy + 4, 2, 2, c);          // SW
+    fill_rect(f, cx + 4, cy + 4, 2, 2, c);          // SE
+    fill_rect(f, cx - 1, cy - 1, 3, 3, th_panel()); // hub hole
 }
 
 // draw + interact with the open dropdown; called last so it overlays panels
@@ -267,6 +307,15 @@ fn draw_statusbar(a: *App) void {
     if (a.*.sel.len > 0) {
         x = x + draw_int(f, x, ty, a.*.sel.len as i64, th_text_dim());
         draw_text(f, x, ty, " selected", th_text_dim());
+        x = x + text_w(" selected") + 24;
+    }
+
+    // Optimizer badge: quiet, count-only (Section 20.4). Nothing shows at zero.
+    if (opt_engine_badge(a.*.opt) > 0) {
+        let ocol: i64 = th_accent_hot();
+        draw_text(f, x, ty, "opt ", ocol);
+        x = x + text_w("opt ");
+        x = x + draw_int(f, x, ty, opt_engine_badge(a.*.opt) as i64, ocol);
     }
 
     // right: counts + timing + sim state
@@ -1024,12 +1073,170 @@ fn draw_modal(a: *App) void {
 
 // ── frame orchestration ───────────────────────────────────────────────────────
 
+// ── Settings panel (Section 20.5) ────────────────────────────────────────────
+fn draw_settings_panel(a: *App) void {
+    if (!a.*.settings_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    // This panel is topmost and owns the pointer: its own controls must be live
+    // even though the frame set capture to keep everything underneath inert.
+    let cap: i32 = inp.*.capture;
+    inp.*.capture = 0;
+    let gr: Rect = zone_settings_gear(a);
+    let pw: i32 = 236;
+    let px: i32 = gr.x + gr.w - pw;
+    if (px < 4) { px = 4; }
+    let pr: Rect = rect(px, menu_h(), pw, 104);
+    fill_rect(f, pr.x, pr.y, pr.w, pr.h, th_panel());
+    rect_outline(f, pr.x, pr.y, pr.w, pr.h, th_outline());
+    draw_text(f, pr.x + 10, pr.y + 8, "Settings", th_text());
+
+    let y: i32 = pr.y + 26;
+    draw_text(f, pr.x + 10, y + 5, "Optimizer", th_text_dim());
+    let e_lbl: []u8 = "Off";
+    if (a.*.opt.*.enabled) { e_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), e_lbl, a.*.opt.*.enabled)) {
+        a.*.opt.*.enabled = !a.*.opt.*.enabled;
+    }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Auto-apply", th_text_dim());
+    let a_lbl: []u8 = "Off";
+    if (a.*.opt.*.auto_apply) { a_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), a_lbl, a.*.opt.*.auto_apply)) {
+        a.*.opt.*.auto_apply = !a.*.opt.*.auto_apply;
+    }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Min gain", th_text_dim());
+    let gx: i32 = pr.x + pw - 62;
+    gx = gx + draw_int(f, gx, y + 5, a.*.opt.*.min_gain_pct as i64, th_text_dim());
+    draw_text(f, gx, y + 5, "%", th_text_dim());
+
+    if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my) &&
+        !rect_has(gr, inp.*.mx, inp.*.my)) {
+        a.*.settings_open = false;
+    }
+    inp.*.capture = cap;
+}
+
+// Append an append-only audit record for an applied optimization (Section 20.4).
+fn opt_audit(family: i32, gain_pct: i32, removed_n: i32) void {
+    let a1: []u8 = _zag_str_concat("optimizer family=", opt_family_name(family));
+    let a2: []u8 = _zag_str_concat(a1, " gain_pct=");
+    let a3: []u8 = _zag_str_concat(a2, _zag_i64_to_str(gain_pct as i64));
+    let a4: []u8 = _zag_str_concat(a3, " removed=");
+    let a5: []u8 = _zag_str_concat(a4, _zag_i64_to_str(removed_n as i64));
+    audit_append("optimize", a5, 0);
+}
+
+// Commit the pending optimizer proposal through the journaled + audited edit path
+// (Section 20.4): re-verify output-equivalence, record ONE undoable op covering
+// every removal and relabel, write an audit record, and mark the document dirty.
+// Both the panel's Apply button and (when enabled) auto-apply route through here.
+fn opt_apply_gui(a: *App) void {
+    if (!a.*.opt.*.has_pending) { return; }
+    let p: *OptProposal = &a.*.opt.*.pending;
+    if (opt_verify(a.*.scene, p)) {
+        let rid: list.ArrayList[i32] = list.make[i32](4);
+        let rnew: list.ArrayList[i32] = list.make[i32](4);
+        let ri: i32 = 0;
+        while (ri < p.*.relabels.len) {
+            list.push[i32](&rid, p.*.relabels.data[ri].comp_id);
+            list.push[i32](&rnew, p.*.relabels.data[ri].new_op);
+            ri = ri + 1;
+        }
+        let fam: i32 = p.*.family;
+        let gain: i32 = opt_gain_percent(p.*);
+        let removed_n: i32 = p.*.removed.len;
+        op_optimize(&a.*.jrn, a.*.scene, p.*.removed, rid, rnew);
+        list.free[i32](&rid);
+        list.free[i32](&rnew);
+        opt_audit(fam, gain, removed_n);
+        a.*.opt.*.applied_count = a.*.opt.*.applied_count + 1;
+        a.*.dirty = true;
+    }
+    opt_engine_clear_pending(a.*.opt);
+}
+
+// ── Optimizer proposal panel (Section 20.4) ──────────────────────────────────
+fn draw_opt_panel(a: *App) void {
+    if (!a.*.opt_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let cap: i32 = inp.*.capture;
+    inp.*.capture = 0;   // topmost panel owns the pointer (see draw_settings_panel)
+    let ob: Rect = zone_opt_btn(a);
+    let pw: i32 = 300;
+    let px: i32 = ob.x + ob.w - pw;
+    if (px < 4) { px = 4; }
+    let ph: i32 = 96;
+    if (a.*.opt.*.has_pending && a.*.opt_details) { ph = 156; }
+    if (!a.*.opt.*.has_pending) { ph = 56; }
+    let pr: Rect = rect(px, menu_h(), pw, ph);
+    fill_rect(f, pr.x, pr.y, pr.w, pr.h, th_panel());
+    rect_outline(f, pr.x, pr.y, pr.w, pr.h, th_outline());
+    draw_text(f, pr.x + 10, pr.y + 8, "Optimizer", th_text());
+
+    if (!a.*.opt.*.has_pending) {
+        draw_text(f, pr.x + 10, pr.y + 32, "No optimizations found.", th_text_dim());
+    } else {
+        draw_text(f, pr.x + 10, pr.y + 28, opt_family_name(opt_engine_pending_family(a.*.opt)), th_text());
+        let gy: i32 = pr.y + 44;
+        draw_text(f, pr.x + 10, gy, "gain ", th_accent_hot());
+        let gx: i32 = pr.x + 10 + text_w("gain ");
+        gx = gx + draw_int(f, gx, gy, opt_engine_pending_gain(a.*.opt) as i64, th_accent_hot());
+        draw_text(f, gx, gy, "%  ", th_accent_hot());
+        gx = gx + text_w("%  ");
+        gx = gx + draw_int(f, gx, gy, 0 - a.*.opt.*.pending.removed.len as i64, th_text_dim());
+        draw_text(f, gx, gy, " parts", th_text_dim());
+
+        let by: i32 = pr.y + 62;
+        if (ui_button(f, inp, rect(pr.x + 10, by, 82, 20), "Apply", true)) {
+            opt_apply_gui(a);
+            a.*.opt_open = false;
+            a.*.opt_details = false;
+        }
+        if (ui_button(f, inp, rect(pr.x + 98, by, 82, 20), "Ignore", false)) {
+            opt_engine_ignore_pending(a.*.opt);
+            a.*.opt_open = false;
+            a.*.opt_details = false;
+        }
+        if (ui_button(f, inp, rect(pr.x + 186, by, 82, 20), "Details", a.*.opt_details)) {
+            a.*.opt_details = !a.*.opt_details;
+        }
+        if (a.*.opt_details) {
+            let dy: i32 = pr.y + 90;
+            draw_text(f, pr.x + 10, dy, "removes ", th_text_dim());
+            let dx: i32 = pr.x + 10 + text_w("removes ");
+            dx = dx + draw_int(f, dx, dy, a.*.opt.*.pending.removed.len as i64, th_text_dim());
+            draw_text(f, dx, dy, " part(s), relabels ", th_text_dim());
+            dx = dx + text_w(" part(s), relabels ");
+            dx = dx + draw_int(f, dx, dy, a.*.opt.*.pending.relabels.len as i64, th_text_dim());
+            let sy: i32 = pr.y + 108;
+            draw_text(f, pr.x + 10, sy, "cost ", th_text_dim());
+            let sx: i32 = pr.x + 10 + text_w("cost ");
+            sx = sx + draw_int(f, sx, sy, opt_cost_score(a.*.opt.*.pending.before), th_text_dim());
+            draw_text(f, sx, sy, " -> ", th_text_dim());
+            sx = sx + text_w(" -> ");
+            sx = sx + draw_int(f, sx, sy, opt_cost_score(a.*.opt.*.pending.after), th_text_dim());
+            draw_text(f, pr.x + 10, pr.y + 128, "equivalent over all inputs", th_ok());
+        }
+    }
+
+    if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my) &&
+        !rect_has(ob, inp.*.mx, inp.*.my)) {
+        a.*.opt_open = false;
+    }
+    inp.*.capture = cap;
+}
+
 fn app_frame(a: *App, dt: f64) void {
     let t0: i64 = _zag_clock_monotonic_ms();
 
     a.*.inp.capture = 0;
-    // an open modal or menu owns the pointer: panels underneath go inert
-    if (a.*.modal != modal_none() || a.*.menu >= 0) { a.*.inp.capture = 4; }
+    // an open modal, menu, or optimizer/settings panel owns the pointer:
+    // panels underneath go inert
+    if (a.*.modal != modal_none() || a.*.menu >= 0 ||
+        a.*.opt_open || a.*.settings_open) { a.*.inp.capture = 4; }
     if (a.*.inp.capture == 0) { app_splitters(a); }
     app_keys(a);
     if (a.*.inp.capture != 4) { app_viewport_input(a); }
@@ -1038,6 +1245,20 @@ fn app_frame(a: *App, dt: f64) void {
     // clear/load or large dirty sets fall back to a full recompile inside.
     if (a.*.scene.*.topo_dirty) { sim_recompile_region(a.*.sim, a.*.scene); }
     let _stepped: i32 = sim_update(a.*.sim, a.*.scene, dt);
+
+    // Optimizer background pass (Section 20.5). Kept off the interaction path: it
+    // runs at most once per ~second and only while the user is idle (no drag,
+    // move, split, menu, modal, or active simulation). With auto-apply off — the
+    // default — a tick only updates the Optimizer badge and never mutates the
+    // project, so it is a pure runtime observer.
+    if (a.*.frame % 60 == 0 && !a.*.moving && !a.*.cam_drag && a.*.grab == 0 &&
+        a.*.modal == modal_none() && a.*.menu < 0 && !a.*.sim.*.playing &&
+        !a.*.opt_open && !a.*.settings_open) {
+        let _oc: bool = opt_engine_refresh(a.*.opt, a.*.scene);
+        if (a.*.opt.*.auto_apply && a.*.opt.*.has_pending) {
+            opt_apply_gui(a);   // journaled + audited, single-undo
+        }
+    }
     fb_resize(&a.*.f, a.*.inp.w, a.*.inp.h);
 
     draw_viewport(a);
@@ -1047,6 +1268,8 @@ fn app_frame(a: *App, dt: f64) void {
     draw_statusbar(a);
     draw_menubar(a);
     draw_menu_dropdown(a);
+    draw_settings_panel(a);
+    draw_opt_panel(a);
     draw_modal(a);
 
     a.*.pmx = a.*.inp.mx;

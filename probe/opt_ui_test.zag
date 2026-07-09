@@ -1,0 +1,110 @@
+// opt_ui_test.zag — drives the real App frame loop headlessly (no X11) and
+// injects pointer clicks to prove the Optimizer button/panel and Settings gear
+// work end to end (Masterplan Sections 20.4, 20.5).
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+// A full click at (x,y): one frame with the button pressed, one with it released.
+// btn_pressed (menu-style toggles) fires on the press frame; btn_released
+// (ui_button) fires on the release frame — this covers both.
+fn click(a: *App, x: i32, y: i32) void {
+    a.*.inp.mx = x; a.*.inp.my = y;
+    a.*.inp.prev_btn = 0; a.*.inp.btn = 1;
+    app_frame(a, 0.016);
+    a.*.inp.prev_btn = 1; a.*.inp.btn = 0;
+    app_frame(a, 0.016);
+    a.*.inp.prev_btn = 0; a.*.inp.btn = 0;
+}
+
+fn rect_cx(r: Rect) i32 { return r.x + r.w / 2; }
+fn rect_cy(r: Rect) i32 { return r.y + r.h / 2; }
+
+fn contains(hay: []u8, needle: []u8) bool {
+    if (needle.len == 0) { return true; }
+    let i: i32 = 0;
+    while (i + needle.len <= hay.len) {
+        let ok: bool = true;
+        let j: i32 = 0;
+        while (j < needle.len) {
+            if (hay[i + j] != needle[j]) { ok = false; }
+            j = j + 1;
+        }
+        if (ok) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let a: *App = app_new(1024, 640);
+
+    // A plate plus a lone (dead) emitter: removing the emitter is a valid,
+    // output-equivalent, cost-reducing proposal.
+    let _p: i32 = scene_place(a.*.scene, Kind.Plate, vox(0, 0, 0), 0);
+    let _e: i32 = scene_place(a.*.scene, Kind.Emitter, vox(1, 1, 2), 0);
+
+    // Raise a pending proposal deterministically.
+    let _t: bool = opt_engine_tick(a.*.opt, a.*.scene);
+    check("optimizer surfaces a pending proposal (badge)",
+        opt_engine_badge(a.*.opt) == 1 && a.*.opt.*.has_pending, &failures);
+
+    // Click the Optimizer button: its panel opens.
+    let ob: Rect = zone_opt_btn(a);
+    click(a, rect_cx(ob), rect_cy(ob));
+    check("clicking the Optimizer button opens its panel", a.*.opt_open, &failures);
+
+    // Click Apply inside the panel: the emitter is removed, panel closes, badge clears.
+    let comps_before: i32 = a.*.scene.*.comps.len;
+    let px: i32 = ob.x + ob.w - 300;
+    if (px < 4) { px = 4; }
+    click(a, px + 10 + 41, menu_h() + 62 + 10);   // center of the Apply button
+    check("Apply removes the dead part and closes the panel",
+        !a.*.opt_open && !a.*.opt.*.has_pending &&
+        a.*.scene.*.comps.len == comps_before - 1 && a.*.dirty, &failures);
+    check("Apply left a structurally valid scene",
+        scene_validation_errors(a.*.scene) == 0, &failures);
+
+    // The apply left an audit record (actor/state/family/gain).
+    let apath: []u8 = _zag_getenv("TRITON_AUDIT");
+    if (apath.len == 0) { apath = ".triton/audit.log"; }
+    let alog: []u8 = _zag_read_file(apath);
+    check("apply wrote an audit record with the rewrite family",
+        alog.len > 0 && contains(alog, "state=optimize") && contains(alog, "family="), &failures);
+
+    // The optimization is a single undo through the normal journal.
+    app_undo(a);
+    check("one undo restores the optimized-away part",
+        a.*.scene.*.comps.len == comps_before && scene_validation_errors(a.*.scene) == 0, &failures);
+    app_redo(a);
+    check("redo re-applies the optimization",
+        a.*.scene.*.comps.len == comps_before - 1, &failures);
+
+    // Settings gear: opens the Settings panel.
+    let gr: Rect = zone_settings_gear(a);
+    click(a, rect_cx(gr), rect_cy(gr));
+    check("clicking the Settings gear opens the Settings panel", a.*.settings_open, &failures);
+
+    // Toggle Auto-apply from Off (default) to On.
+    let before_auto: bool = a.*.opt.*.auto_apply;
+    let spx: i32 = gr.x + gr.w - 236;
+    if (spx < 4) { spx = 4; }
+    let toggle_x: i32 = spx + 236 - 62 + 26;         // center of the Auto-apply toggle
+    let toggle_y: i32 = menu_h() + 26 + 24 + 9;
+    click(a, toggle_x, toggle_y);
+    check("Auto-apply setting toggles", a.*.opt.*.auto_apply != before_auto && a.*.opt.*.auto_apply, &failures);
+    check("Auto-apply defaults off", !before_auto, &failures);
+
+    // Clicking the viewport (well outside the panel) dismisses Settings.
+    click(a, 512, 360);
+    check("clicking outside closes the Settings panel", !a.*.settings_open, &failures);
+
+    if (failures == 0) { _zag_println("OPT UI: ALL PASS"); return 0; }
+    _zag_println("OPT UI: FAILURES"); return 1;
+}

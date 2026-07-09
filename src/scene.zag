@@ -704,6 +704,62 @@ fn scene_clear(s: *Scene) void {
     scene_mark_topo_full(s);
 }
 
+// Release a scene and every buffer it owns. The pointer must not be used
+// afterwards. Co-located with scene_new so the two stay field-for-field in sync.
+fn scene_free(s: *Scene) void {
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) {
+        list.free[Vox](&s.*.guides.data[gi].path);
+        gi = gi + 1;
+    }
+    list.free[Guide](&s.*.guides);
+    let ci: i32 = 0;
+    while (ci < s.*.comps.len) {
+        if (s.*.comps.data[ci].name_.len > 0) { _zag_str_free(s.*.comps.data[ci].name_); }
+        ci = ci + 1;
+    }
+    list.free[Comp](&s.*.comps);
+    hm.int64_free[i32](&s.*.occ);
+    world_free(s.*.world);
+    hm.int_free[i32](&s.*.comp_idx);
+    hm.int_free[i32](&s.*.guide_idx);
+    hm.int64_free[i32](&s.*.port_use);
+    hm.int_free[i32](&s.*.plate_chambers);
+    list.free[i32](&s.*.made);
+    list.free[i32](&s.*.topo_dirty_ids);
+    _zag_free(s as *i8);
+}
+
+// Deep, independent copy sharing no buffers with the source. Component names are
+// dropped (they carry no simulation or geometry meaning) so no string storage is
+// aliased across the two scenes.
+fn scene_clone(src: *Scene) *Scene {
+    let d: *Scene = scene_new();
+    d.*.model = src.*.model;
+    let i: i32 = 0;
+    while (i < src.*.comps.len) {
+        let c: Comp = src.*.comps.data[i];
+        c.name_ = "";
+        scene_restore_comp(d, c);
+        i = i + 1;
+    }
+    let gi: i32 = 0;
+    while (gi < src.*.guides.len) {
+        let g: Guide = src.*.guides.data[gi];
+        let path: list.ArrayList[Vox] = list.make[Vox](g.path.len);
+        let pi: i32 = 0;
+        while (pi < g.path.len) {
+            list.push[Vox](&path, g.path.data[pi]);
+            pi = pi + 1;
+        }
+        let ng: Guide = g;
+        ng.path = path;
+        scene_restore_guide(d, ng);
+        gi = gi + 1;
+    }
+    return d;
+}
+
 // Re-insert a component snapshot with its exact id, size and name (undo/load).
 fn scene_restore_comp(s: *Scene, c: Comp) void {
     let cells: list.ArrayList[Vox] = list.make[Vox](8);

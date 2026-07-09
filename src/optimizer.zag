@@ -1,0 +1,521 @@
+// optimizer.zag — Continuous Optical-Computation Optimizer (Photon Solver).
+// Masterplan Section 20. 100% Zag. Finds mathematically-equivalent, cheaper ways
+// to compute the same optical result: it changes HOW light is computed, never
+// WHAT it computes. `opt_analyze` is a strict observer — it clones internally and
+// never mutates the input scene, so with auto-apply off the project is untouched.
+// Every proposal is verified output-equivalent against the reference simulation
+// before it is ever eligible, and re-verified again at apply time.
+
+@import("../std/list.zag") as list
+@import("../std/hashmap.zag") as hm
+@import("scene.zag")
+@import("sim.zag")
+@import("components.zag")
+
+// ── rewrite families (Section 20.2) ─────────────────────────────────────────
+fn opt_family_none() i32 { return 0; }
+fn opt_family_dead_path() i32 { return 1; }
+fn opt_family_const_collapse() i32 { return 2; }
+
+fn opt_family_name(f: i32) []u8 {
+    if (f == 1) { return "dead-path elimination"; }
+    if (f == 2) { return "constant-op collapse"; }
+    return "none";
+}
+
+// Verification horizon in symbols. The emitter presets are the declared input
+// vectors (period <= 16); this exercises several full pattern periods plus cavity
+// memory settling. Bounded and lightweight (Section 20.1).
+fn opt_horizon() i32 { return 64; }
+
+// ── cost model (Section 20.3): named, inspectable terms ──────────────────────
+struct OptCost {
+    components: i32,
+    chambers: i32,
+    guides: i32,
+    guide_len_nm: f64,
+    delay_symbols: i32,
+}
+
+fn opt_cost_zero() OptCost {
+    return OptCost{ .components = 0, .chambers = 0, .guides = 0,
+                    .guide_len_nm = 0.0, .delay_symbols = 0 };
+}
+
+// Sum of quantized delay-line lengths across the routed fabric at the derived
+// clock — a real simulation-cost term, computed from geometry and model, never a
+// hardcoded number.
+fn opt_delay_symbols_total(s: *Scene) i32 {
+    let sim: *Sim = sim_new();
+    sim_recompile(sim, s);
+    let sum: i32 = 0;
+    let i: i32 = 0;
+    while (i < sim.*.sguides.len) {
+        sum = sum + sim.*.sguides.data[i].delay;
+        i = i + 1;
+    }
+    sim_free(sim);
+    return sum;
+}
+
+fn opt_cost(s: *Scene) OptCost {
+    let c: OptCost = opt_cost_zero();
+    c.components = s.*.comps.len;
+    let i: i32 = 0;
+    while (i < s.*.comps.len) {
+        if (s.*.comps.data[i].kind == Kind.Chamber) { c.chambers = c.chambers + 1; }
+        i = i + 1;
+    }
+    c.guides = s.*.guides.len;
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) {
+        c.guide_len_nm = c.guide_len_nm + s.*.guides.data[gi].length_nm;
+        gi = gi + 1;
+    }
+    c.delay_symbols = opt_delay_symbols_total(s);
+    return c;
+}
+
+// A single scalar for ranking proposals and quoting a headline gain, weighted
+// toward the terms that dominate simulation and fabrication cost.
+fn opt_cost_score(c: OptCost) i64 {
+    return (c.components as i64) * 100 +
+           (c.chambers as i64) * 250 +
+           (c.guides as i64) * 40 +
+           (c.delay_symbols as i64) * 10 +
+           (c.guide_len_nm as i64) / 1000;
+}
+
+// ── output equivalence (Section 20.2) ────────────────────────────────────────
+// Count detectors so a rewrite can never silently drop an output.
+fn opt_detector_count(s: *Scene) i32 {
+    let n: i32 = 0;
+    let i: i32 = 0;
+    while (i < s.*.comps.len) {
+        if (s.*.comps.data[i].kind == Kind.Detector) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// Two scenes are output-equivalent when every detector produces the identical
+// trit at every symbol over the horizon. If either fabric cannot advance (an
+// incomplete model), equivalence is undefined and we refuse to claim it.
+fn opt_outputs_equal(a: *Scene, b: *Scene, horizon: i32) bool {
+    if (opt_detector_count(a) != opt_detector_count(b)) { return false; }
+    let sa: *Sim = sim_new();
+    let sb: *Sim = sim_new();
+    sim_recompile(sa, a);
+    sim_recompile(sb, b);
+    let equal: bool = sa.*.model_ok && sb.*.model_ok;
+    let step: i32 = 0;
+    while (equal && step < horizon) {
+        sim_step(sa, a);
+        sim_step(sb, b);
+        let i: i32 = 0;
+        while (equal && i < sa.*.nodes.len) {
+            let n: SNode = sa.*.nodes.data[i];
+            if (n.kind == Kind.Detector) {
+                let bi: i32 = sim_node_index(sb, n.comp_id);
+                if (bi < 0) { equal = false; }
+                else if (sb.*.nodes.data[bi].out_t != n.out_t) { equal = false; }
+            }
+            i = i + 1;
+        }
+        step = step + 1;
+    }
+    sim_free(sa);
+    sim_free(sb);
+    return equal;
+}
+
+// ── dead-path analysis (rewrite family 1) ────────────────────────────────────
+// Mark every component that can reach a detector along the directed guide graph.
+// A simple fixpoint: cheap on real fabrics and robust to graph shape. SOH tiles
+// influence adjacent chambers through lattice adjacency rather than guides and so
+// are never treated as dead here; plates are passive substrate.
+fn opt_mark_useful(s: *Scene, useful: *hm.IntMap[i32]) void {
+    let i: i32 = 0;
+    while (i < s.*.comps.len) {
+        if (s.*.comps.data[i].kind == Kind.Detector) {
+            hm.int_put[i32](useful, s.*.comps.data[i].id, 1);
+        }
+        i = i + 1;
+    }
+    let changed: bool = true;
+    while (changed) {
+        changed = false;
+        let gi: i32 = 0;
+        while (gi < s.*.guides.len) {
+            let g: Guide = s.*.guides.data[gi];
+            let to_u: i32 = hm.int_get[i32](useful.*, g.to_c) orelse 0;
+            let from_u: i32 = hm.int_get[i32](useful.*, g.from_c) orelse 0;
+            if (to_u == 1 && from_u == 0) {
+                hm.int_put[i32](useful, g.from_c, 1);
+                changed = true;
+            }
+            gi = gi + 1;
+        }
+    }
+}
+
+// Emitters and chambers that reach no detector cannot affect any output.
+fn opt_find_dead(s: *Scene, out: *list.ArrayList[i32]) void {
+    let useful: hm.IntMap[i32] = hm.int_make[i32](64);
+    opt_mark_useful(s, &useful);
+    let i: i32 = 0;
+    while (i < s.*.comps.len) {
+        let c: Comp = s.*.comps.data[i];
+        if (c.kind == Kind.Emitter || c.kind == Kind.Chamber) {
+            let u: i32 = hm.int_get[i32](useful, c.id) orelse 0;
+            if (u == 0) { list.push[i32](out, c.id); }
+        }
+        i = i + 1;
+    }
+    hm.int_free[i32](&useful);
+}
+
+// ── constant-op collapse analysis (rewrite family 2) ─────────────────────────
+// Out-degree: guides originating at a component's output.
+fn opt_out_degree(s: *Scene, comp_id: i32) i32 {
+    let n: i32 = 0;
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) {
+        if (s.*.guides.data[gi].from_c == comp_id) { n = n + 1; }
+        gi = gi + 1;
+    }
+    return n;
+}
+
+// Index of the single guide feeding (comp, port), or -1 unless exactly one lands
+// there. Fan-in ambiguity (last-writer-wins in sim) must exclude a candidate.
+fn opt_guide_into(s: *Scene, comp_id: i32, port: i32) i32 {
+    let found: i32 = 0 - 1;
+    let cnt: i32 = 0;
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) {
+        let g: Guide = s.*.guides.data[gi];
+        if (g.to_c == comp_id && g.to_p == port) { found = gi; cnt = cnt + 1; }
+        gi = gi + 1;
+    }
+    if (cnt == 1) { return found; }
+    return 0 - 1;
+}
+
+// A mul chamber (op 5) fed a constant -1 on IN.B computes x*(-1) = -x; a nand/min
+// chamber (op 7) fed a constant +1 on IN.B computes -min(x,1) = -x. Both equal a
+// negate (op 2) over the closed {-1,0,1} trit ring. When the constant comes from
+// a single dedicated emitter (fan-out 1) on IN.B, drop that emitter (its guide
+// goes with it) and relabel the chamber to negate — IN.A is untouched, so no
+// rewiring. Any residual risk (e.g. a derived-clock shift from removing the
+// emitter) is caught by the output-equivalence replay before the proposal is used.
+fn opt_find_const_collapse(s: *Scene, removed: *list.ArrayList[i32],
+                           relabels: *list.ArrayList[OptRelabel]) void {
+    let ci: i32 = 0;
+    while (ci < s.*.comps.len) {
+        let c: Comp = s.*.comps.data[ci];
+        if (c.kind == Kind.Chamber && (c.logic_op == 5 || c.logic_op == 7)) {
+            let want_preset: i32 = 4;                    // constant -1 for mul
+            if (c.logic_op == 7) { want_preset = 6; }    // constant +1 for min
+            let gi: i32 = opt_guide_into(s, c.id, 1);    // IN.B
+            if (gi >= 0) {
+                let ei: i32 = scene_comp_index(s, s.*.guides.data[gi].from_c);
+                if (ei >= 0) {
+                    let e: Comp = s.*.comps.data[ei];
+                    if (e.kind == Kind.Emitter && e.preset == want_preset &&
+                        opt_out_degree(s, e.id) == 1) {
+                        list.push[i32](removed, e.id);
+                        list.push[OptRelabel](relabels,
+                            OptRelabel{ .comp_id = c.id, .new_op = 2 });
+                    }
+                }
+            }
+        }
+        ci = ci + 1;
+    }
+}
+
+// ── proposals ────────────────────────────────────────────────────────────────
+// A relabel edits a chamber's transfer op in place (no geometry change).
+struct OptRelabel {
+    comp_id: i32,
+    new_op: i32,
+}
+
+struct OptProposal {
+    family: i32,
+    valid: bool,        // a verified, strictly-improving proposal exists
+    equivalent: bool,   // passed output-equivalence verification
+    removed: list.ArrayList[i32],           // component ids to delete (with guides)
+    relabels: list.ArrayList[OptRelabel],   // chamber ops to relabel in place
+    before: OptCost,
+    after: OptCost,
+}
+
+fn opt_proposal_none() OptProposal {
+    return OptProposal{
+        .family = 0, .valid = false, .equivalent = false,
+        .removed = list.make[i32](4),
+        .relabels = list.make[OptRelabel](4),
+        .before = opt_cost_zero(), .after = opt_cost_zero(),
+    };
+}
+
+fn opt_proposal_free(p: *OptProposal) void {
+    list.free[i32](&p.*.removed);
+    list.free[OptRelabel](&p.*.relabels);
+}
+
+// Apply a proposal's edits (relabels first, then removals) to a scene in place.
+fn opt_apply_edits(s: *Scene, removed: list.ArrayList[i32],
+                   relabels: list.ArrayList[OptRelabel]) void {
+    let ri: i32 = 0;
+    while (ri < relabels.len) {
+        let rl: OptRelabel = relabels.data[ri];
+        let ci: i32 = scene_comp_index(s, rl.comp_id);
+        if (ci >= 0) {
+            s.*.comps.data[ci].logic_op = rl.new_op;
+            scene_mark_topo_comp(s, rl.comp_id);
+        }
+        ri = ri + 1;
+    }
+    let di: i32 = 0;
+    while (di < removed.len) {
+        scene_remove(s, removed.data[di]);
+        di = di + 1;
+    }
+}
+
+// Build an independent candidate scene with the proposal's edits applied.
+fn opt_build_candidate(s: *Scene, removed: list.ArrayList[i32],
+                       relabels: list.ArrayList[OptRelabel]) *Scene {
+    let cand: *Scene = scene_clone(s);
+    opt_apply_edits(cand, removed, relabels);
+    return cand;
+}
+
+// True only if every component the proposal touches is still present in `s`.
+fn opt_edits_present(s: *Scene, removed: list.ArrayList[i32],
+                     relabels: list.ArrayList[OptRelabel]) bool {
+    let di: i32 = 0;
+    while (di < removed.len) {
+        if (scene_comp_index(s, removed.data[di]) < 0) { return false; }
+        di = di + 1;
+    }
+    let ri: i32 = 0;
+    while (ri < relabels.len) {
+        if (scene_comp_index(s, relabels.data[ri].comp_id) < 0) { return false; }
+        ri = ri + 1;
+    }
+    return true;
+}
+
+// Headline gain as a whole-percent drop in the cost score, for the panel summary
+// and the Optimizer button badge. Always a measured delta from the real baseline.
+fn opt_gain_percent(p: OptProposal) i32 {
+    let b: i64 = opt_cost_score(p.before);
+    if (b <= 0) { return 0; }
+    let a: i64 = opt_cost_score(p.after);
+    let d: i64 = b - a;
+    if (d <= 0) { return 0; }
+    return ((d * 100) / b) as i32;
+}
+
+// Verify a candidate edit set against `s`: output-equivalent, structurally valid,
+// and a strict cost improvement. Returns the candidate's cost via `after`.
+fn opt_edits_win(s: *Scene, removed: list.ArrayList[i32],
+                 relabels: list.ArrayList[OptRelabel], before: OptCost,
+                 after: *OptCost) bool {
+    let cand: *Scene = opt_build_candidate(s, removed, relabels);
+    let equal: bool = opt_outputs_equal(s, cand, opt_horizon());
+    after.* = opt_cost(cand);
+    let ok: bool = equal && scene_validation_errors(cand) == 0 &&
+        opt_cost_score(after.*) < opt_cost_score(before);
+    scene_free(cand);
+    return ok;
+}
+
+// Observer entry point (Section 20.1): clones internally and NEVER mutates `s`.
+// Tries each rewrite family in order and returns the first verified, improving
+// proposal; valid=false when there is nothing worth doing.
+fn opt_analyze(s: *Scene) OptProposal {
+    let p: OptProposal = opt_proposal_none();
+    p.before = opt_cost(s);
+    let empty_rl: list.ArrayList[OptRelabel] = list.make[OptRelabel](1);
+
+    // Family 1 — dead-path elimination.
+    let dead: list.ArrayList[i32] = list.make[i32](8);
+    opt_find_dead(s, &dead);
+    if (dead.len > 0) {
+        let after: OptCost = opt_cost_zero();
+        if (opt_edits_win(s, dead, empty_rl, p.before, &after)) {
+            p.family = opt_family_dead_path();
+            p.equivalent = true; p.valid = true; p.after = after;
+            let ci: i32 = 0;
+            while (ci < dead.len) { list.push[i32](&p.removed, dead.data[ci]); ci = ci + 1; }
+        }
+    }
+    list.free[i32](&dead);
+    if (p.valid) { list.free[OptRelabel](&empty_rl); return p; }
+
+    // Family 2 — constant-op collapse.
+    let crem: list.ArrayList[i32] = list.make[i32](4);
+    let crel: list.ArrayList[OptRelabel] = list.make[OptRelabel](4);
+    opt_find_const_collapse(s, &crem, &crel);
+    if (crem.len > 0) {
+        let after2: OptCost = opt_cost_zero();
+        if (opt_edits_win(s, crem, crel, p.before, &after2)) {
+            p.family = opt_family_const_collapse();
+            p.equivalent = true; p.valid = true; p.after = after2;
+            let ki: i32 = 0;
+            while (ki < crem.len) { list.push[i32](&p.removed, crem.data[ki]); ki = ki + 1; }
+            let li: i32 = 0;
+            while (li < crel.len) { list.push[OptRelabel](&p.relabels, crel.data[li]); li = li + 1; }
+        }
+    }
+    list.free[i32](&crem);
+    list.free[OptRelabel](&crel);
+    list.free[OptRelabel](&empty_rl);
+    if (!p.valid) { p.after = p.before; }
+    return p;
+}
+
+// Mutation entry point (Section 20.4). Re-verifies the proposal against the
+// CURRENT scene (every touched part still present, the edit still output-
+// equivalent and structurally valid) before changing anything, then commits.
+// Returns false and leaves `s` untouched if the proposal no longer applies — e.g.
+// the project changed underneath it. Both manual Apply and auto-apply route here.
+// Re-verify a proposal against the CURRENT scene without mutating anything: every
+// touched part still present, and the edit still output-equivalent and valid. The
+// app layer calls this before committing through the journaled/audited path.
+fn opt_verify(s: *Scene, p: *OptProposal) bool {
+    if (!p.*.valid || (p.*.removed.len == 0 && p.*.relabels.len == 0)) { return false; }
+    if (!opt_edits_present(s, p.*.removed, p.*.relabels)) { return false; }
+    let cand: *Scene = opt_build_candidate(s, p.*.removed, p.*.relabels);
+    let ok: bool = opt_outputs_equal(s, cand, opt_horizon()) &&
+        scene_validation_errors(cand) == 0;
+    scene_free(cand);
+    return ok;
+}
+
+fn opt_apply(s: *Scene, p: *OptProposal) bool {
+    if (!opt_verify(s, p)) { return false; }
+    opt_apply_edits(s, p.*.removed, p.*.relabels);
+    return true;
+}
+
+// ── background engine (Sections 20.4, 20.5) ──────────────────────────────────
+// Holds the optimizer's user-facing state: whether it runs at all, whether it
+// applies automatically (a Settings toggle, off by default), the minimum gain it
+// will surface, and the single pending proposal whose count drives the quiet
+// Optimizer button badge. Disabling the engine changes only speed — never a
+// result — because a disabled tick does nothing and analyze is a pure observer.
+struct OptEngine {
+    enabled: bool,
+    auto_apply: bool,
+    min_gain_pct: i32,
+    has_pending: bool,
+    pending: OptProposal,
+    badge: i32,          // number of pending proposals shown on the button
+    applied_count: i64,  // optimizations applied this session (auto or manual)
+}
+
+fn opt_engine_new() *OptEngine {
+    return new(OptEngine{
+        .enabled = true,
+        .auto_apply = false,
+        .min_gain_pct = 1,
+        .has_pending = false,
+        .pending = opt_proposal_none(),
+        .badge = 0,
+        .applied_count = 0,
+    });
+}
+
+fn opt_engine_free(e: *OptEngine) void {
+    opt_proposal_free(&e.*.pending);
+    _zag_free(e as *i8);
+}
+
+fn opt_engine_clear_pending(e: *OptEngine) void {
+    opt_proposal_free(&e.*.pending);
+    e.*.pending = opt_proposal_none();
+    e.*.has_pending = false;
+    e.*.badge = 0;
+}
+
+fn opt_engine_store(e: *OptEngine, p: OptProposal) void {
+    opt_proposal_free(&e.*.pending);
+    e.*.pending = p;
+    e.*.has_pending = true;
+    e.*.badge = 1;
+}
+
+fn opt_engine_badge(e: *OptEngine) i32 { return e.*.badge; }
+
+// One bounded background step (Section 20.5). Costs a single analyze pass, so it
+// is safe to call on a cadence off the interaction path. Returns true only when
+// the visible state changed (badge appeared/cleared, or an auto-apply happened),
+// so the caller repaints the button only when needed — no churn, no lag. Does
+// nothing when disabled.
+fn opt_engine_tick(e: *OptEngine, s: *Scene) bool {
+    if (!e.*.enabled) { return false; }
+    let p: OptProposal = opt_analyze(s);
+    if (!p.valid || opt_gain_percent(p) < e.*.min_gain_pct) {
+        opt_proposal_free(&p);
+        if (e.*.has_pending) { opt_engine_clear_pending(e); return true; }
+        return false;
+    }
+    if (e.*.auto_apply) {
+        let applied: bool = opt_apply(s, &p);
+        opt_proposal_free(&p);
+        if (applied) {
+            e.*.applied_count = e.*.applied_count + 1;
+            opt_engine_clear_pending(e);
+            return true;
+        }
+        return false;
+    }
+    let was_pending: bool = e.*.has_pending;
+    opt_engine_store(e, p);
+    return !was_pending;   // visibly changes only when the badge first appears
+}
+
+// Analysis-only refresh: surface a pending proposal and update the badge, never
+// applying. The app uses this so that ALL mutation goes through its journaled,
+// audited apply path (opt_apply_gui) — even when auto-apply is on.
+fn opt_engine_refresh(e: *OptEngine, s: *Scene) bool {
+    if (!e.*.enabled) { return false; }
+    let p: OptProposal = opt_analyze(s);
+    if (!p.valid || opt_gain_percent(p) < e.*.min_gain_pct) {
+        opt_proposal_free(&p);
+        if (e.*.has_pending) { opt_engine_clear_pending(e); return true; }
+        return false;
+    }
+    let was_pending: bool = e.*.has_pending;
+    opt_engine_store(e, p);
+    return !was_pending;
+}
+
+// The three panel actions (Section 20.4): Apply, Ignore, Details.
+fn opt_engine_apply_pending(e: *OptEngine, s: *Scene) bool {
+    if (!e.*.has_pending) { return false; }
+    let ok: bool = opt_apply(s, &e.*.pending);
+    if (ok) { e.*.applied_count = e.*.applied_count + 1; }
+    opt_engine_clear_pending(e);
+    return ok;
+}
+
+fn opt_engine_ignore_pending(e: *OptEngine) void {
+    opt_engine_clear_pending(e);
+}
+
+fn opt_engine_pending_family(e: *OptEngine) i32 {
+    if (!e.*.has_pending) { return opt_family_none(); }
+    return e.*.pending.family;
+}
+
+fn opt_engine_pending_gain(e: *OptEngine) i32 {
+    if (!e.*.has_pending) { return 0; }
+    return opt_gain_percent(e.*.pending);
+}
