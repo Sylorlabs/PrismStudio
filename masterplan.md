@@ -540,15 +540,26 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
 
 Run this gate from a clean checkout after all earlier phases are complete:
 
-- [ ] Build the self-hosted compiler path and Triton production binary.
+- [x] Build the self-hosted compiler path and Triton production binary.
+      Evidence: `build-production` compiles `src/main.zag` through
+      `../zag/zag-poc/znc`.
 - [ ] Run every unit, property, fuzz-regression, integration, and protocol test.
-- [ ] Launch Triton in a real X11 session.
-- [ ] Create a new project through the public agent API.
-- [ ] Construct the complete reference photonic computing unit.
+- [x] Launch Triton in a real X11 session. Evidence: `x11-live` and
+      `x11-captures` passed with `DISPLAY` available.
+- [x] Create a new project through the public agent API. Evidence:
+      `agent-idempotency`, `agent-revision-conflict`, and MCP coverage gates
+      create projects through `./zagpa --agent`.
+- [x] Construct the complete reference photonic computing unit. Evidence:
+      `flash-photonic` imports the rebuilt FIR through the public agent request
+      envelope and produces the 384-component/192-guide canonical PCU.
 - [ ] Open it in the UI and inspect every layer, route, model, and provenance field.
 - [ ] Modify it through the UI, undo, redo, save, close, and reopen it.
-- [ ] Run design-rule, connectivity, model, timing, and simulation verification.
-- [ ] Compare all reference outputs and traces.
+- [x] Run design-rule, connectivity, model, timing, and simulation verification.
+      Evidence: `reference-tamper`, `flash-photonic`, `simulation-properties`,
+      and model-derived timing checks.
+- [x] Compare all reference outputs and traces. Evidence: `flash-photonic`
+      byte-compares canonical exports and `deterministic-trace` byte-compares
+      fresh traces with `examples/flash_photonic_massive.trace.txt`.
 - [x] Export the netlist, model manifest, bill of materials, report, and render.
       Evidence: maintained text artifacts and `evidence/captures/flash-pcu-1440.png`.
 - [x] Exercise an unauthorized agent mutation and prove it has no effect.
