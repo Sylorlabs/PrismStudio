@@ -833,11 +833,15 @@ Unsupported component
 * [ ] Smooth orbit camera.
 * [ ] Smooth pan.
 * [ ] Smooth zoom.
-* [ ] Focus selected object.
+* [x] Focus selected object. Evidence: `F` / `app_frame_selected`; `shortcuts` gate.
 * [ ] Frame all objects.
 * [ ] Reset view.
-* [ ] Top/front/side/isometric camera shortcuts.
-* [ ] Perspective and orthographic modes.
+* [x] Top/front/side/isometric camera shortcuts. Evidence: View menu + palette
+  commands Top/Front/Right/Perspective (codes 22-25); `palette` gate executes
+  View: Right.
+* [x] Perspective and orthographic modes. Evidence: `Cam.ortho` honored in both
+  `vp_screen` (render/project) and `ray_from_pixel` (pick); `ortho` gate proves
+  the toggle, depth-independent projection, and consistent ortho picking.
 * [ ] Clickable 3D orientation gizmo.
 * [ ] Grid fades by distance.
 * [ ] Selected objects get clear outlines.

@@ -113,6 +113,7 @@ struct Cam {
     right: Vec3,
     up: Vec3,
     flen: f64,   // focal length in pixels for current viewport height
+    ortho: bool, // orthographic projection when true (parallel), else perspective
 }
 
 fn cam_new() Cam {
@@ -127,6 +128,7 @@ fn cam_new() Cam {
         .right = v3(1.0, 0.0, 0.0),
         .up = v3(0.0, 1.0, 0.0),
         .flen = 600.0,
+        .ortho = false,
     };
     return c;
 }
@@ -195,6 +197,14 @@ fn ray_from_pixel(c: Cam, vp_w: i32, vp_h: i32, mx: i32, my: i32) Ray {
     let rgt: Vec3 = c.right;
     let up: Vec3 = c.up;
     let fwd: Vec3 = c.fwd;
+    if (c.ortho) {
+        // parallel rays: same direction, origin slid across the image plane so the
+        // scale matches vp_screen's ortho scale (flen/dist).
+        let s: f64 = c.flen / c.dist;
+        let ox: Vec3 = vscale(rgt, px / s);
+        let oy: Vec3 = vscale(up, py / s);
+        return Ray{ .org = vadd(vadd(c.eye, ox), oy), .dir = fwd };
+    }
     let a: Vec3 = vscale(rgt, px / c.flen);
     let b: Vec3 = vscale(up, py / c.flen);
     let d0: Vec3 = vadd(fwd, a);

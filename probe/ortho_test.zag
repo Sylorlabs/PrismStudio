@@ -1,0 +1,56 @@
+// ortho_test.zag — orthographic / perspective camera toggle (Masterplan
+// Sections 3.5, 9.2 / Phase F). Verifies the toggle, that ortho projection is
+// depth-independent (differs from perspective for off-plane points), and that
+// picking stays consistent with the projection in orthographic mode.
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn absf(x: f64) f64 { if (x < 0.0) { return 0.0 - x; } return x; }
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let a: *App = app_new(1024, 640);
+    let _pl: i32 = scene_place(a.*.scene, Kind.Plate, vox(0, 0, 0), 0);
+    let cid: i32 = scene_place(a.*.scene, Kind.Chamber, vox(3, 1, 3), 0);
+    app_frame_all(a);
+    app_frame(a, 0.016);   // cam_update
+    let vp: Rect = zone_center(a);
+
+    check("camera defaults to perspective", !a.*.cam.ortho, &failures);
+    app_action(a, 26);
+    check("toggle switches to orthographic", a.*.cam.ortho, &failures);
+    app_action(a, 26);
+    check("toggle switches back to perspective", !a.*.cam.ortho, &failures);
+
+    // An off-plane point (twice the target distance, offset sideways) projects to
+    // a different screen X under ortho vs perspective (depth independence).
+    let far: Vec3 = vadd(vadd(a.*.cam.eye, vscale(a.*.cam.fwd, a.*.cam.dist * 2.0)),
+                         vscale(a.*.cam.right, 5.0));
+    a.*.cam.ortho = false;
+    let pp: P3 = vp_proj(a.*.cam, vp, far);
+    a.*.cam.ortho = true;
+    let po: P3 = vp_proj(a.*.cam, vp, far);
+    check("orthographic projection differs from perspective off the target plane",
+        pp.ok && po.ok && absf(pp.x - po.x) > 1.0, &failures);
+
+    // In orthographic mode, projecting a component center and picking at that
+    // screen point must return the same component (projection/ray consistent).
+    let e: Vox = comp_ext(a.*.scene.*.comps.data[scene_comp_index(a.*.scene, cid)]);
+    let ci: i32 = scene_comp_index(a.*.scene, cid);
+    let c: Comp = a.*.scene.*.comps.data[ci];
+    let ctr: Vec3 = v3((c.origin.x as f64) + (e.x as f64) * 0.5,
+                       (c.origin.y as f64) + (e.y as f64) * 0.5,
+                       (c.origin.z as f64) + (e.z as f64) * 0.5);
+    let sp: P3 = vp_proj(a.*.cam, vp, ctr);
+    let picked: i32 = vp_pick_comp(a.*.scene, a.*.cam, vp, sp.x as i32, sp.y as i32);
+    check("orthographic picking hits the projected component", sp.ok && picked == cid, &failures);
+
+    if (failures == 0) { _zag_println("ORTHO: ALL PASS"); return 0; }
+    _zag_println("ORTHO: FAILURES"); return 1;
+}

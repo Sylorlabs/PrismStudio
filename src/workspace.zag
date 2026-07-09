@@ -48,6 +48,7 @@ fn app_action(a: *App, code: i32) void {
         a.*.cam.yaw = 0.9;
         a.*.cam.pitch = 0.62;
     }
+    if (code == 26) { a.*.cam.ortho = !a.*.cam.ortho; }
     if (code == 30) { a.*.modal = modal_keys(); }
     if (code == 31) { app_action_demo(a); }
     if (code == 40) { a.*.tool = tool_select(); }
@@ -83,6 +84,7 @@ fn palette_commands(out: *list.ArrayList[PCmd]) void {
     list.push[PCmd](out, PCmd{ .label = "View: Front", .hint = "", .code = 23 });
     list.push[PCmd](out, PCmd{ .label = "View: Right", .hint = "", .code = 24 });
     list.push[PCmd](out, PCmd{ .label = "View: Perspective", .hint = "", .code = 25 });
+    list.push[PCmd](out, PCmd{ .label = "View: Toggle Orthographic", .hint = "", .code = 26 });
     list.push[PCmd](out, PCmd{ .label = "Tool: Select", .hint = "Q", .code = 40 });
     list.push[PCmd](out, PCmd{ .label = "Tool: Route Waveguide", .hint = "E", .code = 41 });
     list.push[PCmd](out, PCmd{ .label = "Toggle Simulation", .hint = "Space", .code = 42 });
@@ -277,6 +279,7 @@ fn menu_items(m: i32, out: *list.ArrayList[MenuItem]) void {
         list.push[MenuItem](out, MenuItem{ .label = "Front", .hint = "", .code = 23 });
         list.push[MenuItem](out, MenuItem{ .label = "Right", .hint = "", .code = 24 });
         list.push[MenuItem](out, MenuItem{ .label = "Perspective", .hint = "", .code = 25 });
+        list.push[MenuItem](out, MenuItem{ .label = "Toggle Orthographic", .hint = "", .code = 26 });
     }
     if (m == 3) {
         list.push[MenuItem](out, MenuItem{ .label = "Shortcuts", .hint = "", .code = 30 });

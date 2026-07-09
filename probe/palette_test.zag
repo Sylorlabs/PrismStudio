@@ -65,8 +65,8 @@ fn main() i32 {
     open_palette(a);
     check("Ctrl+K opens the command palette", a.*.palette_open, &failures);
 
-    type_str(a, "toggle");
-    check("typing filters commands", a.*.palette_text.len == 6 && filtered_count(a) == 1, &failures);
+    type_str(a, "simulation");
+    check("typing filters commands", a.*.palette_text.len == 10 && filtered_count(a) == 1, &failures);
 
     let was_playing: bool = a.*.sim.*.playing;
     frame_keys1(a, key_enter(), 0);
@@ -75,7 +75,7 @@ fn main() i32 {
 
     open_palette(a);
     type_str(a, "view");
-    check("filter narrows to the four view commands", filtered_count(a) == 4, &failures);
+    check("filter narrows to the view commands", filtered_count(a) == 5, &failures);
     frame_keys2(a, 18, 18);   // Down, Down
     check("arrow keys move the selection", a.*.palette_sel == 2, &failures);
     frame_keys1(a, key_enter(), 0);

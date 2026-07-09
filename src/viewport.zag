@@ -85,6 +85,16 @@ fn vpt_lerp(a: VPt, b: VPt, t: f64) VPt {
 
 // Project a view point (z must be > near) to screen coords inside `clip`.
 fn vp_screen(clip: Rect, cam: Cam, v: VPt) P3 {
+    if (cam.ortho) {
+        // parallel projection: screen offset is independent of depth
+        let s: f64 = cam.flen / cam.dist;
+        return P3{
+            .x = (clip.x as f64) + (clip.w as f64) * 0.5 + v.x * s,
+            .y = (clip.y as f64) + (clip.h as f64) * 0.5 - v.y * s,
+            .z = v.z,
+            .ok = true,
+        };
+    }
     return P3{
         .x = (clip.x as f64) + (clip.w as f64) * 0.5 + v.x * cam.flen / v.z,
         .y = (clip.y as f64) + (clip.h as f64) * 0.5 - v.y * cam.flen / v.z,
