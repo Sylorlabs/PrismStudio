@@ -350,7 +350,9 @@ The user and agent must be able to perform the same core project operations.
       `agent-revision-conflict` byte/revision immutability gate.
 - [ ] Stream long-running progress and support safe cancellation.
 - [ ] Validate MCP, CLI, pipe, and in-process commands through one command layer.
-- [ ] Prevent tools from bypassing design rules or persistence invariants.
+- [x] Prevent tools from bypassing design rules or persistence invariants.
+      Evidence: `mcp-invariant-enforcement` rejects invalid MCP placement and
+      routing while preserving project bytes and revision.
 - [x] Add capability negotiation and protocol versioning. Evidence: native
       `capabilities` reports protocol/grants/revision/limits and `mcp-protocol`
       verifies MCP `2024-11-05` initialization plus bounded framed calls.
