@@ -364,7 +364,10 @@ The user and agent must be able to perform the same core project operations.
       replayed, cancelled, and malformed requests.
 - [x] Prove unauthorized requests leave project bytes and revision unchanged.
       Evidence: `agent-capability-denial` hashes the project before/after.
-- [ ] Prove every successful mutation is undoable and auditable.
+- [x] Prove every successful mutation is undoable and auditable. Evidence:
+      `agent-undo-audit` covers successful place, route, delete, undo, and redo
+      state transitions plus audit success records with affected IDs and undo
+      tokens.
 - [x] Run two-client revision-conflict and recovery tests. Evidence: a stale
       client is rejected without mutation, then succeeds after refreshing to
       the committed revision in `agent-revision-conflict`.
