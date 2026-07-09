@@ -61,6 +61,7 @@ is the only GPU and drives the display.
 | F.layout-persistence | pass | `ui-preferences` | left/right/bottom splits round-trip separately from project data | Add invalid preference fuzz cases |
 | F.ui-tokens | pass | `src/ui.zag`; `ui-tokens` | Spacing, typography, shape/elevation, UI state colors, separate beam colors, and text/panel contrast are defined and gated | Add full WCAG-style contrast ratios and usage coverage |
 | F.frame-overlay | pass | `draw_frame_timing_overlay`; `frame-overlay` | Viewport renders frame number, previous frame time, simulation symbol, and run state in a tested overlay | Add rolling averages and subsystem timing split |
+| H.frame-diff | pass | `probe/frame_diff_test.zag`; `frame-diff` | Fixed-state CPU frame captures are byte-identical and the pixel-diff helper detects a deliberate one-pixel change | Add maintained golden scene image corpus |
 | H.fb-bounds | pass | `probe/fb_bounds_test.zag`; `fb-bounds` | Clipped framebuffer point/fill/blend/line/text operations preserve canary pixels outside active clip | Add randomized primitive clipping corpus |
 | I.render-discovery | pass | `gpu_open`; `--gpu-info` | Scans DRM render minors and accepts only a successful AMDGPU info query; found minor 128 | Query full firmware/IP/memory tuple |
 | I.display-gpu-certification | blocked | `lspci`, `/dev/dri`; masterplan 12.1 | Only RX 5700 XT is also the display GPU; destructive reset/fault certification requires a non-display GPU | Complete all bounded non-destructive work; do not fake certification |

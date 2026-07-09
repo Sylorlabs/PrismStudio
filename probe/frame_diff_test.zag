@@ -1,0 +1,38 @@
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn render_capture() *App {
+    let a: *App = app_new(960, 640);
+    app_action_demo(a);
+    a.*.frame = 7;
+    a.*.frame_ms = 16;
+    a.*.sim.*.symbol = 3;
+    app_frame(a, 0.016);
+    return a;
+}
+
+fn frame_diff_count(a: *FB, b: *FB) i32 {
+    if (a.*.w != b.*.w || a.*.h != b.*.h) { return 0 - 1; }
+    let diff: i32 = 0;
+    let i: i32 = 0;
+    while (i < a.*.px.len) {
+        if (a.*.px.data[i] != b.*.px.data[i]) { diff = diff + 1; }
+        i = i + 1;
+    }
+    return diff;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let a: *App = render_capture();
+    let b: *App = render_capture();
+    check("deterministic CPU frame captures match", frame_diff_count(&a.*.f, &b.*.f) == 0, &failures);
+    b.*.f.px.data[17] = b.*.f.px.data[17] ^ 255;
+    check("pixel diff detects one changed pixel", frame_diff_count(&a.*.f, &b.*.f) == 1, &failures);
+    if (failures == 0) { _zag_println("FRAME DIFF: ALL PASS"); return 0; }
+    _zag_println("FRAME DIFF: FAILURES"); return 1;
+}

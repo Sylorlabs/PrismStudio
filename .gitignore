@@ -18,6 +18,7 @@ probe/parser_corpus_test
 probe/protocol_parser_test
 probe/masterplan_evidence_test
 probe/frame_overlay_test
+probe/frame_diff_test
 probe/gpu_test
 probe/gpu_submit_test
 probe/gpu_compute_test

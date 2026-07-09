@@ -409,7 +409,9 @@ The user and agent must be able to perform the same core project operations.
 - [ ] Render intersections, over/under routes, layers, ports, and selected paths.
 - [ ] Batch repeated geometry and update only dirty buffers/regions.
 - [ ] Keep UI overlays and scene rendering independently invalidated.
-- [ ] Add deterministic frame capture and pixel-diff tooling.
+- [x] Add deterministic frame capture and pixel-diff tooling. Evidence:
+      `frame-diff` renders two fixed-state CPU frames, verifies zero pixel
+      delta, mutates one pixel, and verifies the diff count detects it.
 - [ ] Add picking tests at viewport edges, occlusion boundaries, and high zoom.
 
 ### 9.3 Real UI Testing
