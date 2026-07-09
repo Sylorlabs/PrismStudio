@@ -328,7 +328,11 @@ The user and agent must be able to perform the same core project operations.
 - [x] Reject operations outside the active project root. Evidence:
       `TRITON_PROJECT_ROOT`, `E_PATH_OUTSIDE_ROOT`, and
       `agent-path-confinement` prove rejected traversal leaves no output file.
-- [ ] Redact credentials, X11 cookies, environment secrets, and private content.
+- [x] Redact credentials, X11 cookies, environment secrets, and private content.
+      Evidence: `audit-redaction` proves actor/request/result audit records
+      scrub secret/password/XAuthority/cookie-looking tokens while preserving
+      required audit metadata, and proves opened project content is not emitted
+      into audit records.
 - [x] Record actor, request, validated arguments, result, affected IDs, and undo
       token in an append-only audit log. Evidence: `agent-audit-result` verifies
       a successful validated placement record with every field.

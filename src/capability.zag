@@ -25,6 +25,71 @@ fn cap_contains(hay: []u8, needle: []u8) bool {
     return false;
 }
 
+fn cap_lower(c: u8) u8 {
+    if (c >= 65 && c <= 90) { return c + 32; }
+    return c;
+}
+
+fn cap_contains_fold(hay: []u8, needle: []u8) bool {
+    if (needle.len < 1 || hay.len < needle.len) { return false; }
+    let i: i32 = 0;
+    while (i <= hay.len - needle.len) {
+        let ok: bool = true;
+        let j: i32 = 0;
+        while (j < needle.len) {
+            if (cap_lower(hay[i + j]) != cap_lower(needle[j])) { ok = false; }
+            j = j + 1;
+        }
+        if (ok) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn audit_token_sensitive(tok: []u8) bool {
+    if (cap_contains_fold(tok, "undo_token=")) { return false; }
+    if (cap_contains_fold(tok, "idempotency_key=")) { return false; }
+    if (cap_contains_fold(tok, "secret")) { return true; }
+    if (cap_contains_fold(tok, "api_token")) { return true; }
+    if (cap_contains_fold(tok, "access_token")) { return true; }
+    if (cap_contains_fold(tok, "auth_token")) { return true; }
+    if (cap_contains_fold(tok, "token=")) { return true; }
+    if (cap_contains_fold(tok, "password")) { return true; }
+    if (cap_contains_fold(tok, "passwd")) { return true; }
+    if (cap_contains_fold(tok, "cookie")) { return true; }
+    if (cap_contains_fold(tok, "xauth")) { return true; }
+    if (cap_contains_fold(tok, "credential")) { return true; }
+    if (cap_contains_fold(tok, "authorization")) { return true; }
+    if (cap_contains_fold(tok, "bearer")) { return true; }
+    return false;
+}
+
+fn audit_push_slice(out: *list.ArrayList[u8], s: []u8) void {
+    let i: i32 = 0;
+    while (i < s.len) { list.push[u8](out, s[i]); i = i + 1; }
+}
+
+fn audit_redact(s: []u8) []u8 {
+    let out: list.ArrayList[u8] = list.make[u8](s.len + 16);
+    let i: i32 = 0;
+    while (i < s.len) {
+        if (s[i] == 32 || s[i] == 9 || s[i] == 10 || s[i] == 13) {
+            list.push[u8](&out, s[i]);
+            i = i + 1;
+        } else {
+            let start: i32 = i;
+            while (i < s.len && s[i] != 32 && s[i] != 9 && s[i] != 10 && s[i] != 13) { i = i + 1; }
+            let tok: []u8 = s[start..i];
+            if (audit_token_sensitive(tok)) {
+                audit_push_slice(&out, "[redacted]");
+            } else {
+                audit_push_slice(&out, tok);
+            }
+        }
+    }
+    return out.data[0..out.len];
+}
+
 fn cap_load() i64 {
     let raw: []u8 = _zag_getenv("TRITON_CAPS");
     if (_zag_strcmp(raw, "all") == 1) { return 255; }
@@ -56,13 +121,15 @@ fn audit_append(state: []u8, line: []u8, required: i64) void {
     if (path.len == 0) { path = ".triton/audit.log"; }
     let actor: []u8 = _zag_getenv("TRITON_ACTOR");
     if (actor.len == 0) { actor = "local-agent"; }
-    let a: []u8 = _zag_str_concat("actor=", actor);
+    let safe_actor: []u8 = audit_redact(actor);
+    let safe_line: []u8 = audit_redact(line);
+    let a: []u8 = _zag_str_concat("actor=", safe_actor);
     let b: []u8 = _zag_str_concat(a, " state=");
     let c: []u8 = _zag_str_concat(b, state);
     let d: []u8 = _zag_str_concat(c, " required=");
     let e: []u8 = _zag_str_concat(d, _zag_i64_to_str(required));
     let f: []u8 = _zag_str_concat(e, " request=");
-    let record: []u8 = _zag_str_concat(_zag_str_concat(f, line), "\n");
+    let record: []u8 = _zag_str_concat(_zag_str_concat(f, safe_line), "\n");
     let cp: list.ArrayList[u8] = audit_cpath(path);
     let fd: i64 = _zag_raw_syscall(2, cp.data as i64, 1089, 420, 0, 0, 0);
     if (fd >= 0) {
