@@ -649,16 +649,20 @@ not “programmer UI”
   * [x] 12 px. Evidence: `src/ui.zag` spacing tokens.
   * [x] 16 px. Evidence: `src/ui.zag` spacing tokens.
   * [x] 24 px. Evidence: `src/ui.zag` spacing tokens.
-* [ ] Define typography scale:
+* [x] Define typography scale. Evidence: `src/ui.zag` `type_*` tokens and
+  `ui-tokens`.
 
-  * [ ] tiny metadata
-  * [ ] normal panel text
-  * [ ] section headers
-  * [ ] viewport labels
-  * [ ] debug overlay text
-* [ ] Define border radius rules.
-* [ ] Define panel shadow/elevation rules.
-* [ ] Define selected, hovered, focused, disabled, warning, and error states.
+  * [x] tiny metadata. Evidence: `type_tiny_h`.
+  * [x] normal panel text. Evidence: `type_body_h`.
+  * [x] section headers. Evidence: `type_section_h`.
+  * [x] viewport labels. Evidence: `type_viewport_h`.
+  * [x] debug overlay text. Evidence: `type_debug_h`.
+* [x] Define border radius rules. Evidence: `radius_control` and `ui-tokens`.
+* [x] Define panel shadow/elevation rules. Evidence: `elevation_panel` and
+  `ui-tokens`.
+* [x] Define selected, hovered, focused, disabled, warning, and error states.
+  Evidence: `th_select`, `th_accent_hot`, `th_focus`, `th_disabled`,
+  `th_warning`, `th_danger`, and `ui-tokens`.
 * [x] Define color tokens instead of hardcoded colors. Evidence: `th_*` palette.
 * [x] Define beam-state colors separately from UI colors. Evidence:
   `src/ternary.zag` versus `src/ui.zag`.
@@ -1045,6 +1049,8 @@ Priority evidence:
 
 * [x] Add frame timing overlay. Evidence: `draw_frame_timing_overlay` in
   `src/workspace.zag` and `frame-overlay`.
+* [x] Build design tokens. Evidence: `src/ui.zag` spacing/type/shape/state
+  tokens and `ui-tokens`.
 
 The standard should be: **Triton looks like a designer and CAD engineer built it together**, while the engine underneath stays mathematically accurate.
 ## 19. Flash Language and Full Agent Control

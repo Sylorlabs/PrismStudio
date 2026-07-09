@@ -56,6 +56,7 @@ is the only GPU and drives the display.
 | F.x11-resize-focus-reopen | pass | `x11-live` | Real ConfigureWindow/ConfigureNotify, FocusIn, close, and reopen passed | Add long UI soak |
 | F.x11-multisize-capture | pass | `x11-captures`; 1024x640 and 1440x900 | Both live X11 windows presented and emitted deterministic CPU captures | Archive reference-PCU captures |
 | F.layout-persistence | pass | `ui-preferences` | left/right/bottom splits round-trip separately from project data | Add invalid preference fuzz cases |
+| F.ui-tokens | pass | `src/ui.zag`; `ui-tokens` | Spacing, typography, shape/elevation, UI state colors, and separate beam colors are defined and gated | Add contrast-ratio and usage coverage |
 | F.frame-overlay | pass | `draw_frame_timing_overlay`; `frame-overlay` | Viewport renders frame number, previous frame time, simulation symbol, and run state in a tested overlay | Add rolling averages and subsystem timing split |
 | I.render-discovery | pass | `gpu_open`; `--gpu-info` | Scans DRM render minors and accepts only a successful AMDGPU info query; found minor 128 | Query full firmware/IP/memory tuple |
 | I.display-gpu-certification | blocked | `lspci`, `/dev/dri`; masterplan 12.1 | Only RX 5700 XT is also the display GPU; destructive reset/fault certification requires a non-display GPU | Complete all bounded non-destructive work; do not fake certification |
