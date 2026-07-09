@@ -288,11 +288,46 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
     if (_zag_strcmp(name, "triton_capabilities") == 1) { mcp_append(out, "capabilities"); return true; }
     if (_zag_strcmp(name, "triton_demo") == 1) { mcp_append(out, "demo"); return true; }
     if (_zag_strcmp(name, "triton_list") == 1) { mcp_append(out, "list"); return true; }
+    if (_zag_strcmp(name, "triton_list_files") == 1) { mcp_append(out, "list_files"); return true; }
     if (_zag_strcmp(name, "triton_status") == 1) { mcp_append(out, "status"); return true; }
     if (_zag_strcmp(name, "triton_coords") == 1) { mcp_append(out, "coords"); return true; }
     if (_zag_strcmp(name, "triton_power") == 1) { mcp_append(out, "power"); return true; }
     if (_zag_strcmp(name, "triton_perf") == 1) { mcp_append(out, "perf"); return true; }
     if (_zag_strcmp(name, "triton_kinds") == 1) { mcp_append(out, "kinds"); return true; }
+    if (_zag_strcmp(name, "triton_get") == 1) {
+        let id: i32 = mcp_find_int(body, "component_id");
+        if (id < 0) { return false; }
+        mcp_append(out, "get ");
+        mcp_append(out, _zag_i64_to_str(id as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "triton_select") == 1) {
+        let id2: i32 = mcp_find_int(body, "component_id");
+        if (id2 < 0) { return false; }
+        mcp_append(out, "select ");
+        mcp_append(out, _zag_i64_to_str(id2 as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "triton_can_place") == 1) {
+        let kind0: []u8 = mcp_find_str(body, "kind");
+        let x0: i32 = mcp_find_int(body, "x");
+        let y0: i32 = mcp_find_int(body, "y");
+        let z0: i32 = mcp_find_int(body, "z");
+        let rot0: i32 = mcp_find_int(body, "rot");
+        if (kind0.len == 0 || x0 < 0 - 2048 || y0 < 0 - 2048 || z0 < 0 - 2048) { return false; }
+        if (rot0 < 0) { rot0 = 0; }
+        mcp_append(out, "can_place ");
+        mcp_append(out, kind0);
+        mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(x0 as i64));
+        mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(y0 as i64));
+        mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(z0 as i64));
+        mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(rot0 as i64));
+        return true;
+    }
     if (_zag_strcmp(name, "triton_place") == 1) {
         let kind: []u8 = mcp_find_str(body, "kind");
         let x: i32 = mcp_find_int(body, "x");
@@ -327,6 +362,13 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, _zag_i64_to_str(tc as i64));
         mcp_append(out, " ");
         mcp_append(out, _zag_i64_to_str(tp as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "triton_delete") == 1) {
+        let did: i32 = mcp_find_int(body, "component_id");
+        if (did < 0) { return false; }
+        mcp_append(out, "delete ");
+        mcp_append(out, _zag_i64_to_str(did as i64));
         return true;
     }
     if (_zag_strcmp(name, "triton_sim_step") == 1) {
@@ -395,6 +437,31 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, path);
         return true;
     }
+    if (_zag_strcmp(name, "triton_export") == 1) {
+        let prefix: []u8 = mcp_find_str(body, "prefix");
+        if (prefix.len == 0) { return false; }
+        mcp_append(out, "export ");
+        mcp_append(out, prefix);
+        return true;
+    }
+    if (_zag_strcmp(name, "triton_trace") == 1) {
+        let tpath: []u8 = mcp_find_str(body, "path");
+        let steps: i32 = mcp_find_int(body, "steps");
+        if (tpath.len == 0 || steps < 1) { return false; }
+        mcp_append(out, "trace ");
+        mcp_append(out, tpath);
+        mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(steps as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "triton_flash_import") == 1) {
+        let fpath: []u8 = mcp_find_str(body, "path");
+        if (fpath.len == 0) { return false; }
+        mcp_append(out, "flash import ");
+        mcp_append(out, fpath);
+        return true;
+    }
+    if (_zag_strcmp(name, "triton_flash_verify") == 1) { mcp_append(out, "flash verify"); return true; }
     if (_zag_strcmp(name, "triton_test") == 1) {
         let tname: []u8 = mcp_find_str(body, "name");
         if (tname.len == 0) { return false; }
@@ -439,8 +506,10 @@ fn mcp_tool_requires_envelope(name: []u8) bool {
     if (_zag_strcmp(name, "triton_place_on") == 1) { return true; }
     if (_zag_strcmp(name, "triton_place") == 1) { return true; }
     if (_zag_strcmp(name, "triton_route") == 1) { return true; }
+    if (_zag_strcmp(name, "triton_delete") == 1) { return true; }
     if (_zag_strcmp(name, "triton_save") == 1) { return true; }
     if (_zag_strcmp(name, "triton_open") == 1) { return true; }
+    if (_zag_strcmp(name, "triton_flash_import") == 1) { return true; }
     return false;
 }
 
@@ -453,6 +522,10 @@ fn mcp_tools_list_json() []u8 {
     mcp_append_tool(&out, false, "triton_capabilities", "Report protocol, grants, limits, revision, and mutation contract.", "", "", false);
     mcp_append_tool(&out, false, "triton_demo", "Load the reference photonic processor design.", "", "", true);
     mcp_append_tool(&out, false, "triton_list", "List components and waveguides.", "", "", false);
+    mcp_append_tool(&out, false, "triton_list_files", "List saved project files visible to the app.", "", "", false);
+    mcp_append_tool(&out, false, "triton_get", "Inspect one component by stable ID.", "\"component_id\":{\"type\":\"integer\",\"minimum\":0}", "\"component_id\"", false);
+    mcp_append_tool(&out, false, "triton_select", "Select one component by stable ID in shared app state.", "\"component_id\":{\"type\":\"integer\",\"minimum\":0}", "\"component_id\"", false);
+    mcp_append_tool(&out, false, "triton_can_place", "Validate placement without mutating the project.", "\"kind\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"},\"z\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"}", "\"kind\",\"x\",\"y\",\"z\"", false);
     mcp_append_tool(&out, false, "triton_undo", "Undo last edit using the shared journal.", "", "", true);
     mcp_append_tool(&out, false, "triton_redo", "Redo last undone edit using the shared journal.", "", "", true);
     mcp_append_tool(&out, false, "triton_view", "GUI live bus: selection, hover, camera, and tool.", "", "", false);
@@ -461,11 +534,16 @@ fn mcp_tools_list_json() []u8 {
     mcp_append_tool(&out, false, "triton_place_on", "Place on plate using local lx,lz offsets.", "\"kind\":{\"type\":\"string\"},\"plate_id\":{\"type\":\"integer\"},\"lx\":{\"type\":\"integer\"},\"lz\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"}", "\"kind\",\"plate_id\",\"lx\",\"lz\"", true);
     mcp_append_tool(&out, false, "triton_place", "Place plate|chamber|soh|emitter|detector on the lattice.", "\"kind\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"},\"z\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"}", "\"kind\",\"x\",\"y\",\"z\"", true);
     mcp_append_tool(&out, false, "triton_route", "Route waveguide between ports.", "\"from_comp\":{\"type\":\"integer\"},\"from_port\":{\"type\":\"integer\"},\"to_comp\":{\"type\":\"integer\"},\"to_port\":{\"type\":\"integer\"}", "\"from_comp\",\"from_port\",\"to_comp\",\"to_port\"", true);
+    mcp_append_tool(&out, false, "triton_delete", "Delete a component by stable ID.", "\"component_id\":{\"type\":\"integer\",\"minimum\":0}", "\"component_id\"", true);
     mcp_append_tool(&out, false, "triton_sim_step", "Advance simulation by n symbols.", "\"n\":{\"type\":\"integer\"}", "", false);
     mcp_append_tool(&out, false, "triton_sim_state", "Live trit states.", "", "", false);
     mcp_append_tool(&out, false, "triton_save", "Save design, defaulting to the live session .zpa.", "\"path\":{\"type\":\"string\"}", "", true);
     mcp_append_tool(&out, false, "triton_open", "Open design, defaulting to the live session .zpa.", "\"path\":{\"type\":\"string\"}", "", true);
     mcp_append_tool(&out, false, "triton_render", "Render BMP screenshot.", "\"path\":{\"type\":\"string\"}", "\"path\"", false);
+    mcp_append_tool(&out, false, "triton_export", "Export BOM, netlist, model manifest, and report with a path prefix.", "\"prefix\":{\"type\":\"string\"}", "\"prefix\"", false);
+    mcp_append_tool(&out, false, "triton_trace", "Export a deterministic simulation trace.", "\"path\":{\"type\":\"string\"},\"steps\":{\"type\":\"integer\",\"minimum\":1}", "\"path\",\"steps\"", false);
+    mcp_append_tool(&out, false, "triton_flash_import", "Import Flash FIR into a photonic project through the production builder.", "\"path\":{\"type\":\"string\"}", "\"path\"", true);
+    mcp_append_tool(&out, false, "triton_flash_verify", "Verify the active Flash photonic import against its oracle.", "", "", false);
     mcp_append_tool(&out, false, "triton_test", "Run engine|smoke|build verification.", "\"name\":{\"type\":\"string\",\"enum\":[\"engine\",\"smoke\",\"build\"]}", "\"name\"", false);
     mcp_append_tool(&out, false, "triton_status", "Design and simulation status.", "", "", false);
     mcp_append_tool(&out, false, "triton_coords", "Component origins and port coordinates.", "", "", false);

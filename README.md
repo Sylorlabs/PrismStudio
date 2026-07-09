@@ -41,7 +41,8 @@ Project mutations use `request <idempotency-key> <expected-revision> <command>`.
 advertised `triton_mutate` tool or a specialized mutation tool whose schema
 requires `idempotency_key` and `expected_revision`. Successful results include
 revision, idempotency key, affected ID, and undo token. Unkeyed mutations are
-rejected.
+rejected. MCP component arguments use `component_id` to avoid colliding with the
+JSON-RPC request `id`.
 
 Set `ZNC=/absolute/path/to/znc` to override the default
 `../zag/zag-poc/znc`. The current environment and exact compiler hash used for

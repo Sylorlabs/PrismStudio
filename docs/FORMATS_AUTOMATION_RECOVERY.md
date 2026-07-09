@@ -81,9 +81,11 @@ traversal with `E_PATH_OUTSIDE_ROOT`.
 
 The MCP server uses Content-Length framing capped by `src/limits.zag`, negotiates
 MCP protocol `2024-11-05`, and advertises `triton_mutate` plus specialized
-mutation tools with required `idempotency_key` and `expected_revision` schema
-fields. MCP, CLI, scripts, and `zagctl` converge on the same native agent
-dispatcher.
+tools for placement, routing, deletion, inspection, export, trace, and Flash
+import/verification. Specialized mutation tools require `idempotency_key` and
+`expected_revision`; component-targeting tools use `component_id` so arguments
+cannot collide with the JSON-RPC request `id`. MCP, CLI, scripts, and `zagctl`
+converge on the same native agent dispatcher.
 
 ## Audit and recovery files
 
