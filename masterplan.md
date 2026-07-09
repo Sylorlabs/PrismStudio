@@ -23,8 +23,9 @@ uncertainty. Unsupported values must render as unknown, not as marketing copy.
 The plan is complete only when all of the following are true:
 
 - [ ] Every applicable checkbox in this document is checked.
-- [ ] Every checked item links to or names its evidence: test, log, screenshot,
-      benchmark, design artifact, source location, or review record.
+- [x] Every checked item links to or names its evidence: test, log, screenshot,
+      benchmark, design artifact, source location, or review record. Evidence:
+      `masterplan-evidence` gate.
 - [ ] All unit, integration, persistence, protocol, rendering, simulation, and
       end-to-end tests pass from a clean checkout.
 - [ ] The production binary builds with the supported self-hosted `./znc` path.
@@ -63,7 +64,8 @@ as “verified.” Partial work stays unchecked and is reported as partial.
 - [ ] On failure, diagnose the root cause, preserve evidence, implement the fix,
       rerun the narrow test, then rerun all affected gates.
 - [x] Maintain a resumable progress ledger containing item ID, state, evidence,
-      last command, result, blocker, and next action.
+      last command, result, blocker, and next action. Evidence:
+      `evidence/progress-ledger.md`.
 - [ ] Never claim the entire plan is complete because time, context, or a session
       boundary was reached.
 
@@ -155,14 +157,19 @@ hardware, kernel, firmware, driver, display role, and date.
 ### 5.2 Eliminate Unsupported Hardcoding
 
 - [x] Remove `110 GHz` from code, probes, tool descriptions, UI labels, and docs
-      wherever it is asserted as a universal emitter or board rate.
+      wherever it is asserted as a universal emitter or board rate. Evidence:
+      `unsupported-claim-audit`.
 - [x] Replace hardcoded component frequencies with model parameters or unknowns.
       Evidence: `src/device_model.zag`, unsupported-claim gate.
 - [x] Derive board symbol rate from the selected components, interconnect model,
-      timing constraints, and explicit operating conditions.
+      timing constraints, and explicit operating conditions. Evidence:
+      `src/device_model.zag` and engine timing assertions.
 - [x] Replace comments such as “9.09 ps” with unit-safe runtime derivation.
+      Evidence: `unsupported-claim-audit` and model-derived timing assertions.
 - [x] Replace fixed waveguide-delay assumptions with propagation calculations
-      derived from length and the selected material/device model.
+      derived from length and the selected material/device model. Evidence:
+      `guide_delay_fs_for`, `guide_delay_symbols_for_model`, and
+      `simulation-properties`.
 - [ ] Replace unexplained component-count and delay caps with named, documented,
       configurable safety limits and tests.
 - [ ] Query GPU properties rather than embedding render-node, clock, CU, family,
@@ -170,7 +177,8 @@ hardware, kernel, firmware, driver, display role, and date.
 - [ ] Remove hardcoded frame-time and component-count claims from documentation;
       publish benchmark results with environment and timestamp instead.
 - [x] Add a repository test that rejects banned unsupported claims and suspicious
-      physical literals outside approved model fixtures.
+      physical literals outside approved model fixtures. Evidence:
+      `unsupported-claim-audit`.
 - [ ] Render missing evidence as `Unknown` or `Not characterized`.
 
 ### Acceptance
@@ -180,7 +188,8 @@ hardware, kernel, firmware, driver, display role, and date.
 - [ ] Unit-conversion and dimensional-analysis tests cover every derivation.
 - [ ] No user-visible physical or performance claim lacks provenance.
 - [x] The application can represent an incompletely characterized device without
-      inventing a value.
+      inventing a value. Evidence:
+      `incomplete model cannot silently advance verified simulation`.
 
 ## 6. Phase C — Photonic Computing Unit Design
 
@@ -238,7 +247,8 @@ directly into memory.
 - [x] Save, close, reopen, and reverify the design. Evidence: `flash-photonic`
       gate reloads and verifies the 384-component reference workload.
 - [x] Export a bill of materials, netlist, model manifest, verification report,
-      and deterministic render.
+      and deterministic render. Evidence: `flash-photonic` byte-compares
+      maintained exports and `evidence/captures/flash-pcu-1440.png` exists.
 - [x] Include the verified reference PCU as a maintained example project.
       Evidence: `examples/flash_photonic_massive.zpa` and deterministic exports.
 
@@ -300,7 +310,8 @@ The user and agent must be able to perform the same core project operations.
 ### 8.1 Capability Model
 
 - [x] Define explicit `read`, `inspect`, `simulate`, `edit`, `save`, `export`,
-      `execute-local`, and `admin` capabilities.
+      `execute-local`, and `admin` capabilities. Evidence:
+      `src/capability.zag` and `agent-negotiation`.
 - [x] Default to read/inspect/simulate; require an explicit grant for mutation.
       Evidence: `src/capability.zag`, `agent-capability-denial`.
 - [ ] Scope grants to project, session, operation class, path, and expiration.
@@ -625,12 +636,12 @@ not “programmer UI”
 * [ ] Create a real design system before adding more UI panels.
 * [x] Define spacing tokens. Evidence: `src/ui.zag` 2/4/8/12/16/24 grid:
 
-  * [x] 2 px
-  * [x] 4 px
-  * [x] 8 px
-  * [x] 12 px
-  * [x] 16 px
-  * [x] 24 px
+  * [x] 2 px. Evidence: `src/ui.zag` spacing tokens.
+  * [x] 4 px. Evidence: `src/ui.zag` spacing tokens.
+  * [x] 8 px. Evidence: `src/ui.zag` spacing tokens.
+  * [x] 12 px. Evidence: `src/ui.zag` spacing tokens.
+  * [x] 16 px. Evidence: `src/ui.zag` spacing tokens.
+  * [x] 24 px. Evidence: `src/ui.zag` spacing tokens.
 * [ ] Define typography scale:
 
   * [ ] tiny metadata

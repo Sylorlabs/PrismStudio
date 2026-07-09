@@ -1,0 +1,67 @@
+fn starts_checked(line: []u8) bool {
+    let i: i32 = 0;
+    while (i < line.len && line[i] == 32) { i = i + 1; }
+    if (i + 5 > line.len) { return false; }
+    if (!(line[i] == 45 || line[i] == 42)) { return false; }
+    return line[i + 1] == 32 && line[i + 2] == 91 && line[i + 3] == 120 && line[i + 4] == 93;
+}
+
+fn starts_checkbox(line: []u8) bool {
+    let i: i32 = 0;
+    while (i < line.len && line[i] == 32) { i = i + 1; }
+    if (i + 4 > line.len) { return false; }
+    if (!(line[i] == 45 || line[i] == 42)) { return false; }
+    return line[i + 1] == 32 && line[i + 2] == 91;
+}
+
+fn has_evidence(line: []u8) bool {
+    let needle: []u8 = "Evidence:";
+    let i: i32 = 0;
+    while (i + needle.len <= line.len) {
+        let ok: bool = true;
+        let j: i32 = 0;
+        while (j < needle.len) {
+            if (line[i + j] != needle[j]) { ok = false; }
+            j = j + 1;
+        }
+        if (ok) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn main() i32 {
+    let raw: []u8 = _zag_read_file("masterplan.md");
+    let pending: bool = false;
+    let pending_line: i32 = 0;
+    let line_no: i32 = 1;
+    let i: i32 = 0;
+    while (i <= raw.len) {
+        let st: i32 = i;
+        while (i < raw.len && raw[i] != 10) { i = i + 1; }
+        let line: []u8 = raw[st..i];
+        if (starts_checkbox(line)) {
+            if (pending) {
+                _zag_print("checked item missing Evidence before line ");
+                _zag_println(_zag_i64_to_str(line_no as i64));
+                return 1;
+            }
+            if (starts_checked(line)) {
+                pending = true;
+                pending_line = line_no;
+                if (has_evidence(line)) { pending = false; }
+            }
+        } else if (pending && has_evidence(line)) {
+            pending = false;
+        }
+        i = i + 1;
+        line_no = line_no + 1;
+    }
+    if (pending) {
+        _zag_print("checked item missing Evidence at line ");
+        _zag_println(_zag_i64_to_str(pending_line as i64));
+        return 1;
+    }
+    _zag_println("MASTERPLAN EVIDENCE: ALL CHECKED ITEMS HAVE EVIDENCE");
+    return 0;
+}
