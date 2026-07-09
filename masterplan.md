@@ -454,7 +454,10 @@ The user and agent must be able to perform the same core project operations.
       Evidence: canonical byte comparisons in `flash-photonic`.
 - [x] Export human-readable design summaries and machine-readable netlists.
       Evidence: maintained BOM, netlist, models, and report artifacts.
-- [ ] Ensure diagnostic bundles exclude sensitive scene contents by default.
+- [x] Ensure diagnostic bundles exclude sensitive scene contents by default.
+      Evidence: `diagnostics-privacy` verifies the `diagnostics` bundle writes
+      metadata with `scene_contents=excluded_by_default` and excludes a private
+      project sentinel plus raw scene records.
 - [x] Add round-trip tests for every supported project version. Evidence:
       `engine` covers current `zpa 2` save/load and legacy `zpa 1` load,
       migration to v2, hash-backed reload, and identity preservation.

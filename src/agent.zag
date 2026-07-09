@@ -186,6 +186,7 @@ fn agent_help() void {
     _zag_println("flash import <program.fir> | flash verify");
     _zag_println("export <prefix>  (writes BOM, netlist, models, report)");
     _zag_println("trace <out.trace> <steps>  (deterministic engine trace)");
+    _zag_println("diagnostics <out.txt>  (metadata only; excludes scene contents)");
     _zag_println("test engine | test smoke | build");
     _zag_println("TRITON_GRANT may narrow grants: project= session= ops= path= expires_after_ms=");
     _zag_println("TRITON_ALLOW_OPS and TRITON_DENY_OPS accept operation classes; deny wins");
@@ -319,7 +320,7 @@ fn agent_request_path(line: []u8, toks: *list.ArrayList[Tok]) []u8 {
     let verb: Tok = list.get[Tok](toks, 0);
     if ((tok_eq(line, verb, "save") || tok_eq(line, verb, "open") ||
         tok_eq(line, verb, "render") || tok_eq(line, verb, "export") ||
-        tok_eq(line, verb, "trace")) && toks.*.len >= 2) {
+        tok_eq(line, verb, "trace") || tok_eq(line, verb, "diagnostics")) && toks.*.len >= 2) {
         return tok_slice(line, list.get[Tok](toks, 1));
     }
     if (tok_eq(line, verb, "flash") && toks.*.len >= 3 &&
@@ -771,6 +772,22 @@ fn agent_render(a: *App, path: []u8) void {
     agent_ok1(msg);
 }
 
+fn agent_diagnostics(a: *App, path: []u8) void {
+    let s0: []u8 = "triton_diagnostics_v1\nscene_contents=excluded_by_default\n";
+    let s1: []u8 = _zag_str_concat(s0, "protocol=triton-agent-1\nrevision=");
+    let s2: []u8 = _zag_str_concat(s1, _zag_i64_to_str(a.*.session_rev));
+    let s3: []u8 = _zag_str_concat(s2, "\ncomponents=");
+    let s4: []u8 = _zag_str_concat(s3, _zag_i64_to_str(a.*.scene.*.comps.len as i64));
+    let s5: []u8 = _zag_str_concat(s4, "\nguides=");
+    let s6: []u8 = _zag_str_concat(s5, _zag_i64_to_str(a.*.scene.*.guides.len as i64));
+    let s7: []u8 = _zag_str_concat(s6, "\ncapability_bits=");
+    let s8: []u8 = _zag_str_concat(s7, _zag_i64_to_str(cap_load()));
+    let s9: []u8 = _zag_str_concat(s8, "\nmax_request_bytes=");
+    let s10: []u8 = _zag_str_concat(s9, _zag_i64_to_str(limit_agent_request_bytes() as i64));
+    _zag_write_file(path, _zag_str_concat(s10, "\n"));
+    agent_ok1("diagnostics written");
+}
+
 fn agent_test(cmd: []u8) void {
     let rc: i32 = 0;
     if (_zag_strcmp(cmd, "engine") == 1) {
@@ -798,6 +815,7 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     if (tok_eq(line, verb, "sim")) { required = cap_simulate(); }
     if (tok_eq(line, verb, "render")) { required = cap_export(); }
     if (tok_eq(line, verb, "export")) { required = cap_export(); }
+    if (tok_eq(line, verb, "diagnostics")) { required = cap_export(); }
     if (tok_eq(line, verb, "trace")) { required = cap_export(); }
     if (tok_eq(line, verb, "save")) { required = cap_save(); }
     if (tok_eq(line, verb, "test") || tok_eq(line, verb, "build")) { required = cap_execute(); }
@@ -1054,6 +1072,13 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         if (steps < 1 || steps > 100000) { agent_err("E_TRACE_LIMIT steps must be 1..100000"); return; }
         if (export_trace(a.*.scene, a.*.sim, path, steps)) { agent_ok1("trace exported"); }
         else { agent_err("E_TRACE_FAILED trace write failed"); }
+        return;
+    }
+    if (tok_eq(line, verb, "diagnostics")) {
+        if (toks.*.len < 2) { agent_err("usage: diagnostics <out.txt>"); return; }
+        let path: []u8 = tok_slice(line, list.get[Tok](toks, 1));
+        if (!agent_path_allowed(path)) { return; }
+        agent_diagnostics(a, path);
         return;
     }
     if (tok_eq(line, verb, "sim")) {
