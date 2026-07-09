@@ -326,8 +326,11 @@ The user and agent must be able to perform the same core project operations.
       operation/path/expiration constraints deny mismatches while allowing a
       matching scoped save.
 - [ ] Make high-impact actions previewable and ask-before-write by default.
-- [ ] Support user-configurable always-allow and deny rules without bypassing
-      hard safety limits.
+- [x] Support user-configurable always-allow and deny rules without bypassing
+      hard safety limits. Evidence: `agent-user-rules` proves
+      `TRITON_ALLOW_OPS` can allow an operation class, `TRITON_DENY_OPS`
+      overrides full capabilities without mutation, and path confinement still
+      rejects outside-root writes after an allow rule.
 - [x] Reject operations outside the active project root. Evidence:
       `TRITON_PROJECT_ROOT`, `E_PATH_OUTSIDE_ROOT`, and
       `agent-path-confinement` prove rejected traversal leaves no output file.

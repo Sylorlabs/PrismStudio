@@ -188,6 +188,7 @@ fn agent_help() void {
     _zag_println("trace <out.trace> <steps>  (deterministic engine trace)");
     _zag_println("test engine | test smoke | build");
     _zag_println("TRITON_GRANT may narrow grants: project= session= ops= path= expires_after_ms=");
+    _zag_println("TRITON_ALLOW_OPS and TRITON_DENY_OPS accept operation classes; deny wins");
     _zag_println("kinds: plate chamber soh emitter detector");
     agent_dot();
 }
@@ -204,6 +205,11 @@ fn agent_capabilities(a: *App) void {
     else { _zag_println("project_root_scope disabled"); }
     if (_zag_getenv("TRITON_GRANT").len > 0) { _zag_println("scoped_grant enabled"); }
     else { _zag_println("scoped_grant disabled"); }
+    if (_zag_getenv("TRITON_ALLOW_OPS").len > 0 || _zag_getenv("TRITON_DENY_OPS").len > 0) {
+        _zag_println("user_rules enabled");
+    } else {
+        _zag_println("user_rules disabled");
+    }
     agent_dot();
 }
 
@@ -362,6 +368,12 @@ fn agent_scoped_grant_allowed(line: []u8, toks: *list.ArrayList[Tok], required: 
         return false;
     }
     return true;
+}
+
+fn agent_user_rule_matches(env_name: []u8, required: i64) bool {
+    let raw: []u8 = _zag_getenv(env_name);
+    if (raw.len == 0) { return false; }
+    return agent_list_contains_csv(raw, agent_class_for_required(required));
 }
 
 fn agent_revision_precondition(a: *App) bool {
@@ -799,7 +811,12 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     a.*.request_command = line;
     a.*.request_required = required;
     audit_append("request", line, required);
-    if (!cap_allowed(required)) {
+    if (agent_user_rule_matches("TRITON_DENY_OPS", required)) {
+        audit_append("rule-denied", line, required);
+        agent_err("E_RULE_DENIED operation class denied by user rule");
+        return;
+    }
+    if (!cap_allowed(required) && !agent_user_rule_matches("TRITON_ALLOW_OPS", required)) {
         audit_append("denied", line, required);
         agent_err("E_CAP_DENIED explicit capability grant required");
         return;
