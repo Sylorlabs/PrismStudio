@@ -145,7 +145,13 @@ hardware, kernel, firmware, driver, display role, and date.
       known ZNC-1 compiler nondeterminism recorded in `docs/UPSTREAM_ZAG.md`. Per the
       pure-Zag rule this must be fixed in `znc`, so this box stays unchecked until it
       is.)
-- [ ] Separate production tests from obsolete probes and generated binaries.
+- [x] Separate production tests from obsolete probes and generated binaries.
+      Evidence: `probe/MANIFEST.md` classifies all 104 probe sources — 71 production
+      (gated), 6 hardware-only, 2 dev benchmarks, 1 compiler probe, 24 obsolete
+      debug/scratch — and three tracked build artifacts (`route_dbg`, `scale_test`,
+      `smoke_app.bmp`) were untracked and gitignored. The `probe-manifest-audit` gate
+      fails if any probe is unclassified or if a non-source file is tracked under
+      `probe/`.
 - [x] Add a single test entry point that reports every suite independently.
       Evidence: `verify.sh`, `tools/verify.zag`.
 - [x] Add machine-readable test output suitable for the progress ledger.

@@ -77,3 +77,11 @@ probe/opt_report_test
 probe/timing_test
 probe/limits_test
 probe/gpu_query_test
+probe/route_dbg
+probe/scale_test
+probe/smoke_app.bmp
+probe/perf_test
+probe/break_test
+probe/gpu_fill_test
+probe/gpu_parallel_test
+probe/gpu_wg_test
