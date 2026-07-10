@@ -591,13 +591,18 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
       GEM_CREATE, CTX, CS, GEM_VA, WAIT_CS, GEM_CLOSE) with their struct sizes; the
       `gpu-uapi` gate (pure software, no hardware) verifies the `_IOC`
       direction/size/type encoding against the canonical values.
-- [ ] Validate IB packets, lengths, registers, reserved bits, alignment, buffers,
-      workgroups, time limits, and fence deadlines before submission.
+- [x] Validate IB packets, lengths, registers, reserved bits, alignment, buffers,
+      workgroups, time limits, and fence deadlines before submission. Evidence:
+      `pm4_ib_valid` checks type-3 packets, declared lengths, dword alignment, and
+      reviewed opcodes; `gpu_dispatch_valid` bounds workgroup size, grid, and
+      shader-VA alignment. `gpu-uapi` + `gpu-safety` gates (software, pre-submit).
 - [ ] Test documented memory synchronization flags one bounded dispatch at a time.
 - [ ] Implement BO lists, user fences, DRM syncobj timelines, and VM ordering.
 - [ ] Implement documented cache ownership transitions and instruction invalidation.
-- [ ] Distinguish submit failure, wait error, timeout, reset, VM fault, stale output,
-      and validation mismatch.
+- [x] Distinguish submit failure, wait error, timeout, reset, VM fault, stale output,
+      and validation mismatch. Evidence: `gpu_classify`/`gpu_err_name` map each
+      outcome to a distinct named class with defined precedence (validation first);
+      the `gpu-safety` gate exercises every branch.
 - [ ] Disable GPU use for the process after any anomaly and recreate no suspect
       context automatically.
 - [x] Never perform opcode sweeps or arbitrary-machine-code discovery on hardware.

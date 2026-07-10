@@ -1,0 +1,53 @@
+// gpu_safety_test.zag — GPU submission fault taxonomy + dispatch-parameter
+// validation (Masterplan Section 12.1, non-destructive sector). PURE SOFTWARE:
+// exercises classifier + validator functions only; no DRM node, no submission.
+
+@import("../std/list.zag") as list
+@import("../src/gpu_rt.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn streq(a: []u8, b: []u8) bool { return _zag_strcmp(a, b) == 1; }
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    // ── fault taxonomy: each outcome maps to a distinct class ──────────────────
+    check("clean run classifies as ok",
+        gpu_classify(true, 0, 0, false, false, false, false) == 0, &failures);
+    check("an invalid IB is a validation mismatch (never submitted)",
+        gpu_classify(false, 0, 0, false, false, false, false) == 7, &failures);
+    check("a failed submit ioctl is submit-failure",
+        gpu_classify(true, 0 - 1, 0, false, false, false, false) == 1, &failures);
+    check("a GPU reset is distinguished",
+        gpu_classify(true, 0, 0, true, false, false, false) == 4, &failures);
+    check("a VM fault is distinguished",
+        gpu_classify(true, 0, 0, false, true, false, false) == 5, &failures);
+    check("a wait ioctl error is distinguished",
+        gpu_classify(true, 0, 0 - 1, false, false, false, false) == 2, &failures);
+    check("a missed fence deadline is a timeout",
+        gpu_classify(true, 0, 0, false, false, true, false) == 3, &failures);
+    check("an unchanged output is stale-output",
+        gpu_classify(true, 0, 0, false, false, false, true) == 6, &failures);
+    check("taxonomy names are stable",
+        streq(gpu_err_name(4), "reset") && streq(gpu_err_name(5), "vm-fault") &&
+        streq(gpu_err_name(7), "validation-mismatch") && streq(gpu_err_name(0), "ok"), &failures);
+
+    // ── dispatch parameter validation ─────────────────────────────────────────
+    check("a bounded aligned dispatch is valid",
+        gpu_dispatch_valid(8, 8, 1, 4, 4, 1, 4096), &failures);
+    check("an oversized workgroup is rejected",
+        !gpu_dispatch_valid(64, 64, 1, 1, 1, 1, 4096), &failures);   // 4096 > 1024
+    check("a zero workgroup dimension is rejected",
+        !gpu_dispatch_valid(0, 1, 1, 1, 1, 1, 4096), &failures);
+    check("an over-large grid is rejected",
+        !gpu_dispatch_valid(8, 1, 1, 70000, 1, 1, 4096), &failures);
+    check("an unaligned shader VA is rejected",
+        !gpu_dispatch_valid(8, 1, 1, 1, 1, 1, 4097), &failures);
+
+    if (failures == 0) { _zag_println("GPU SAFETY: ALL PASS"); return 0; }
+    _zag_println("GPU SAFETY: FAILURES"); return 1;
+}

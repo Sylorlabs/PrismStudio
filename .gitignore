@@ -60,3 +60,4 @@ probe/camera_test
 probe/render_test
 probe/persistence_test
 probe/gpu_uapi_test
+probe/gpu_safety_test

@@ -420,6 +420,43 @@ fn pm4_type3(opcode: i64, body_dwords: i64) i64 {
     return 0xC0000000 + ((body_dwords - 1) & 0x3FFF) * 0x10000 + (opcode & 0xFF) * 0x100;
 }
 
+// ── submission fault taxonomy (Section 12.1) ──────────────────────────────────
+fn gpu_err_name(e: i32) []u8 {
+    if (e == 1) { return "submit-failure"; }
+    if (e == 2) { return "wait-error"; }
+    if (e == 3) { return "timeout"; }
+    if (e == 4) { return "reset"; }
+    if (e == 5) { return "vm-fault"; }
+    if (e == 6) { return "stale-output"; }
+    if (e == 7) { return "validation-mismatch"; }
+    return "ok";
+}
+
+// Classify a submission outcome. Precedence: never submit an invalid IB, then
+// submit/reset/fault/wait/timeout/stale. Pure software.
+fn gpu_classify(ib_ok: bool, submit_rc: i64, wait_rc: i64,
+                reset: bool, vm_fault: bool, timed_out: bool, output_stale: bool) i32 {
+    if (!ib_ok) { return 7; }         // validation mismatch — refuse to submit
+    if (submit_rc < 0) { return 1; }  // submit ioctl failed
+    if (reset) { return 4; }          // GPU reset detected
+    if (vm_fault) { return 5; }       // VM page fault
+    if (wait_rc < 0) { return 2; }    // wait ioctl errored
+    if (timed_out) { return 3; }      // fence deadline missed
+    if (output_stale) { return 6; }   // output buffer did not update
+    return 0;                          // ok
+}
+
+// Validate compute dispatch parameters before building an IB (Section 12.1):
+// bounded workgroup size and grid, and a 256-byte-aligned shader VA.
+fn gpu_dispatch_valid(nx: i64, ny: i64, nz: i64, gx: i64, gy: i64, gz: i64, shader_va: i64) bool {
+    if (nx < 1 || ny < 1 || nz < 1) { return false; }
+    if (nx * ny * nz > 1024) { return false; }     // GFX10 max threads per workgroup
+    if (gx < 1 || gy < 1 || gz < 1) { return false; }
+    if (gx > 65535 || gy > 65535 || gz > 65535) { return false; }
+    if (shader_va % 256 != 0) { return false; }    // PGM address alignment
+    return true;
+}
+
 // Reviewed/allowed PM4 type-3 opcodes for Triton's fixed compute path. Anything
 // else is rejected — no opcode sweeps, no arbitrary machine code (Section 12.1).
 fn pm4_opcode_allowed(op: i64) bool {
