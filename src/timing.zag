@@ -1,0 +1,102 @@
+// timing.zag — static timing analysis over the routed photonic fabric (Masterplan
+// Section 6.2). Reports timing paths (source→detector latency), the bottleneck hop,
+// the tightest quantization margin, and the delay uncertainty derived from the
+// device model. All quantities come from the same delay-line depths the simulator
+// uses — one source of truth, never a hardcoded number.
+
+@import("../std/list.zag") as list
+@import("sim.zag")
+@import("scene.zag")
+
+// The dominant single hop: the guide with the largest delay-line depth (symbols).
+fn timing_bottleneck_delay(sim: *Sim) i32 {
+    let mx: i32 = 0;
+    let i: i32 = 0;
+    while (i < sim.*.sguides.len) {
+        if (sim.*.sguides.data[i].delay > mx) { mx = sim.*.sguides.data[i].delay; }
+        i = i + 1;
+    }
+    return mx;
+}
+
+// Critical-path latency to any detector (symbols), via longest-path relaxation
+// bounded by the node count so a feedback cycle can never spin forever.
+fn timing_critical_delay(sim: *Sim) i32 {
+    let n: i32 = sim.*.nodes.len;
+    let arrival: list.ArrayList[i32] = list.make[i32](n);
+    let z: i32 = 0;
+    while (z < n) { list.push[i32](&arrival, 0); z = z + 1; }
+    let pass: i32 = 0;
+    while (pass < n) {
+        let gi: i32 = 0;
+        while (gi < sim.*.sguides.len) {
+            let g: SGuide = sim.*.sguides.data[gi];
+            let fi: i32 = sim_node_index(sim, g.from_c);
+            let ti: i32 = sim_node_index(sim, g.to_c);
+            if (fi >= 0 && ti >= 0) {
+                let cand: i32 = arrival.data[fi] + g.delay;
+                if (cand > arrival.data[ti]) { list.set[i32](&arrival, ti, cand); }
+            }
+            gi = gi + 1;
+        }
+        pass = pass + 1;
+    }
+    let mx: i32 = 0;
+    let i: i32 = 0;
+    while (i < n) {
+        if (sim.*.nodes.data[i].kind == Kind.Detector && arrival.data[i] > mx) { mx = arrival.data[i]; }
+        i = i + 1;
+    }
+    list.free[i32](&arrival);
+    return mx;
+}
+
+// Tightest quantization margin (ps): the unused propagation time in a hop's last
+// symbol, min across guides — how much extra propagation could be tolerated before
+// a hop would need another symbol. Larger = more slack.
+fn timing_min_margin_ps(s: *Scene, clock_ghz: f64) f64 {
+    let velocity: f64 = group_velocity_nm_ps_for(s);
+    if (velocity <= 0.0 || clock_ghz <= 0.0) { return 0.0; }
+    let period_ps: f64 = 1000.0 / clock_ghz;
+    let best: f64 = period_ps;   // an unrouted fabric has a full-period margin
+    let seen: bool = false;
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) {
+        let len_nm: f64 = s.*.guides.data[gi].length_nm;
+        let t_prop: f64 = len_nm / velocity;
+        let d: i32 = ((t_prop / period_ps) + 0.9999999) as i32;
+        if (d < 1) { d = 1; }
+        let margin: f64 = (d as f64) * period_ps - t_prop;
+        if (!seen || margin < best) { best = margin; seen = true; }
+        gi = gi + 1;
+    }
+    return best;
+}
+
+// Relative delay uncertainty: propagation delay scales with the group index, so the
+// relative uncertainty in delay equals the model's relative uncertainty in n_g.
+fn timing_rel_uncertainty(s: *Scene) f64 {
+    let v: f64 = s.*.model.group_index.value;
+    if (!s.*.model.group_index.known || v <= 0.0) { return 0.0; }
+    return s.*.model.group_index.uncertainty / v;
+}
+
+fn timing_report(s: *Scene) []u8 {
+    let sim: *Sim = sim_new();
+    sim_recompile(sim, s);
+    let crit: i32 = timing_critical_delay(sim);
+    let bott: i32 = timing_bottleneck_delay(sim);
+    let clock: f64 = sim.*.clock_ghz;
+    let margin_ps: f64 = timing_min_margin_ps(s, clock);
+    let rel_permille: i64 = (timing_rel_uncertainty(s) * 1000.0) as i64;
+    sim_free(sim);
+
+    let r: []u8 = _zag_str_concat("critical_path_symbols=", _zag_i64_to_str(crit as i64));
+    r = _zag_str_concat(r, " bottleneck_hop_symbols=");
+    r = _zag_str_concat(r, _zag_i64_to_str(bott as i64));
+    r = _zag_str_concat(r, " min_margin_ps=");
+    r = _zag_str_concat(r, _zag_i64_to_str(margin_ps as i64));
+    r = _zag_str_concat(r, " delay_uncertainty_permille=");
+    r = _zag_str_concat(r, _zag_i64_to_str(rel_permille));
+    return r;
+}

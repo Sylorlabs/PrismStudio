@@ -1,0 +1,68 @@
+// timing_test.zag — static timing analysis: timing paths, bottlenecks, margins,
+// and uncertainty (Masterplan Section 6.2). All from the simulator's delay lines.
+
+@import("../std/list.zag") as list
+@import("../src/timing.zag")
+@import("../src/flash_ir.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn contains(hay: []u8, needle: []u8) bool {
+    let n: i32 = hay.len; let m: i32 = needle.len;
+    let i: i32 = 0;
+    while (i + m <= n) {
+        let j: i32 = 0; let ok: bool = true;
+        while (j < m) { if (hay[i + j] != needle[j]) { ok = false; } j = j + 1; }
+        if (ok) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    // E -> C -> D chain: two hops
+    let s: *Scene = scene_new();
+    let _p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    let _r: bool = flash_route(s, e, 0, c, 0) && flash_route(s, c, 3, d, 0);
+
+    let sim: *Sim = sim_new();
+    sim_recompile(sim, s);
+
+    let crit: i32 = timing_critical_delay(sim);
+    let bott: i32 = timing_bottleneck_delay(sim);
+    check("the bottleneck hop is a positive single-hop delay", bott >= 1, &failures);
+    check("the critical path spans both hops and exceeds any single hop",
+        crit >= 2 && crit > bott, &failures);
+
+    let clock: f64 = sim.*.clock_ghz;
+    let margin: f64 = timing_min_margin_ps(s, clock);
+    check("the tightest quantization margin is positive (hops have slack)",
+        margin > 0.0, &failures);
+
+    // uncertainty: exact (0) for the illustrative model; propagates from n_g when set
+    check("an exactly-known model reports zero delay uncertainty",
+        timing_rel_uncertainty(s) == 0.0, &failures);
+    s.*.model.group_index.uncertainty = 0.05;   // 5% uncertainty in the group index
+    check("group-index uncertainty propagates to a positive delay uncertainty",
+        timing_rel_uncertainty(s) > 0.0, &failures);
+
+    // the report names every timing quantity
+    let rep: []u8 = timing_report(s);
+    _zag_println(rep);
+    check("the timing report names path, bottleneck, margin, and uncertainty",
+        contains(rep, "critical_path_symbols=") && contains(rep, "bottleneck_hop_symbols=") &&
+        contains(rep, "min_margin_ps=") && contains(rep, "delay_uncertainty_permille="), &failures);
+
+    sim_free(sim); scene_free(s);
+
+    if (failures == 0) { _zag_println("TIMING: ALL PASS"); return 0; }
+    _zag_println("TIMING: FAILURES"); return 1;
+}

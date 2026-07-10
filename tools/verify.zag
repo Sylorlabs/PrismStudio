@@ -117,6 +117,7 @@ fn gates_3(f: i32) i32 {
     if (!run_suite("design-db", "rm -f /tmp/triton_designdb.zpa* && ../zag/zag-poc/znc probe/design_db_test.zag -o probe/design_db_test.new && mv -f probe/design_db_test.new probe/design_db_test && ./probe/design_db_test")) { f = f + 1; }
     if (!run_suite("session-conflict", "rm -f /tmp/triton_session_conflict.zpa* && ../zag/zag-poc/znc probe/session_conflict_test.zag -o probe/session_conflict_test.new && mv -f probe/session_conflict_test.new probe/session_conflict_test && ./probe/session_conflict_test")) { f = f + 1; }
     if (!run_suite("optimizer-report", "rm -f probe/opt_report_test.new && ../zag/zag-poc/znc probe/opt_report_test.zag -o probe/opt_report_test.new && mv -f probe/opt_report_test.new probe/opt_report_test && ./probe/opt_report_test")) { f = f + 1; }
+    if (!run_suite("timing", "rm -f probe/timing_test.new && ../zag/zag-poc/znc probe/timing_test.zag -o probe/timing_test.new && mv -f probe/timing_test.new probe/timing_test && ./probe/timing_test")) { f = f + 1; }
     return f;
 }
 

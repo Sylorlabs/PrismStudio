@@ -306,7 +306,13 @@ directly into memory.
 - [x] Compute optical path length from geometry. Evidence: `scene_add_guide`.
 - [x] Derive propagation delay from the selected physical model. Evidence:
       `guide_delay_fs_for`, `guide_delay_symbols_for_model`.
-- [ ] Report timing paths, bottlenecks, margins, and uncertainty.
+- [x] Report timing paths, bottlenecks, margins, and uncertainty. Evidence:
+      `src/timing.zag` computes the critical-path latency to any detector (longest-
+      path relaxation, cycle-bounded), the bottleneck hop (largest delay line), the
+      tightest quantization margin in ps, and the delay uncertainty propagated from
+      the model's group-index uncertainty — all from the simulator's delay lines. The
+      `timing` gate asserts these on a two-hop chain, and the agent `timing` command
+      emits the report.
 - [x] Add deterministic routing seeds and replayable failures. Evidence:
       `route_guide` is a fixed-cost A* with no RNG — the `routing` gate confirms
       the same request yields an identical path and an out-of-band goal fails the

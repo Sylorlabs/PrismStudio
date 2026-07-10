@@ -27,6 +27,7 @@ extern fn _zag_read_fd(fd: i64, buf: *i8, n: i64) i64;
 @import("demo.zag")
 @import("session.zag")
 @import("ternary.zag")
+@import("timing.zag")
 @import("flash_ir.zag")
 @import("capability.zag")
 @import("export.zag")
@@ -1391,6 +1392,8 @@ fn agent_dispatch_line(a: *App, line: []u8) void {
         agent_preview(a, line, &toks);
     } else if (toks.len > 0 && tok_eq(line, list.get[Tok](toks, 0), "simstream")) {
         agent_simstream(a, line, &toks);
+    } else if (toks.len > 0 && tok_eq(line, list.get[Tok](toks, 0), "timing")) {
+        agent_ok1(timing_report(a.*.scene));
     } else if (toks.len > 0 && tok_eq(line, list.get[Tok](toks, 0), "request")) {
         if (toks.len < 4) {
             agent_err("E_REQUEST_ENVELOPE usage: request <key> <expected_revision> <command>");
