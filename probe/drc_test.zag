@@ -1,0 +1,44 @@
+// drc_test.zag — design-rule enforcement (Masterplan Sections 6.1/6.2 / Phase C).
+// Placement rules (occupancy/collision, boundary, ground-only, needs-plate) are
+// enforced by scene_place with distinct diagnostic codes, and routing rejects
+// invalid endpoints; the port-in-use primitive backs fan-in checks.
+
+@import("../std/list.zag") as list
+@import("../src/flash_ir.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let s: *Scene = scene_new();
+    let pl: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let c1: i32 = scene_place(s, Kind.Chamber, vox(2, 1, 2), 0);
+    check("valid placements are accepted", pl > 0 && c1 > 0, &failures);
+
+    // enforcement: scene_place rejects rule violations
+    check("overlapping placement is rejected", scene_place(s, Kind.Chamber, vox(2, 1, 2), 0) <= 0, &failures);
+    check("out-of-bounds placement is rejected", scene_place(s, Kind.Chamber, vox(3000, 1, 3000), 0) <= 0, &failures);
+    check("a part off any plate is rejected", scene_place(s, Kind.Emitter, vox(60, 1, 60), 0) <= 0, &failures);
+    check("a plate off the floor is rejected", scene_place(s, Kind.Plate, vox(0, 5, 0), 0) <= 0, &failures);
+
+    // distinct diagnostic codes (occupancy=1, ground-only=2, needs-plate=3, bounds=6)
+    check("collision reports the occupancy code", scene_can_place(s, Kind.Chamber, vox(2, 1, 2), 0) == 1, &failures);
+    check("out-of-bounds reports the boundary code", scene_can_place(s, Kind.Chamber, vox(3000, 1, 3000), 0) == 6, &failures);
+    check("ground-only violation reports its code", scene_can_place(s, Kind.Plate, vox(0, 5, 0), 0) == 2, &failures);
+    check("needs-plate violation reports its code", scene_can_place(s, Kind.Emitter, vox(60, 1, 60), 0) == 3, &failures);
+
+    // routing endpoint validity + port-use tracking
+    check("route with an invalid component is rejected", !flash_route(s, 9999, 0, c1, 0), &failures);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let routed: bool = flash_route(s, e, 0, c1, 0);
+    check("a valid route is accepted and marks the input port in use",
+        routed && scene_port_in_use(s, c1, 0) && !scene_port_in_use(s, c1, 1), &failures);
+
+    check("the resulting scene has no structural errors", scene_validation_errors(s) == 0, &failures);
+
+    if (failures == 0) { _zag_println("DRC: ALL PASS"); return 0; }
+    _zag_println("DRC: FAILURES"); return 1;
+}

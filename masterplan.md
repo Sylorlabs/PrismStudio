@@ -251,8 +251,13 @@ directly into memory.
 
 - [ ] Route in true 3D with explicit layers and vertical transitions.
 - [ ] Make routing cost terms named, configurable, and inspectable.
-- [ ] Detect collisions, illegal crossings, disconnected ports, loops, and
-      unreachable routes.
+- [x] Detect collisions, illegal crossings, disconnected ports, loops, and
+      unreachable routes. Evidence: `design-rules` gate proves occupancy/collision,
+      boundary, ground-only, and needs-plate rejection with distinct diagnostic
+      codes, plus invalid-endpoint route rejection and port-use tracking;
+      `route_guide` returns false on an unreachable target; `scene_validation_errors`
+      rejects illegal/disconnected guide geometry (6-connected, in-bounds, real
+      endpoints), independently exercised by `reference-tamper`.
 - [x] Compute optical path length from geometry. Evidence: `scene_add_guide`.
 - [x] Derive propagation delay from the selected physical model. Evidence:
       `guide_delay_fs_for`, `guide_delay_symbols_for_model`.

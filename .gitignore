@@ -52,3 +52,4 @@ probe/units_test
 probe/lifecycle_test
 probe/scheduling_test
 probe/stepping_test
+probe/drc_test
