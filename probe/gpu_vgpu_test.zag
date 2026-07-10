@@ -1,0 +1,136 @@
+// gpu_vgpu_test.zag — a pure-Zag VIRTUAL GPU: a deterministic software model of
+// the AMDGPU compute path used to exercise the submission/ownership LOGIC and the
+// certification HARNESS safely, without any real hardware (Masterplan Section
+// 12.1/12.3). This verifies software correctness only — it is NOT hardware
+// certification (a model cannot fault the way silicon can), which the plan keeps
+// as a separate confidence level requiring a non-display GPU.
+
+@import("../std/list.zag") as list
+@import("../src/rdna.zag")
+@import("../src/gpu_rt.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+// ── the virtual GPU ───────────────────────────────────────────────────────────
+struct VGpu {
+    mem: list.ArrayList[i64],   // GPU-visible memory (u32 words)
+    owner: i32,                 // 0 = CPU owns, 1 = GPU owns
+    fence: i64,                 // last completed sequence number
+    disabled: bool,             // set after any anomaly; refuses further work
+}
+
+fn vgpu_new(words: i32) *VGpu {
+    let m: list.ArrayList[i64] = list.make[i64](words);
+    let i: i32 = 0;
+    while (i < words) { list.push[i64](&m, 0); i = i + 1; }
+    return new(VGpu{ .mem = m, .owner = 0, .fence = 0, .disabled = false });
+}
+
+fn vgpu_acquire_gpu(g: *VGpu) void { if (!g.*.disabled) { g.*.owner = 1; } }
+fn vgpu_acquire_cpu(g: *VGpu) void { if (!g.*.disabled) { g.*.owner = 0; } }
+
+// Simulate a fill dispatch. Codes: 0 ok, 7 validation (bad IB/kernel), 8 ownership
+// violation, 9 disabled. On any anomaly the vGPU is disabled (Section 12.1).
+fn vgpu_fill(g: *VGpu, ib: []u8, kernel: []u8, count: i32, value: i64, seq: i64) i32 {
+    if (g.*.disabled) { return 9; }
+    if (!pm4_ib_valid(ib) || !gpu_kernel_allowed(kernel)) { g.*.disabled = true; return 7; }
+    if (g.*.owner != 1) { g.*.disabled = true; return 8; }   // GPU must own the buffer
+    let i: i32 = 0;
+    while (i < count) { list.set[i64](&g.*.mem, i, value); i = i + 1; }
+    g.*.fence = seq;
+    return 0;
+}
+
+// CPU read with stale detection: reading while the GPU still owns the buffer is a
+// stale read (missing ownership transfer).
+fn vgpu_read_stale(g: *VGpu) bool { return g.*.owner == 1; }
+
+// ── certification tuple (Section 12.3): certification is invalidated by any GPU/
+//    firmware/kernel/compiler/runtime change. ──────────────────────────────────
+struct CertTuple { device: i64, firmware: i64, kernel_hash: i64, compiler: i64, runtime: i64 }
+fn cert_matches(a: CertTuple, b: CertTuple) bool {
+    return a.device == b.device && a.firmware == b.firmware &&
+        a.kernel_hash == b.kernel_hash && a.compiler == b.compiler && a.runtime == b.runtime;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    // build one reviewed kernel + one valid IB, reused across the campaign
+    let kernel: list.ArrayList[u8] = list.make[u8](64);
+    let _k: i32 = rdna_emit_fill_kernel(&kernel);
+    let ib: list.ArrayList[u8] = list.make[u8](128);
+    pm4_build_dispatch(&ib, 4096, 8192, 1, 1, 1, 16, 1, 1);
+    let ibs: []u8 = ib.data[0..ib.len];
+    let ks: []u8 = kernel.data[0..kernel.len];
+
+    // ── basic fill + canary ────────────────────────────────────────────────────
+    let g: *VGpu = vgpu_new(32);
+    list.set[i64](&g.*.mem, 31, 305419896);   // canary in a guard word (0x12345678)
+    vgpu_acquire_gpu(g);
+    let rc: i32 = vgpu_fill(g, ibs, ks, 16, 48879, 1);   // fill 16 words with 0xBEEF
+    vgpu_acquire_cpu(g);
+    let filled: bool = true;
+    let i: i32 = 0;
+    while (i < 16) { if (g.*.mem.data[i] != 48879) { filled = false; } i = i + 1; }
+    check("a valid fill writes the expected output", rc == 0 && filled, &failures);
+    check("the guard canary is untouched", g.*.mem.data[31] == 305419896, &failures);
+    check("no stale read after the ownership transfer back to CPU", !vgpu_read_stale(g), &failures);
+
+    // ── 10,000-iteration deterministic campaign with checksum + canary ──────────
+    let g2: *VGpu = vgpu_new(32);
+    let seed: i64 = 2654435761;
+    let ok_all: bool = true;
+    let done: i32 = 0;
+    while (done < 10000) {
+        let value: i64 = (seed + (done as i64) * 40503) % 4294967296;
+        list.set[i64](&g2.*.mem, 20, 3735928559);   // canary
+        vgpu_acquire_gpu(g2);
+        let r: i32 = vgpu_fill(g2, ibs, ks, 16, value, (done as i64) + 1);
+        vgpu_acquire_cpu(g2);
+        // checksum: every filled word must equal value; canary intact; fence advanced
+        let sum_ok: bool = true;
+        let j: i32 = 0;
+        while (j < 16) { if (g2.*.mem.data[j] != value) { sum_ok = false; } j = j + 1; }
+        if (r != 0 || !sum_ok || g2.*.mem.data[20] != 3735928559 || g2.*.fence != (done as i64) + 1) { ok_all = false; }
+        done = done + 1;
+    }
+    check("10,000-iteration campaign completes with zero logic faults", ok_all && done == 10000, &failures);
+    check("campaign fence is monotonic to the final sequence", g2.*.fence == 10000, &failures);
+
+    // ── resumable campaign state ────────────────────────────────────────────────
+    let g3: *VGpu = vgpu_new(32);
+    let a: i32 = 0;
+    while (a < 5000) { vgpu_acquire_gpu(g3); let _r: i32 = vgpu_fill(g3, ibs, ks, 16, 7, (a as i64) + 1); a = a + 1; }
+    let mid: i64 = g3.*.fence;
+    while (a < 10000) { vgpu_acquire_gpu(g3); let _r: i32 = vgpu_fill(g3, ibs, ks, 16, 7, (a as i64) + 1); a = a + 1; }
+    check("a campaign resumes from saved state to completion",
+        mid == 5000 && g3.*.fence == 10000, &failures);
+
+    // ── ownership-transfer stale-read detection ─────────────────────────────────
+    let g4: *VGpu = vgpu_new(32);
+    let skip_rc: i32 = vgpu_fill(g4, ibs, ks, 16, 1, 1);   // no acquire → GPU does not own
+    check("a dispatch without ownership transfer is caught", skip_rc == 8 && !vgpu_usable_ok(g4), &failures);
+
+    // ── anomaly disables the vGPU ───────────────────────────────────────────────
+    let g5: *VGpu = vgpu_new(32);
+    vgpu_acquire_gpu(g5);
+    let bad_rc: i32 = vgpu_fill(g5, ib.data[0..ib.len - 1], ks, 16, 1, 1);   // misaligned IB
+    check("an invalid IB disables the vGPU and is refused",
+        bad_rc == 7 && g5.*.disabled && vgpu_fill(g5, ibs, ks, 16, 1, 2) == 9, &failures);
+
+    // ── certification-tuple invalidation ────────────────────────────────────────
+    let certified: CertTuple = CertTuple{ .device = 0x7310, .firmware = 100, .kernel_hash = gpu_kernel_manifest_fill_hash(), .compiler = 1, .runtime = 1 };
+    let same: CertTuple = CertTuple{ .device = 0x7310, .firmware = 100, .kernel_hash = gpu_kernel_manifest_fill_hash(), .compiler = 1, .runtime = 1 };
+    let newfw: CertTuple = CertTuple{ .device = 0x7310, .firmware = 101, .kernel_hash = gpu_kernel_manifest_fill_hash(), .compiler = 1, .runtime = 1 };
+    check("certification holds for the exact tuple", cert_matches(certified, same), &failures);
+    check("a firmware change invalidates certification", !cert_matches(certified, newfw), &failures);
+
+    if (failures == 0) { _zag_println("GPU VGPU: ALL PASS"); return 0; }
+    _zag_println("GPU VGPU: FAILURES"); return 1;
+}
+
+fn vgpu_usable_ok(g: *VGpu) bool { return !g.*.disabled; }

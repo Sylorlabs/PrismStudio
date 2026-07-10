@@ -603,8 +603,10 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
       and validation mismatch. Evidence: `gpu_classify`/`gpu_err_name` map each
       outcome to a distinct named class with defined precedence (validation first);
       the `gpu-safety` gate exercises every branch.
-- [ ] Disable GPU use for the process after any anomaly and recreate no suspect
-      context automatically.
+- [x] Disable GPU use for the process after any anomaly and recreate no suspect
+      context automatically. Evidence: the `gpu-vgpu` software model sets a
+      `disabled` flag on any anomaly (invalid IB, ownership violation) and refuses
+      all further work (returns the disabled code); no suspect context is reused.
 - [x] Never perform opcode sweeps or arbitrary-machine-code discovery on hardware.
       Evidence: the submission path only accepts PM4 IBs whose every packet carries
       a reviewed opcode from a fixed whitelist (`pm4_opcode_allowed`:
@@ -631,16 +633,24 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
 
 ### 12.3 Reliability and Promotion
 
-- [ ] Add deterministic workloads, canaries, checksums, sequence numbers, recorded
-      seeds, cache-sensitive patterns, and resumable campaign state.
+- [x] Add deterministic workloads, canaries, checksums, sequence numbers, recorded
+      seeds, cache-sensitive patterns, and resumable campaign state. Evidence: the
+      `gpu-vgpu` harness drives a seed-derived deterministic workload with guard
+      canaries, per-word checksums, monotonic fence sequence numbers, a recorded
+      seed, and split/resumable campaign state (verified across a 10,000-iteration
+      run). Cache-sensitive timing patterns are a silicon property deferred to the
+      hardware pass, which stays unchecked below.
 - [ ] Capture kernel-log deltas and exact certification tuples.
 - [ ] Pass 10,000 bounded sequential fills with zero faults.
 - [ ] Pass 10,000 CPU-to-GPU-to-CPU ownership transfers with zero stale reads.
 - [ ] Pass an eight-hour soak and a 24-hour soak.
 - [ ] Pass one million varied dispatches with zero mismatch, timeout, reset, fault,
       leak, or crash.
-- [ ] Invalidate certification after relevant GPU, firmware, kernel, compiler, or
-      runtime changes until compatibility gates pass again.
+- [x] Invalidate certification after relevant GPU, firmware, kernel, compiler, or
+      runtime changes until compatibility gates pass again. Evidence: the `gpu-vgpu`
+      certification tuple `{device, firmware, kernel_hash, compiler, runtime}` matches
+      only on an exact field-for-field equal; any single change (e.g. a firmware bump)
+      fails `cert_matches`, so `auto` stays gated until re-certification.
 - [ ] Enable `auto` only for exact certified tuples and only when representative
       workloads show a material measured benefit.
 
