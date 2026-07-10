@@ -134,8 +134,14 @@ hardware, kernel, firmware, driver, display role, and date.
 
 ## 4. Phase A — Establish Reproducible Ground Truth
 
-- [ ] Inventory source modules, generated artifacts, probes, protocols, storage
-      formats, and external dependencies.
+- [x] Inventory source modules, generated artifacts, probes, protocols, storage
+      formats, and external dependencies. Evidence: `docs/INVENTORY.md` inventories
+      all 35 `src/*.zag` modules with roles, the generated artifacts (all gitignored),
+      the probe classification (via `probe/MANIFEST.md`), the four command protocols
+      (MCP/CLI/pipe/agent) plus raw X11, the storage formats (`zpa 2`, session, and
+      journal), and the external dependencies (only `znc` + Linux syscalls + a raw
+      X11 socket; zero C/third-party). The `inventory-audit` gate fails if any
+      `src/*.zag` module or required section is missing.
 - [x] Record the supported Zag compiler path and compiler identity/hash. Evidence:
       `evidence/progress-ledger.md` A.compiler.
 - [ ] Make the clean build deterministic and document all prerequisites.

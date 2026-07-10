@@ -50,3 +50,14 @@ to work around in Triton (pure-Zag rule).
 **Proper upstream fix:** the same bounds/initialisation fix as ZNC-1 should make
 codegen a pure function of the input; add a determinism check in znc's own test
 suite (compile twice, compare) once fixed.
+
+## ZNC-1 recurrence (2026-07-10, probe/ui_tokens_test.zag)
+
+The corruption is not limited to *large* functions: `probe/ui_tokens_test.zag`
+(a ~40-line probe importing `ui.zag` + `ternary.zag`) compiled fine for most of a
+session, then began SIGSEGVing znc **8/8** on byte-identical, git-clean input —
+while each import compiled alone and `render_test` (imports the much larger
+`workspace.zag`) compiled fine. The trigger is a `main()` with several long
+string-literal + boolean-expression statements. Splitting that `main()` into three
+small helpers (`tokens_scale`/`tokens_color`/`tokens_contrast`) restored 8/8
+compiles. Same mitigation as ZNC-1; same required upstream fix.

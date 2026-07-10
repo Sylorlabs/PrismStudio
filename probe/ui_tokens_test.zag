@@ -19,21 +19,35 @@ fn contrast_delta(a: i64, b: i64) i32 {
     return abs_i(luma(a) - luma(b));
 }
 
+// Split into smaller functions to keep each well under the size that trips the
+// znc ZNC-1/ZNC-2 codegen corruption (docs/UPSTREAM_ZAG.md); pure-Zag mitigation.
+fn tokens_scale(failures: *i32) void {
+    check("spacing tokens are monotonic grid", space_2() == 2 && space_4() == 4 &&
+        space_8() == 8 && space_12() == 12 && space_16() == 16 && space_24() == 24, failures);
+    check("typography roles are defined", type_tiny_h() > 0 && type_body_h() >= type_tiny_h() &&
+        type_section_h() >= type_body_h() && type_viewport_h() > 0 && type_debug_h() > 0, failures);
+    check("shape and elevation tokens are defined", radius_control() >= 0 && elevation_panel() >= 0, failures);
+}
+
+fn tokens_color(failures: *i32) void {
+    check("state colors are distinct", th_select() != th_focus() && th_focus() != th_disabled() &&
+        th_disabled() != th_warning() && th_warning() != th_danger() && th_danger() != th_ok(), failures);
+    check("beam colors are separate from UI colors", trit_color(-1) != th_danger() &&
+        trit_color(0) != th_disabled() && trit_color(1) != th_ok(), failures);
+}
+
+fn tokens_contrast(failures: *i32) void {
+    check("primary text contrasts with panels", contrast_delta(th_text(), th_panel()) >= 120 &&
+        contrast_delta(th_text(), th_bg()) >= 120 && contrast_delta(th_text(), th_header()) >= 100, failures);
+    check("secondary text contrasts with panels", contrast_delta(th_text_dim(), th_panel()) >= 80 &&
+        contrast_delta(th_text_dim(), th_bg()) >= 90, failures);
+}
+
 fn main() i32 {
     let failures: i32 = 0;
-    check("spacing tokens are monotonic grid", space_2() == 2 && space_4() == 4 &&
-        space_8() == 8 && space_12() == 12 && space_16() == 16 && space_24() == 24, &failures);
-    check("typography roles are defined", type_tiny_h() > 0 && type_body_h() >= type_tiny_h() &&
-        type_section_h() >= type_body_h() && type_viewport_h() > 0 && type_debug_h() > 0, &failures);
-    check("shape and elevation tokens are defined", radius_control() >= 0 && elevation_panel() >= 0, &failures);
-    check("state colors are distinct", th_select() != th_focus() && th_focus() != th_disabled() &&
-        th_disabled() != th_warning() && th_warning() != th_danger() && th_danger() != th_ok(), &failures);
-    check("beam colors are separate from UI colors", trit_color(-1) != th_danger() &&
-        trit_color(0) != th_disabled() && trit_color(1) != th_ok(), &failures);
-    check("primary text contrasts with panels", contrast_delta(th_text(), th_panel()) >= 120 &&
-        contrast_delta(th_text(), th_bg()) >= 120 && contrast_delta(th_text(), th_header()) >= 100, &failures);
-    check("secondary text contrasts with panels", contrast_delta(th_text_dim(), th_panel()) >= 80 &&
-        contrast_delta(th_text_dim(), th_bg()) >= 90, &failures);
+    tokens_scale(&failures);
+    tokens_color(&failures);
+    tokens_contrast(&failures);
     if (failures == 0) { _zag_println("UI TOKENS: ALL PASS"); return 0; }
     _zag_println("UI TOKENS: FAILURES"); return 1;
 }
