@@ -222,8 +222,14 @@ hardware, kernel, firmware, driver, display role, and date.
       `_MAX_DELAY_SYMBOLS`). The `limits` gate proves the named default, delay-cap
       clamping to the named limit, and that an env override wins while a
       missing/invalid value falls back safely.
-- [ ] Query GPU properties rather than embedding render-node, clock, CU, family,
-      or memory assumptions.
+- [x] Query GPU properties rather than embedding render-node, clock, CU, family,
+      or memory assumptions. Evidence: `gpu_open` discovers the render node by
+      scanning minors 128–191 (parameterized `gpu_dev_path`, never a fixed
+      `renderD128`) and queries `device_id`, `family`, engine/memory clocks, and CU
+      counts via `AMDGPU_INFO_DEV_INFO` into the `Gpu` record; `gpu-query` proves the
+      parameterized path, the write-direction 32-byte query ioctl, and that an
+      unqueried device presumes no properties (`ok=false`). Embedded-assumption
+      literals stay banned by `unsupported-claim-audit`.
 - [x] Remove hardcoded frame-time and component-count claims from documentation;
       publish benchmark results with environment and timestamp instead. Evidence:
       the `doc-perf-claim-audit` gate rejects hardcoded frame-time/fps/component-count

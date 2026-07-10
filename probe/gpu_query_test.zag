@@ -1,0 +1,53 @@
+// gpu_query_test.zag — GPU properties are DISCOVERED and QUERIED, never embedded
+// (Masterplan Section 5.2). PURE SOFTWARE: exercises the render-node path builder
+// and the AMDGPU_INFO query encoding only; it never opens a DRM node, so it is safe
+// on a display GPU. Embedded-assumption literals (renderD128, Navi 10, 40 CUs, 2100
+// MHz) are separately banned by the unsupported-claim-audit gate.
+
+@import("../std/list.zag") as list
+@import("../src/gpu_rt.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn path_eq(b: list.ArrayList[u8], s: []u8) bool {
+    if (b.len != s.len + 1) { return false; }   // trailing NUL
+    let i: i32 = 0;
+    while (i < s.len) { if (b.data[i] != s[i]) { return false; } i = i + 1; }
+    return b.data[s.len] == 0;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    // ── the render node is DISCOVERED by minor number, not hardcoded to 128 ─────
+    let p128: list.ArrayList[u8] = gpu_dev_path(128);
+    let p191: list.ArrayList[u8] = gpu_dev_path(191);
+    check("the render-node path is parameterized by minor (128)",
+        path_eq(p128, "/dev/dri/renderD128"), &failures);
+    check("discovery scans other minors too (191), not a fixed node",
+        path_eq(p191, "/dev/dri/renderD191"), &failures);
+    check("the path is NUL-terminated for the open() syscall",
+        p128.data[p128.len - 1] == 0, &failures);
+    list.free[u8](&p128); list.free[u8](&p191);
+
+    // ── device properties are QUERIED via AMDGPU_INFO, not embedded constants ───
+    // IOCTL_AMDGPU_INFO is _IOW(dir=1) with the 32-byte drm_amdgpu_info request
+    check("AMDGPU_INFO is a write-direction query ioctl",
+        (IOCTL_AMDGPU_INFO() / 1073741824) % 4 == 1, &failures);
+    check("the query request struct is 32 bytes",
+        (IOCTL_AMDGPU_INFO() / 65536) % 16384 == 32, &failures);
+    check("the query selects DEV_INFO (device id/family/clocks/memory)",
+        AMDGPU_INFO_DEV_INFO() == 22, &failures);
+
+    // a fresh Gpu record starts unqueried (ok=false) — properties are filled only
+    // by a real device query, never presumed
+    let g: Gpu = gpu_bad();
+    check("an unqueried device presumes no properties (ok=false)",
+        !g.ok && g.device_id == 0 && g.family == 0, &failures);
+
+    if (failures == 0) { _zag_println("GPU QUERY: ALL PASS"); return 0; }
+    _zag_println("GPU QUERY: FAILURES"); return 1;
+}

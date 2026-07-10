@@ -120,6 +120,7 @@ fn gates_3(f: i32) i32 {
     if (!run_suite("timing", "rm -f probe/timing_test.new && ../zag/zag-poc/znc probe/timing_test.zag -o probe/timing_test.new && mv -f probe/timing_test.new probe/timing_test && ./probe/timing_test")) { f = f + 1; }
     if (!run_suite("limits", "rm -f probe/limits_test.new && ../zag/zag-poc/znc probe/limits_test.zag -o probe/limits_test.new && mv -f probe/limits_test.new probe/limits_test && TRITON_LIMITS_TEST=777 ./probe/limits_test")) { f = f + 1; }
     if (!run_suite("doc-perf-claim-audit", "! rg -n -i '[0-9]+ ?ms/frame|[0-9]+ ?fps|frame.?time.{0,20}[0-9]|[0-9]{4,} ?(components|comps|parts)' README.md docs")) { f = f + 1; }
+    if (!run_suite("gpu-query", "rm -f probe/gpu_query_test.new && ../zag/zag-poc/znc probe/gpu_query_test.zag -o probe/gpu_query_test.new && mv -f probe/gpu_query_test.new probe/gpu_query_test && ./probe/gpu_query_test")) { f = f + 1; }
     return f;
 }
 

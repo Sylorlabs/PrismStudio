@@ -76,3 +76,4 @@ probe/session_conflict_test
 probe/opt_report_test
 probe/timing_test
 probe/limits_test
+probe/gpu_query_test
