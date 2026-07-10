@@ -1,0 +1,65 @@
+// camera_test.zag — orbit / pan / zoom / frame camera controls (Masterplan
+// Sections 3.5, 9.2 / Phase F). Drives the real frame loop with injected pointer
+// and wheel input and asserts the camera responds.
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn frame(a: *App, mx: i32, my: i32, btn: i32, wheel: i32, mods: i32) void {
+    a.*.inp.keys.len = 0;
+    a.*.inp.prev_btn = a.*.inp.btn;
+    a.*.inp.mx = mx; a.*.inp.my = my;
+    a.*.inp.btn = btn; a.*.inp.wheel = wheel; a.*.inp.mods = mods;
+    app_frame(a, 0.016);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let a: *App = app_new(1024, 640);
+    demo_load(a);
+    app_frame_all(a);
+    let vp: Rect = zone_center(a);
+    let cx: i32 = vp.x + vp.w / 2;
+    let cy: i32 = vp.y + vp.h / 2;
+
+    // orbit with MMB (bit 1 -> value 2). Two frames so the mouse delta is nonzero.
+    frame(a, cx, cy, 0, 0, 0);
+    frame(a, cx, cy, 2, 0, 0);
+    let yaw0: f64 = a.*.cam.yaw;
+    let pitch0: f64 = a.*.cam.pitch;
+    frame(a, cx + 40, cy + 20, 2, 0, 0);
+    check("MMB orbit changes yaw and pitch",
+        a.*.cam.yaw != yaw0 && a.*.cam.pitch != pitch0, &failures);
+    frame(a, cx + 40, cy + 20, 0, 0, 0);   // release
+
+    // wheel zoom
+    let dist0: f64 = a.*.cam.dist;
+    frame(a, cx, cy, 0, 1, 0);
+    check("wheel-up zooms in (distance decreases)", a.*.cam.dist < dist0, &failures);
+    let dist1: f64 = a.*.cam.dist;
+    frame(a, cx, cy, 0, 0 - 1, 0);
+    check("wheel-down zooms out (distance increases)", a.*.cam.dist > dist1, &failures);
+
+    // pan with Shift+MMB
+    frame(a, cx, cy, 0, 0, 0);
+    frame(a, cx, cy, 2, 0, 1);
+    let tx0: f64 = a.*.cam.target.x;
+    let tz0: f64 = a.*.cam.target.z;
+    frame(a, cx + 40, cy, 2, 0, 1);
+    check("Shift+MMB pans the camera target",
+        a.*.cam.target.x != tx0 || a.*.cam.target.z != tz0, &failures);
+
+    // frame-all recenters and sets a bounded distance
+    a.*.cam.dist = 999.0;
+    app_frame_all(a);
+    check("frame-all sets a bounded framing distance",
+        a.*.cam.dist > 0.0 && a.*.cam.dist <= 220.0, &failures);
+
+    if (failures == 0) { _zag_println("CAMERA: ALL PASS"); return 0; }
+    _zag_println("CAMERA: FAILURES"); return 1;
+}

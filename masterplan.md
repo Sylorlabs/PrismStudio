@@ -472,7 +472,10 @@ The user and agent must be able to perform the same core project operations.
 
 - [ ] Use world-space position, rotation, scale, mesh/material, camera, projection,
       depth testing, clipping, and world-space picking.
-- [ ] Support perspective and orthographic cameras, orbit, pan, zoom, and frame.
+- [x] Support perspective and orthographic cameras, orbit, pan, zoom, and frame.
+      Evidence: perspective/ortho via `Cam.ortho` (`ortho` gate); MMB orbit,
+      Shift+MMB pan, wheel zoom, and frame-all all exercised through the real
+      input path by the `camera` gate.
 - [x] Render components and waveguides as actual volumes, not flat 2.5D lines.
       Evidence: components render through `vp_box`, and `draw_guide` now renders
       each 6-connected path segment as an axis-aligned volumetric tube (`vp_box` +
@@ -896,9 +899,12 @@ Unsupported component
 
 ## 3.5 Modern viewport UX
 
-* [ ] Smooth orbit camera.
-* [ ] Smooth pan.
-* [ ] Smooth zoom.
+* [x] Smooth orbit camera. Evidence: MMB/RMB drag updates yaw/pitch by per-frame
+  deltas; `camera` gate confirms orbit changes both.
+* [x] Smooth pan. Evidence: Shift+MMB drag moves the target along the camera
+  right/up basis; `camera` gate confirms the target moves.
+* [x] Smooth zoom. Evidence: wheel scales `cam.dist` per notch; `camera` gate
+  confirms zoom in/out.
 * [x] Focus selected object. Evidence: `F` / `app_frame_selected`; `shortcuts` gate.
 * [ ] Frame all objects.
 * [ ] Reset view.
