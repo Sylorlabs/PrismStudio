@@ -1,0 +1,62 @@
+// render_test.zag — visibility culling and independent render/sim invalidation
+// (Masterplan Sections 3.9, 9.2 / Phase F). Hidden parts are culled; a UI-only
+// frame does not invalidate the scene render; a scene edit invalidates both the
+// render cache and the sim topology.
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn center(a: *App, id: i32) Vec3 {
+    let ci: i32 = scene_comp_index(a.*.scene, id);
+    let c: Comp = a.*.scene.*.comps.data[ci];
+    let e: Vox = comp_ext(c);
+    return v3((c.origin.x as f64) + (e.x as f64) * 0.5,
+              (c.origin.y as f64) + (e.y as f64) * 0.5,
+              (c.origin.z as f64) + (e.z as f64) * 0.5);
+}
+
+fn pick(a: *App, id: i32) i32 {
+    let sp: P3 = vp_proj(a.*.cam, zone_center(a), center(a, id));
+    return vp_pick_comp(a.*.scene, a.*.cam, zone_center(a), sp.x as i32, sp.y as i32);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let a: *App = app_new(1024, 640);
+    let _pl: i32 = scene_place(a.*.scene, Kind.Plate, vox(0, 0, 0), 0);
+    let c: i32 = scene_place(a.*.scene, Kind.Chamber, vox(3, 1, 3), 0);
+    app_frame_all(a);
+    app_frame(a, 0.016);
+    a.*.sim.*.playing = false;
+
+    let ci: i32 = scene_comp_index(a.*.scene, c);
+    check("a visible component is pickable", pick(a, c) == c, &failures);
+    a.*.scene.*.comps.data[ci].visible = false;
+    scene_mark_render(a.*.scene);
+    check("a hidden component is culled from picking", pick(a, c) != c, &failures);
+    a.*.scene.*.comps.data[ci].visible = true;
+    scene_mark_render(a.*.scene);
+    check("a re-shown component is pickable again", pick(a, c) == c, &failures);
+
+    // independent invalidation: a UI-only frame must not invalidate the scene
+    app_frame(a, 0.016);
+    let rev0: i64 = a.*.scene.*.render_rev;
+    a.*.inp.mx = 20; a.*.inp.my = 300; a.*.inp.btn = 0;   // hover a side panel, no edit
+    app_frame(a, 0.016);
+    check("a UI-only frame does not invalidate the scene render",
+        a.*.scene.*.render_rev == rev0, &failures);
+
+    // a scene edit invalidates both the render cache and the sim topology
+    let rev1: i64 = a.*.scene.*.render_rev;
+    let nid: i32 = scene_place(a.*.scene, Kind.Emitter, vox(1, 1, 2), 0);
+    check("a scene edit bumps render_rev and marks topology dirty",
+        nid > 0 && a.*.scene.*.render_rev > rev1 && a.*.scene.*.topo_dirty, &failures);
+
+    if (failures == 0) { _zag_println("RENDER: ALL PASS"); return 0; }
+    _zag_println("RENDER: FAILURES"); return 1;
+}

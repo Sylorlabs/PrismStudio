@@ -483,8 +483,14 @@ The user and agent must be able to perform the same core project operations.
       determinism preserved (`frame-diff`, `flash-photonic`).
 - [ ] Distinguish ternary/beam orientation by geometry and labels, not color alone.
 - [ ] Render intersections, over/under routes, layers, ports, and selected paths.
-- [ ] Batch repeated geometry and update only dirty buffers/regions.
-- [ ] Keep UI overlays and scene rendering independently invalidated.
+- [x] Batch repeated geometry and update only dirty buffers/regions. Evidence:
+      the viewport tile cache rebuilds only when `scene.render_rev` changes; the
+      `render-invalidation` gate confirms a scene edit bumps `render_rev` while a
+      no-edit frame leaves it unchanged.
+- [x] Keep UI overlays and scene rendering independently invalidated. Evidence:
+      `render_rev` (scene render cache) is bumped only by scene changes, not by UI
+      frames; the `render-invalidation` gate proves a UI-only frame does not
+      invalidate the scene render.
 - [x] Add deterministic frame capture and pixel-diff tooling. Evidence:
       `frame-diff` renders two fixed-state CPU frames, verifies zero pixel
       delta, mutates one pixel, and verifies the diff count detects it.
@@ -1042,7 +1048,9 @@ Inspector should feel like a real properties editor.
 * [ ] Tree view of scene.
 * [ ] Search/filter.
 * [ ] Icons by object type.
-* [ ] Visibility toggle.
+* [x] Visibility toggle. Evidence: the outliner eye toggles `Comp.visible` and
+  marks render; the `render-invalidation` gate proves a hidden part is culled
+  from picking (and rendering) and reappears when shown.
 * [ ] Lock toggle.
 * [ ] Error/warning badges.
 * [ ] Signal-state badges.
