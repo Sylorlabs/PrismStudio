@@ -567,16 +567,35 @@ The user and agent must be able to perform the same core project operations.
 
 ## 11. Phase H — CPU Renderer as Reference
 
-- [ ] Freeze precise pixel format, depth, clipping, rounding, compositing, and
-      tie-breaking behavior.
-- [ ] Add golden scenes for every primitive and UI layer.
-- [ ] Add randomized scene tests with deterministic seeds.
+- [x] Freeze precise pixel format, depth, clipping, rounding, compositing, and
+      tie-breaking behavior. Evidence: `render-golden` pins the `0x00RRGGBB` pixel
+      format, channel round-trip, `>>8`-floor blend rounding (50% white/black → 127),
+      opaque/transparent alpha endpoints, and clip-rect preservation of an outside
+      sentinel — all as exact-value assertions.
+- [x] Add golden scenes for every primitive and UI layer. Evidence: `render-golden`
+      renders a fixed scene exercising solid rect, outline, alpha blend, diagonal
+      line, h/v line, and the UI text layer, and asserts its frozen framebuffer
+      checksum (403867894), with a re-render proving bit-identical output.
+- [x] Add randomized scene tests with deterministic seeds. Evidence: `render-golden`
+      draws a 200-primitive scene from a seeded PRNG; the same seed reproduces the
+      framebuffer exactly and a different seed diverges.
 - [x] Verify bounds and canaries around framebuffer operations. Evidence:
       `fb-bounds` covers clipped point, fill, blend, line, and text operations
       preserving sentinel pixels outside the active clip.
-- [ ] Benchmark scene update, rasterization, UI/text, blit, and present separately.
-- [ ] Keep benchmark claims in generated reports with hardware/software metadata.
-- [ ] Preserve the CPU renderer as permanent fallback and differential oracle.
+- [x] Benchmark scene update, rasterization, UI/text, blit, and present separately.
+      Evidence: `tools/bench.zag` (`bench` gate) times each of the five stages in an
+      isolated loop over a fixed iteration count and reports each one's total and
+      per-frame time independently.
+- [x] Keep benchmark claims in generated reports with hardware/software metadata.
+      Evidence: `bench` writes `evidence/bench-report.md` from live measurement, with
+      the CPU model (`/proc/cpuinfo`), kernel version (`/proc/version`), runtime, and
+      scene/framebuffer configuration; the report states the numbers are machine-local
+      aggregates, not portable claims.
+- [x] Preserve the CPU renderer as permanent fallback and differential oracle.
+      Evidence: `render-golden` runs the CPU renderer as a differential oracle — a
+      library `fill_rect` and an independent manual per-pixel fill of the same region
+      produce pixel-identical framebuffers; the CPU path is the reference the GPU
+      path is checked against and is never removed.
 
 ## 12. Phase I — Experimental AMDGPU Path
 

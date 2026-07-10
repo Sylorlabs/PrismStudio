@@ -105,6 +105,8 @@ fn gates_3(f: i32) i32 {
     if (!run_suite("gpu-safety", "rm -f probe/gpu_safety_test.new && ../zag/zag-poc/znc probe/gpu_safety_test.zag -o probe/gpu_safety_test.new && mv -f probe/gpu_safety_test.new probe/gpu_safety_test && ./probe/gpu_safety_test")) { f = f + 1; }
     if (!run_suite("gpu-kernel-manifest", "rm -f probe/gpu_kernel_test.new && ../zag/zag-poc/znc probe/gpu_kernel_test.zag -o probe/gpu_kernel_test.new && mv -f probe/gpu_kernel_test.new probe/gpu_kernel_test && ./probe/gpu_kernel_test")) { f = f + 1; }
     if (!run_suite("gpu-vgpu", "rm -f probe/gpu_vgpu_test.new && ../zag/zag-poc/znc probe/gpu_vgpu_test.zag -o probe/gpu_vgpu_test.new && mv -f probe/gpu_vgpu_test.new probe/gpu_vgpu_test && ./probe/gpu_vgpu_test")) { f = f + 1; }
+    if (!run_suite("render-golden", "rm -f probe/render_golden_test.new && ../zag/zag-poc/znc probe/render_golden_test.zag -o probe/render_golden_test.new && mv -f probe/render_golden_test.new probe/render_golden_test && ./probe/render_golden_test")) { f = f + 1; }
+    if (!run_suite("bench", "rm -f tools/bench.bin && ../zag/zag-poc/znc tools/bench.zag -o tools/bench.bin && ./tools/bench.bin")) { f = f + 1; }
     return f;
 }
 

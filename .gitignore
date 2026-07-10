@@ -63,3 +63,5 @@ probe/gpu_uapi_test
 probe/gpu_safety_test
 probe/gpu_kernel_test
 probe/gpu_vgpu_test
+probe/render_golden_test
+tools/bench.bin

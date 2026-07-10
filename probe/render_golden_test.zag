@@ -1,0 +1,136 @@
+// render_golden_test.zag — CPU renderer as frozen reference + differential oracle
+// (Masterplan Section 11 / Phase H). Freezes pixel format, blend rounding, and
+// clipping; golden-checksum scenes for every primitive; seeded randomized scenes;
+// and a differential oracle proving two independent CPU paths agree pixel-for-pixel.
+
+@import("../std/list.zag") as list
+@import("../src/fb.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+// deterministic 31-bit checksum over the framebuffer (order-sensitive)
+fn fb_hash(f: *FB) i64 {
+    let h: i64 = 2166136261;
+    let n: i32 = f.*.w * f.*.h;
+    let i: i32 = 0;
+    while (i < n) {
+        h = (h ^ (f.*.px.data[i] % 2147483647)) % 2147483647;
+        h = (h * 16777619) % 2147483647;
+        i = i + 1;
+    }
+    return h;
+}
+
+// deterministic PRNG (xorshift-ish, kept in 31-bit range)
+fn rng_next(s: *i64) i32 {
+    let x: i64 = s.*;
+    x = (x * 1103515245 + 12345) % 2147483647;
+    s.* = x;
+    return (x % 100000) as i32;
+}
+
+// one golden scene exercising each primitive + a UI text layer
+fn draw_golden(f: *FB) void {
+    fill_rect(f, 0, 0, f.*.w, f.*.h, rgb(16, 18, 24));       // background
+    fill_rect(f, 8, 8, 40, 24, rgb(200, 60, 60));           // solid rect
+    rect_outline(f, 60, 8, 40, 24, rgb(60, 200, 60));       // outline
+    blend_rect(f, 20, 20, 40, 24, rgb(60, 60, 200), 128);   // 50% blend overlap
+    line2d(f, 4, 40, 100, 58, rgb(240, 240, 80));           // diagonal line
+    hline(f, 4, 60, 96, rgb(120, 120, 120));                // h line
+    vline(f, 110, 4, 56, rgb(120, 120, 120));               // v line
+    draw_text(f, 6, 66, "PCU", rgb(255, 255, 255));         // UI text layer
+}
+
+// two independent CPU paths for the same filled rect: library vs manual px_set
+fn oracle_lib(f: *FB, x: i32, y: i32, w: i32, h: i32, c: i64) void { fill_rect(f, x, y, w, h, c); }
+fn oracle_manual(f: *FB, x: i32, y: i32, w: i32, h: i32, c: i64) void {
+    let yy: i32 = y;
+    while (yy < y + h) {
+        let xx: i32 = x;
+        while (xx < x + w) { px_set(f, xx, yy, c); xx = xx + 1; }
+        yy = yy + 1;
+    }
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    // ── frozen pixel format ────────────────────────────────────────────────────
+    check("pixel format packs 0x00RRGGBB exactly",
+        rgb(255, 128, 64) == 255 * 65536 + 128 * 256 + 64, &failures);
+    check("channel extraction round-trips",
+        col_r(rgb(200, 100, 50)) == 200 && col_g(rgb(200, 100, 50)) == 100 && col_b(rgb(200, 100, 50)) == 50, &failures);
+    // ── frozen blend rounding (alpha 0..256, >>8 floor) ────────────────────────
+    check("50% blend of white over black floors to 127",
+        mix(rgb(255, 255, 255), rgb(0, 0, 0), 128) == rgb(127, 127, 127), &failures);
+    check("alpha 256 is fully opaque, alpha 0 fully transparent",
+        mix(rgb(10, 20, 30), rgb(90, 80, 70), 256) == rgb(10, 20, 30) &&
+        mix(rgb(10, 20, 30), rgb(90, 80, 70), 0) == rgb(90, 80, 70), &failures);
+
+    // ── golden scene: stable checksum for every primitive + UI text ────────────
+    let g1: FB = fb_new(120, 72);
+    draw_golden(&g1);
+    let golden: i64 = fb_hash(&g1);
+    check("golden scene matches the frozen reference checksum",
+        golden == 403867894, &failures);
+
+    // ── determinism: same scene renders bit-identical every time ───────────────
+    let g2: FB = fb_new(120, 72);
+    draw_golden(&g2);
+    check("re-rendering the golden scene is bit-identical", fb_hash(&g2) == golden, &failures);
+
+    // ── clipping: pixels outside the active clip are untouched ─────────────────
+    let gc: FB = fb_new(120, 72);
+    px_set(&gc, 100, 4, rgb(1, 2, 3));            // sentinel outside the clip
+    fb_clip(&gc, 0, 0, 60, 40);
+    fill_rect(&gc, 0, 0, 120, 72, rgb(255, 0, 0));   // would cover the sentinel if unclipped
+    fb_clip_reset(&gc);
+    check("a pixel outside the clip rect is preserved",
+        gc.px.data[4 * 120 + 100] == rgb(1, 2, 3), &failures);
+
+    // ── seeded randomized scene: reproducible from its seed ────────────────────
+    let ra: FB = fb_new(120, 72);
+    let rb: FB = fb_new(120, 72);
+    let seed_a: i64 = 123456789;
+    let seed_b: i64 = 123456789;
+    let k: i32 = 0;
+    while (k < 200) {
+        let x: i32 = rng_next(&seed_a) % 110;
+        let y: i32 = rng_next(&seed_a) % 62;
+        let c: i64 = rgb(rng_next(&seed_a) % 256, rng_next(&seed_a) % 256, rng_next(&seed_a) % 256);
+        fill_rect(&ra, x, y, 6, 6, c);
+        let x2: i32 = rng_next(&seed_b) % 110;
+        let y2: i32 = rng_next(&seed_b) % 62;
+        let c2: i64 = rgb(rng_next(&seed_b) % 256, rng_next(&seed_b) % 256, rng_next(&seed_b) % 256);
+        fill_rect(&rb, x2, y2, 6, 6, c2);
+        k = k + 1;
+    }
+    check("the same seed reproduces the randomized scene exactly", fb_hash(&ra) == fb_hash(&rb), &failures);
+    // a different seed almost surely diverges
+    let rc: FB = fb_new(120, 72);
+    let seed_c: i64 = 987654321;
+    let m: i32 = 0;
+    while (m < 200) {
+        let x: i32 = rng_next(&seed_c) % 110;
+        let y: i32 = rng_next(&seed_c) % 62;
+        let c: i64 = rgb(rng_next(&seed_c) % 256, rng_next(&seed_c) % 256, rng_next(&seed_c) % 256);
+        fill_rect(&rc, x, y, 6, 6, c);
+        m = m + 1;
+    }
+    check("a different seed produces a different scene", fb_hash(&rc) != fb_hash(&ra), &failures);
+
+    // ── differential oracle: two independent CPU paths agree pixel-for-pixel ───
+    let oa: FB = fb_new(120, 72);
+    let ob: FB = fb_new(120, 72);
+    oracle_lib(&oa, 5, 5, 90, 50, rgb(70, 140, 210));
+    oracle_manual(&ob, 5, 5, 90, 50, rgb(70, 140, 210));
+    check("library fill and manual per-pixel fill are identical", fb_hash(&oa) == fb_hash(&ob), &failures);
+
+    if (failures == 0) { _zag_println("RENDER GOLDEN: ALL PASS"); return 0; }
+    _zag_println("RENDER GOLDEN: FAILURES");
+    _zag_print("golden="); _zag_println(_zag_i64_to_str(golden));
+    return 1;
+}
