@@ -12,6 +12,40 @@ fn fmt_i(v: i64) []u8 {
     return _zag_i64_to_str(v);
 }
 
+// One-decimal float formatter for provenance/inspector readouts.
+fn fmt_f1(v: f64) []u8 {
+    let neg: bool = v < 0.0;
+    let av: f64 = v;
+    if (neg) { av = 0.0 - av; }
+    let ip: i64 = av as i64;
+    let dp: i64 = ((av - (ip as f64)) * 10.0 + 0.5) as i64;
+    if (dp >= 10) { ip = ip + 1; dp = 0; }
+    let s: []u8 = _zag_str_concat(_zag_str_concat(_zag_i64_to_str(ip), "."), _zag_i64_to_str(dp));
+    if (neg) { s = _zag_str_concat("-", s); }
+    return s;
+}
+
+// Draw a physical parameter's full provenance (value/units, class + uncertainty,
+// source + date). Returns the next y. Unknown params render as such, never faked.
+fn draw_provenance(f: *FB, x: i32, y: i32, label: []u8, p: PhysicalParam) i32 {
+    if (!p.known) {
+        draw_text(f, x, y, _zag_str_concat(label, " Unknown / Not characterized"), th_warning());
+        return y + 14;
+    }
+    let v: []u8 = _zag_str_concat(_zag_str_concat(_zag_str_concat(label, " "), fmt_f1(p.value)),
+                                  _zag_str_concat(" ", p.units));
+    draw_text(f, x, y, v, th_text());
+    let cls: []u8 = _zag_str_concat("[", _zag_str_concat(evidence_class_name(p.confidence), "]"));
+    if (p.uncertainty > 0.0) {
+        cls = _zag_str_concat(_zag_str_concat("±", _zag_str_concat(fmt_f1(p.uncertainty), " ")), cls);
+    }
+    draw_text(f, x, y + 12, cls, th_text_dim());
+    let sd: []u8 = p.source;
+    if (p.date_.len > 0) { sd = _zag_str_concat(_zag_str_concat(p.source, " · "), p.date_); }
+    draw_text(f, x, y + 24, sd, th_text_dim());
+    return y + 38;
+}
+
 // ── command dispatch (menus + shortcuts route here) ───────────────────────────
 // 1 new / 2 open / 3 save / 4 save-as / 5 quit
 // 10 undo / 11 redo / 12 duplicate / 13 delete / 14 deselect
@@ -613,12 +647,8 @@ fn draw_toolbar(a: *App) void {
                 draw_text(f, x + 60, y, trit_glyph(ot), th_text());
                 y = y + 14;
             }
-            let pitch: []u8 = "pitch Unknown";
-            if (a.*.scene.*.model.pitch_nm.known) {
-                pitch = _zag_str_concat(_zag_str_concat("pitch ", fmt_i(a.*.scene.*.model.pitch_nm.value as i64)), " nm (Illustrative)");
-            }
-            draw_text(f, x, y, pitch, th_text_dim());
-            y = y + 14;
+            // physical-model provenance for this component kind
+            y = draw_provenance(f, x, y, "model", kind_model_param(a.*.scene.*.model, c.kind));
 
             if (c.kind == Kind.Emitter) {
                 let wl: []u8 = _zag_str_concat("wavelength ", fmt_i(c.wl_nm as i64));
@@ -679,6 +709,8 @@ fn draw_toolbar(a: *App) void {
             rect_outline(f, x + 38, y, 9, 9, trit_rim(g.live));
             draw_text(f, x + 52, y, trit_glyph(g.live), th_text());
             y = y + 16;
+            // propagation model provenance (group index drives the delay above)
+            y = draw_provenance(f, x, y, "n_g", a.*.scene.*.model.group_index);
             if (ui_button(f, inp, rect(x, y, w, 18), "Delete (X)", false)) {
                 app_delete_selection(a);
             }

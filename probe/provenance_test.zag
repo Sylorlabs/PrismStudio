@@ -1,0 +1,42 @@
+// provenance_test.zag — physical-model provenance surfaced in the inspector
+// (Masterplan Section 5.1 / Phase B). Verifies the kind->parameter mapping, the
+// provenance fields, and the one-decimal formatter that back the readout.
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn streq(a: []u8, b: []u8) bool { return _zag_strcmp(a, b) == 1; }
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let m: DeviceModel = model_reference_illustrative();
+
+    let pe: PhysicalParam = kind_model_param(m, Kind.Emitter);
+    check("emitter maps to the emitter-rate parameter", pe.value == 110.0 && streq(pe.units, "GHz"), &failures);
+    check("chamber maps to the chamber-rate parameter", kind_model_param(m, Kind.Chamber).value == 180.0, &failures);
+    check("detector maps to the detector-rate parameter", kind_model_param(m, Kind.Detector).value == 140.0, &failures);
+    let pp: PhysicalParam = kind_model_param(m, Kind.Plate);
+    check("plate maps to the lattice-pitch parameter", pp.value == 250.0 && streq(pp.units, "nm"), &failures);
+
+    check("illustrative params carry full provenance",
+        pe.known && pe.confidence == EvidenceClass.Illustrative &&
+        pe.source.len > 0 && streq(pe.date_, "2026-07-07"), &failures);
+    check("evidence class renders its name",
+        streq(evidence_class_name(EvidenceClass.Illustrative), "Illustrative"), &failures);
+
+    let u: PhysicalParam = physical_unknown("nm");
+    check("an unknown parameter is reported, never invented",
+        !u.known && u.confidence == EvidenceClass.Unknown && streq(u.method, "Not characterized"), &failures);
+
+    check("fmt_f1 formats a whole value", streq(fmt_f1(110.0), "110.0"), &failures);
+    check("fmt_f1 formats a decimal value", streq(fmt_f1(2.1), "2.1"), &failures);
+    check("fmt_f1 formats the WDM step", streq(fmt_f1(0.8), "0.8"), &failures);
+
+    if (failures == 0) { _zag_println("PROVENANCE: ALL PASS"); return 0; }
+    _zag_println("PROVENANCE: FAILURES"); return 1;
+}

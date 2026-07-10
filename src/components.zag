@@ -42,6 +42,15 @@ fn model_kind_rate_ghz(m: DeviceModel, k: Kind) f64 {
     return 0.0;
 }
 
+// The physical-model parameter whose provenance is most relevant to a component
+// kind — surfaced in the inspector's provenance readout.
+fn kind_model_param(m: DeviceModel, k: Kind) PhysicalParam {
+    if (k == Kind.Emitter) { return m.emitter_rate_ghz; }
+    if (k == Kind.Chamber) { return m.chamber_rate_ghz; }
+    if (k == Kind.Detector) { return m.detector_rate_ghz; }
+    return m.pitch_nm;   // plate substrate / SOH tile: lattice pitch
+}
+
 fn kind_count() i32 { return 5; }
 
 fn kind_slug(k: Kind) []u8 {

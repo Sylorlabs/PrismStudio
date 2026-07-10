@@ -169,14 +169,21 @@ hardware, kernel, firmware, driver, display role, and date.
       temperature assumptions, tolerances, and uncertainty where applicable.
 - [ ] Attach a provenance record to every physical parameter: source, source
       version, date, method, units, uncertainty, and confidence class.
-- [ ] Distinguish measured, literature-derived, simulated, user-entered,
-      illustrative, and unknown values.
+- [x] Distinguish measured, literature-derived, simulated, user-entered,
+      illustrative, and unknown values. Evidence: `EvidenceClass` +
+      `evidence_class_name` (all six classes); the inspector renders the class
+      per parameter and the `provenance` gate asserts the mapping and unknown
+      handling.
 - [ ] Validate dimensions and units at load time.
 - [x] Reject incompatible device-model versions with an actionable diagnostic.
       Evidence: `device-model-version` verifies opening a project with device
       model schema `99` returns stable `E_MODEL_VERSION ... expected 1`.
 - [ ] Allow projects to pin and migrate model versions explicitly.
-- [ ] Display provenance and uncertainty in the inspector.
+- [x] Display provenance and uncertainty in the inspector. Evidence:
+      `draw_provenance` shows value/units, confidence class + uncertainty, and
+      source · date for the selected component's model parameter (via
+      `kind_model_param`) and a guide's group index; unknown params render as
+      "Unknown / Not characterized". `provenance` gate + `x11-captures`.
 
 ### 5.2 Eliminate Unsupported Hardcoding
 
