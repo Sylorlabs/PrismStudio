@@ -331,7 +331,11 @@ directly into memory.
       stepping (no faked result), invalid ternary inputs propagate as the error
       state, and every simulated output stays a bounded valid trit over 64 symbols
       (no overflow to garbage).
-- [ ] Bound memory and execution for hostile or accidental large designs.
+- [x] Bound memory and execution for hostile or accidental large designs.
+      Evidence: `exec-bounds` gate — `sim_update` caps steps per call (≤4096) under
+      an enormous time delta, delay-line depth clamps for an absurd guide length,
+      the trace-history ring is fixed, and the simulator stays consistent after
+      the burst; complements the `bounded-inputs` project/graph limits.
 - [x] Add independent reference oracles for ternary algebra and small networks.
       Evidence: exhaustive oracle in `probe/simulation_property_test.zag`.
 - [x] Add property tests for components, routing delay, and graph execution.

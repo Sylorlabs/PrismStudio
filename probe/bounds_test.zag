@@ -1,0 +1,52 @@
+// bounds_test.zag — bound memory and execution for hostile/accidental large
+// designs (Masterplan Section 7 / Phase D). Per-call stepping is capped, delay
+// lines are clamped, and trace history is bounded — an absurd input can never
+// make the simulator allocate or loop without limit.
+
+@import("../std/list.zag") as list
+@import("../src/flash_ir.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn build() *Scene {
+    let s: *Scene = scene_new();
+    let p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    let _r: bool = p > 0 && e > 0 && c > 0 && d > 0 &&
+        flash_route(s, e, 0, c, 0) && flash_route(s, c, 3, d, 0);
+    return s;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let s: *Scene = build();
+    let sim: *Sim = sim_new();
+    sim_recompile(sim, s);
+    sim.*.playing = true;
+    sim.*.speed = 1000000.0;
+
+    // An enormous time delta cannot step the fabric without limit.
+    let stepped: i32 = sim_update(sim, s, 1000000.0);
+    check("per-call stepping is capped", stepped <= 4096 && stepped > 0, &failures);
+
+    // An absurd guide length yields a clamped, still-valid delay-line depth.
+    let dlong: i32 = guide_delay_symbols_for_model(s, sim.*.clock_ghz, 1000000000000000000.0);
+    check("delay-line depth is clamped for an absurd length", dlong >= 1 && dlong <= 4096, &failures);
+    let dshort: i32 = guide_delay_symbols_for_model(s, sim.*.clock_ghz, 1000.0);
+    check("a normal guide is a small delay line", dshort >= 1 && dshort <= 4096, &failures);
+
+    // Trace history is bounded (fixed ring per node).
+    check("trace history ring is bounded", hist_len() > 0 && hist_len() <= 100000, &failures);
+
+    // The simulation stays valid after the hostile step burst.
+    check("simulator remains consistent after the burst",
+        sim.*.nodes.len == 4 && scene_validation_errors(s) == 0, &failures);
+
+    if (failures == 0) { _zag_println("BOUNDS: ALL PASS"); return 0; }
+    _zag_println("BOUNDS: FAILURES"); return 1;
+}

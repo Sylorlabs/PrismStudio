@@ -54,3 +54,4 @@ probe/scheduling_test
 probe/stepping_test
 probe/drc_test
 probe/robustness_test
+probe/bounds_test
