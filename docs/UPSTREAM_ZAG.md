@@ -30,3 +30,23 @@ function body or its literal/symbol tables grow large. Add a bounds check (or
 grow the buffer) so an arbitrarily large function compiles or fails cleanly with
 a diagnostic instead of corrupting memory. Until then, keep generated/large Zag
 functions modest in size.
+
+## ZNC-2 — non-deterministic codegen under load (same root cause as ZNC-1)
+
+**Observed (2026-07-10):** compiling `src/main.zag` twice normally yields
+byte-identical binaries, but during a full `./tools/verify` run (95 back-to-back
+`znc` invocations) two builds of the *same* source differed by a few bytes near
+the start of the file (file size 1206562 vs 1206566). Standalone, four repeated
+builds are identical. This is the same memory-corruption signature as ZNC-1: the
+compiler's output depends on heap/allocation state, which under sustained load
+occasionally perturbs codegen.
+
+**Consequence for Triton:** the clean build is **not** guaranteed byte-
+deterministic, so master plan §4 "make the clean build deterministic" stays
+unchecked until the compiler is fixed. No build-determinism gate is shipped (it
+would be flaky). This is a compiler bug to fix in `selfhost/native/znc.zag`, not
+to work around in Triton (pure-Zag rule).
+
+**Proper upstream fix:** the same bounds/initialisation fix as ZNC-1 should make
+codegen a pure function of the input; add a determinism check in znc's own test
+suite (compile twice, compare) once fixed.

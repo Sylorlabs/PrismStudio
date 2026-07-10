@@ -139,6 +139,12 @@ hardware, kernel, firmware, driver, display role, and date.
 - [x] Record the supported Zag compiler path and compiler identity/hash. Evidence:
       `evidence/progress-ledger.md` A.compiler.
 - [ ] Make the clean build deterministic and document all prerequisites.
+      (Prerequisites are documented — the `ZNC` compiler path in `README.md`/
+      `build.sh`. Byte-determinism is NOT yet guaranteed: repeated `znc` builds are
+      usually identical but intermittently differ by a few bytes under load — the
+      known ZNC-1 compiler nondeterminism recorded in `docs/UPSTREAM_ZAG.md`. Per the
+      pure-Zag rule this must be fixed in `znc`, so this box stays unchecked until it
+      is.)
 - [ ] Separate production tests from obsolete probes and generated binaries.
 - [x] Add a single test entry point that reports every suite independently.
       Evidence: `verify.sh`, `tools/verify.zag`.
@@ -155,7 +161,12 @@ hardware, kernel, firmware, driver, display role, and date.
 
 ### Acceptance
 
-- [ ] A clean checkout can be built and tested with documented commands.
+- [x] A clean checkout can be built and tested with documented commands. Evidence:
+      a fresh `git clone` + `git checkout master` builds the production binary with
+      `./build.sh` and runs the full gate suite with `./verify.sh` / `./tools/verify`
+      (README documents both, including the `ZNC` prerequisite) — verified end to end
+      by re-cloning from origin and running the suite to
+      `{"summary":"pass","failures":0}` across all gates.
 - [ ] Baseline evidence is archived without modifying expected results to hide
       existing failures.
 - [ ] Every unexplained physical or performance number has an owner and removal
