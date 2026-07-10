@@ -1,0 +1,79 @@
+// scheduling_test.zag — deterministic scheduling independent of insertion/iteration
+// order (Masterplan Section 7 / Phase D). The same logical network built in a
+// different component order (hence different ids and node-list order) must produce
+// identical detector outputs, proving the schedule does not depend on order.
+
+@import("../std/list.zag") as list
+@import("../src/flash_ir.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn find_kind(s: *Scene, k: Kind) i32 {
+    let i: i32 = 0;
+    while (i < s.*.comps.len) {
+        if (s.*.comps.data[i].kind == k) { return s.*.comps.data[i].id; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// Build the same network (plate, emitter->chamber->detector, negate chamber) but
+// place the four parts in the given order to vary ids and node-list order.
+fn build(order: i32) *Scene {
+    let s: *Scene = scene_new();
+    let p: i32 = 0; let e: i32 = 0; let c: i32 = 0; let d: i32 = 0;
+    p = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    if (order == 0) {
+        e = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+        c = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+        d = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    } else {
+        d = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+        c = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+        e = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    }
+    let ci: i32 = scene_comp_index(s, c);
+    if (ci >= 0) { s.*.comps.data[ci].logic_op = 2; }   // negate: detector tracks emitter
+    let _r: bool = flash_route(s, e, 0, c, 0) && flash_route(s, c, 3, d, 0);
+    return s;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let a: *Scene = build(0);
+    let b: *Scene = build(1);
+
+    check("both orders build a valid, connected network",
+        scene_validation_errors(a) == 0 && scene_validation_errors(b) == 0 &&
+        a.*.guides.len == 2 && b.*.guides.len == 2, &failures);
+
+    let da: i32 = find_kind(a, Kind.Detector);
+    let db: i32 = find_kind(b, Kind.Detector);
+
+    let sa: *Sim = sim_new();
+    let sb: *Sim = sim_new();
+    sim_recompile(sa, a);
+    sim_recompile(sb, b);
+
+    let equal: bool = true;
+    let nonzero: bool = false;
+    let step: i32 = 0;
+    while (step < 48) {
+        sim_step(sa, a);
+        sim_step(sb, b);
+        let oa: i32 = sim_history(sa, da, 0);
+        let ob: i32 = sim_history(sb, db, 0);
+        if (oa != ob) { equal = false; }
+        if (oa != 0) { nonzero = true; }
+        step = step + 1;
+    }
+
+    check("placement/iteration order does not change detector output", equal, &failures);
+    check("the network actually drives a varying output (test is meaningful)", nonzero, &failures);
+
+    if (failures == 0) { _zag_println("SCHEDULING: ALL PASS"); return 0; }
+    _zag_println("SCHEDULING: FAILURES"); return 1;
+}

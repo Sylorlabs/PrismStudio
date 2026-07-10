@@ -309,7 +309,12 @@ directly into memory.
 - [x] Separate symbolic functional simulation from physical/timing simulation.
       Evidence: `SimMode.Functional` and `SimMode.Physical` with independent
       model-completeness behavior in `simulation-properties`.
-- [ ] Define deterministic scheduling independent of map iteration order.
+- [x] Define deterministic scheduling independent of map iteration order.
+      Evidence: `sim_step` delivers all guides, then computes all nodes, then
+      launches — iterating the insertion-ordered node/guide lists, never a hash
+      map. The `scheduling` gate builds the same network in two placement orders
+      (different ids and list order) and confirms identical detector output over
+      48 symbols.
 - [ ] Handle feedback, latency, initialization, convergence, and oscillation.
 - [ ] Support reproducible stepping, pause, reset, breakpoint, and trace capture.
 - [ ] Detect invalid inputs, model gaps, numerical instability, and overflow.
