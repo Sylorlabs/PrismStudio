@@ -125,9 +125,12 @@ hardware, kernel, firmware, driver, display role, and date.
       `/home/micah/Desktop/Sylorlabs/zag`) and honor the language's declared
       constraints. Never work around a Zag defect by reaching for another
       language, and never regress performance to avoid a compiler fix.
-- [ ] Record every upstream Zag change that Triton depends on, with a precise
+- [x] Record every upstream Zag change that Triton depends on, with a precise
       before/after and the reason the fix belongs in the language rather than in
-      Triton.
+      Triton. Evidence: `docs/UPSTREAM_ZAG.md` records ZNC-1 (znc memory-corruption
+      crash compiling very large functions) with the exact reproduction, why the
+      real fix belongs in `selfhost/native/znc.zag`, and the in-tree pure-Zag
+      mitigation (splitting `tools/verify.zag`'s `main` into `gates_0..3`).
 
 ## 4. Phase A — Establish Reproducible Ground Truth
 
