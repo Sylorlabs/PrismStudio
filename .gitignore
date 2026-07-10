@@ -59,3 +59,4 @@ probe/routing_test
 probe/camera_test
 probe/render_test
 probe/persistence_test
+probe/gpu_uapi_test

@@ -420,6 +420,43 @@ fn pm4_type3(opcode: i64, body_dwords: i64) i64 {
     return 0xC0000000 + ((body_dwords - 1) & 0x3FFF) * 0x10000 + (opcode & 0xFF) * 0x100;
 }
 
+// Reviewed/allowed PM4 type-3 opcodes for Triton's fixed compute path. Anything
+// else is rejected — no opcode sweeps, no arbitrary machine code (Section 12.1).
+fn pm4_opcode_allowed(op: i64) bool {
+    return op == 0x76 ||   // SET_SH_REG
+        op == 0x15 ||      // DISPATCH_DIRECT
+        op == 0x37 ||      // WRITE_DATA
+        op == 0x10;        // NOP
+}
+
+fn pm4_dw_at(buf: []u8, off: i32) i64 {
+    return (buf[off] as i64) +
+        (buf[off + 1] as i64) * 256 +
+        (buf[off + 2] as i64) * 65536 +
+        (buf[off + 3] as i64) * 16777216;
+}
+
+// Validate a PM4 indirect buffer (bytes) BEFORE submission: dword-aligned, only
+// type-3 packets carrying reviewed opcodes, each packet's declared body length
+// within bounds, and the walk terminating exactly at the buffer end. Pure
+// software — never touches hardware. Returns true only for a safe IB.
+fn pm4_ib_valid(buf: []u8) bool {
+    if (buf.len == 0 || (buf.len % 4) != 0) { return false; }
+    let ndw: i32 = buf.len / 4;
+    let i: i32 = 0;
+    while (i < ndw) {
+        let hdr: i64 = pm4_dw_at(buf, i * 4);
+        if ((hdr / 0x40000000) % 4 != 3) { return false; }   // type bits [31:30] must be 3
+        let count: i64 = (hdr / 0x10000) % 0x4000;           // body_dwords - 1
+        let op: i64 = (hdr / 0x100) % 256;
+        if (!pm4_opcode_allowed(op)) { return false; }
+        let total: i64 = count + 2;                          // header + body dwords
+        if ((i as i64) + total > (ndw as i64)) { return false; }
+        i = i + (total as i32);
+    }
+    return i == ndw;
+}
+
 // PM4 WRITE_DATA (opcode 0x37): the CP writes `data` to GPU address `dst_va`.
 // DST_SEL=5 (memory), WR_CONFIRM so the CP waits for the write to land.
 fn pm4_write_data1(s: *list.ArrayList[u8], dst_va: i64, data: i64) void {

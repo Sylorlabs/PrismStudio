@@ -1,0 +1,52 @@
+// gpu_uapi_test.zag — AMDGPU UAPI ioctl/struct layout + PM4 IB validation
+// (Masterplan Section 12.1/12.2, non-destructive sector). PURE SOFTWARE: it only
+// exercises the ioctl-encoding, PM4-packet, and IB-validation functions — it never
+// opens a DRM node or submits anything to hardware, so it is safe on a display GPU.
+
+@import("../std/list.zag") as list
+@import("../src/gpu_rt.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    // ── ioctl _IOC encodings match the stable AMDGPU/DRM UAPI ──────────────────
+    // 0xC0406400 = _IOC(dir=3, type='d'=0x64, nr=0, size=64)
+    check("DRM_IOCTL_VERSION encodes to the canonical 0xC0406400",
+        IOCTL_VERSION() == 3 * 1073741824 + 64 * 65536 + 100 * 256, &failures);
+    check("_IOWR sets the read+write direction bits",
+        (IOCTL_VERSION() / 1073741824) % 4 == 3, &failures);
+    check("_IOW (AMDGPU_INFO) sets the write direction only",
+        (IOCTL_AMDGPU_INFO() / 1073741824) % 4 == 1, &failures);
+    check("drm_version struct size is 64", (IOCTL_VERSION() / 65536) % 16384 == 64, &failures);
+    check("gem_create struct size is 32", (IOCTL_AMDGPU_GEM_CREATE() / 65536) % 16384 == 32, &failures);
+    check("amdgpu_cs struct size is 24", (IOCTL_AMDGPU_CS() / 65536) % 16384 == 24, &failures);
+    check("gem_va struct size is 64", (IOCTL_AMDGPU_GEM_VA() / 65536) % 16384 == 64, &failures);
+
+    // ── PM4 type-3 packet header encodings ─────────────────────────────────────
+    // type-3 header = 0xC0000000 | ((body_dwords-1)<<16) | (opcode<<8)
+    check("PACKET3 WRITE_DATA header", pm4_type3(55, 4) == 3221225472 + 3 * 65536 + 55 * 256, &failures);
+    check("PACKET3 DISPATCH_DIRECT header", pm4_type3(21, 4) == 3221225472 + 3 * 65536 + 21 * 256, &failures);
+    check("PACKET3 SET_SH_REG header", pm4_type3(118, 3) == 3221225472 + 2 * 65536 + 118 * 256, &failures);
+
+    // ── IB validation on a real, well-formed dispatch buffer ───────────────────
+    let s: list.ArrayList[u8] = list.make[u8](128);
+    pm4_build_dispatch(&s, 4096, 8192, 8, 1, 1, 1, 1, 1);   // 256-aligned shader VA
+    check("a well-formed dispatch IB validates", pm4_ib_valid(s.data[0..s.len]), &failures);
+    check("the IB is non-empty and dword aligned", s.len > 0 && s.len % 4 == 0, &failures);
+
+    // reject a non-dword-aligned buffer
+    check("a non-dword-aligned IB is rejected", !pm4_ib_valid(s.data[0..s.len - 1]), &failures);
+    // reject a truncated buffer (last packet overruns)
+    check("a truncated IB is rejected", !pm4_ib_valid(s.data[0..s.len - 4]), &failures);
+    // reject a disallowed opcode (corrupt the first packet's opcode byte)
+    s.data[1] = 255;
+    check("a disallowed opcode is rejected (no opcode sweeps)", !pm4_ib_valid(s.data[0..s.len]), &failures);
+
+    if (failures == 0) { _zag_println("GPU UAPI: ALL PASS"); return 0; }
+    _zag_println("GPU UAPI: FAILURES"); return 1;
+}

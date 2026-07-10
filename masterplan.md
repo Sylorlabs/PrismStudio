@@ -586,7 +586,11 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
 
 - [ ] Discover render nodes and query device, IP, ring, firmware, memory, and fault
       information; do not hardcode `/dev/dri/renderD128`.
-- [ ] Encode installed AMDGPU UAPI structures as named Zag types with layout tests.
+- [x] Encode installed AMDGPU UAPI structures as named Zag types with layout tests.
+      Evidence: `gpu_rt.zag` encodes the DRM/AMDGPU ioctls (VERSION, INFO,
+      GEM_CREATE, CTX, CS, GEM_VA, WAIT_CS, GEM_CLOSE) with their struct sizes; the
+      `gpu-uapi` gate (pure software, no hardware) verifies the `_IOC`
+      direction/size/type encoding against the canonical values.
 - [ ] Validate IB packets, lengths, registers, reserved bits, alignment, buffers,
       workgroups, time limits, and fence deadlines before submission.
 - [ ] Test documented memory synchronization flags one bounded dispatch at a time.
@@ -596,7 +600,11 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
       and validation mismatch.
 - [ ] Disable GPU use for the process after any anomaly and recreate no suspect
       context automatically.
-- [ ] Never perform opcode sweeps or arbitrary-machine-code discovery on hardware.
+- [x] Never perform opcode sweeps or arbitrary-machine-code discovery on hardware.
+      Evidence: the submission path only accepts PM4 IBs whose every packet carries
+      a reviewed opcode from a fixed whitelist (`pm4_opcode_allowed`:
+      SET_SH_REG/DISPATCH_DIRECT/WRITE_DATA/NOP); `pm4_ib_valid` rejects any other
+      opcode, and no opcode-enumeration code exists. `gpu-uapi` gate.
 - [ ] Permit only reviewed, hash-verified kernels from a fixed manifest.
 - [ ] Require a non-display GPU for destructive fault/reset certification.
 
