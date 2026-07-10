@@ -1,0 +1,81 @@
+// design_db_test.zag — design-database records and placement-rule enforcement
+// (Masterplan Section 6.1): stable IDs and typed records for components, ports, and
+// connections that survive a save/load round trip, plus enforcement of occupancy,
+// placement, orientation, and layer/bounds rules. Port-compatibility, loop, and
+// crossing DRC are covered by the `drc`/`routing` gates.
+
+@import("../std/list.zag") as list
+@import("../src/editops.zag")
+@import("../src/flash_ir.zag")
+@import("../src/voxel.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let path: []u8 = "/tmp/triton_designdb.zpa";
+
+    // ── stable IDs + typed component records (6.1) ──────────────────────────────
+    let s: *Scene = scene_new();
+    let p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 1);   // placed with a rotation
+    let d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    check("placed components get distinct, positive, monotonic IDs",
+        p > 0 && e > p && c > e && d > c, &failures);
+    let ci: i32 = scene_comp_index(s, c);
+    let comp: Comp = s.*.comps.data[ci];
+    check("a component is a typed record with kind, origin, and rotation",
+        comp.kind == Kind.Chamber && comp.origin.x == 4 && comp.origin.y == 1 &&
+        comp.origin.z == 3 && comp.rot == 1, &failures);
+
+    // ── typed connection record with explicit ports (6.1) ───────────────────────
+    let routed: bool = flash_route(s, e, 0, c, 0);
+    check("a routed connection is a typed record naming both endpoints and ports",
+        routed && s.*.guides.len == 1 && s.*.guides.data[0].from_c == e &&
+        s.*.guides.data[0].from_p == 0 && s.*.guides.data[0].to_c == c &&
+        s.*.guides.data[0].to_p == 0, &failures);
+
+    // ── IDs and records survive a save/load round trip (stable identity) ────────
+    let _sv: bool = design_save(s, path);
+    let s2: *Scene = scene_new();
+    let _ld: bool = design_load_into(s2, path);
+    let identity_ok: bool = s2.*.comps.len == s.*.comps.len;
+    let i: i32 = 0;
+    while (i < s.*.comps.len && identity_ok) {
+        let a: Comp = s.*.comps.data[i];
+        let bi: i32 = scene_comp_index(s2, a.id);
+        if (bi < 0) { identity_ok = false; }
+        else {
+            let b: Comp = s2.*.comps.data[bi];
+            if (b.kind != a.kind || b.origin.x != a.origin.x || b.origin.y != a.origin.y ||
+                b.origin.z != a.origin.z || b.rot != a.rot) { identity_ok = false; }
+        }
+        i = i + 1;
+    }
+    check("IDs and typed records survive a save/load round trip unchanged", identity_ok, &failures);
+
+    // ── placement rules: occupancy, layer/floor, plate requirement, bounds ──────
+    let dup: i32 = scene_place(s, Kind.Detector, vox(4, 1, 3), 0);   // overlaps the chamber
+    check("occupancy is enforced (overlapping placement rejected)",
+        dup < 0 && scene_can_place(s, Kind.Detector, vox(4, 1, 3), 0) == 1, &failures);
+    check("a substrate plate must sit on the lattice floor (layer rule)",
+        scene_can_place(s, Kind.Plate, vox(0, 1, 0), 0) == 2, &failures);
+    let empty: *Scene = scene_new();
+    check("a mounted part requires a plate underneath",
+        scene_can_place(empty, Kind.Chamber, vox(2, 1, 2), 0) == 3, &failures);
+    check("out-of-range coordinates are rejected (bounds)",
+        scene_can_place(s, Kind.Detector, vox(9000, 1, 3), 0) == 6, &failures);
+
+    // ── orientation changes the occupied footprint ──────────────────────────────
+    let r0: Vox = rot_ext(kind_fp(Kind.Soh), 0);
+    let r1: Vox = rot_ext(kind_fp(Kind.Soh), 1);
+    check("a 90-degree rotation swaps the footprint's X and Z extents",
+        r0.x != r1.x && r0.x == r1.z && r0.z == r1.x && r0.y == r1.y, &failures);
+
+    if (failures == 0) { _zag_println("DESIGN DB: ALL PASS"); return 0; }
+    _zag_println("DESIGN DB: FAILURES"); return 1;
+}

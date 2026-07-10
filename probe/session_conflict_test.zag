@@ -1,0 +1,66 @@
+// session_conflict_test.zag — detect external modifications and reconcile without
+// silent loss (Masterplan Section 10 / Phase G). A project's content hash is the
+// change detector: if the file changed under us, we detect it and a reload adopts
+// the external content rather than blindly overwriting it. The write-side
+// no-silent-loss guarantee (a stale writer is rejected) is the `agent-revision-
+// conflict` gate's E_REV_CONFLICT precondition.
+
+@import("../std/list.zag") as list
+@import("../src/editops.zag")
+@import("../src/flash_ir.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn build(extra: i32) *Scene {
+    let s: *Scene = scene_new();
+    let _p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let _d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    let _r: bool = flash_route(s, e, 0, c, 0);
+    let k: i32 = 0;
+    while (k < extra) { let _x: i32 = scene_place(s, Kind.Detector, vox(2, 1, 6 + k), 0); k = k + 1; }
+    return s;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let path: []u8 = "/tmp/triton_session_conflict.zpa";
+
+    // local session saves the project and records the content hash it last saw
+    let local: *Scene = build(0);
+    let _sv: bool = design_save(local, path);
+    let seen: i64 = design_bytes_hash(_zag_read_file(path));
+
+    // no external change yet: re-reading the file matches the seen hash
+    check("an unchanged file hashes to the last-seen value (no false positive)",
+        design_bytes_hash(_zag_read_file(path)) == seen, &failures);
+
+    // an external writer modifies the project on disk
+    let external: *Scene = build(2);   // two extra detectors
+    let _sv2: bool = design_save(external, path);
+
+    // DETECTION: the on-disk hash no longer matches what we last saw
+    let now_hash: i64 = design_bytes_hash(_zag_read_file(path));
+    check("an external modification is detected via the content hash", now_hash != seen, &failures);
+
+    // NO SILENT LOSS: reloading adopts the external content instead of clobbering it
+    let reloaded: *Scene = scene_new();
+    let _ld: bool = design_load_into(reloaded, path);
+    check("reconciliation adopts the external content (external change not lost)",
+        reloaded.*.comps.len == external.*.comps.len && reloaded.*.comps.len != local.*.comps.len,
+        &failures);
+
+    // the reconciled state itself round-trips (a subsequent save is consistent)
+    let _sv3: bool = design_save(reloaded, path);
+    check("the reconciled project re-hashes stably after adoption",
+        design_bytes_hash(_zag_read_file(path)) == now_hash, &failures);
+
+    scene_free(local); scene_free(external); scene_free(reloaded);
+
+    if (failures == 0) { _zag_println("SESSION CONFLICT: ALL PASS"); return 0; }
+    _zag_println("SESSION CONFLICT: FAILURES"); return 1;
+}

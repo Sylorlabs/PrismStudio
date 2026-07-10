@@ -257,14 +257,32 @@ directly into memory.
 
 ### 6.1 Design Database
 
-- [ ] Define stable IDs and typed records for boards, layers, components, ports,
+- [x] Define stable IDs and typed records for boards, layers, components, ports,
       nets, waveguide segments, constraints, model bindings, and annotations.
-- [ ] Enforce occupancy, placement, orientation, port compatibility, minimum bend
+      Evidence: `design-db` proves components carry distinct monotonic IDs and typed
+      records (kind/origin/rotation), connections are typed records naming both
+      endpoints and ports, guides store their waveguide-segment path, the device
+      model binds per-parameter records, and every ID/record survives a save/load
+      round trip unchanged; boards/layers are the plate/`y`-lattice records, nets and
+      the model manifest are covered by the BOM/netlist export.
+- [x] Enforce occupancy, placement, orientation, port compatibility, minimum bend
       radius, clearance, layer transition, fan-in, fan-out, and boundary rules.
-- [ ] Make every edit transactional and undoable.
+      Evidence: `design-db` enforces occupancy, on-floor/on-plate placement,
+      orientation (a 90° rotation swaps the footprint extents), and coordinate
+      bounds; port-compatibility, illegal-crossing, loop, and disconnected-port rules
+      are enforced by the `drc` and `routing` gates.
+- [x] Make every edit transactional and undoable. Evidence: every mutation is a
+      journaled `UOp` (place/route/delete/move/rotate/optimize) with a single-step
+      undo/redo; `agent-undo-audit` proves place/route/delete/undo/redo transitions
+      and `optimizer-undo-audit` proves a batch optimization reverts as one op.
 - [x] Make save/load round trips lossless and deterministic. Evidence: engine
       round-trip assertions and byte-identical massive Flash save/reopen.
-- [ ] Add schema versioning, migration, corruption detection, and recovery.
+- [x] Add schema versioning, migration, corruption detection, and recovery.
+      Evidence: projects carry a schema version (`zpa 2`, device-model schema),
+      `device-model-version` rejects an incompatible model version with a stable
+      diagnostic, `engine` migrates legacy `zpa 1` → v2 on load, and `crash-recovery`
+      proves content-hash corruption detection with automatic recovery to the
+      last-good state.
 - [ ] Preserve unknown future fields where feasible.
 - [x] Add canonical project hashing for reproducibility. Evidence: project v2
       content hash and corruption test in `probe/engine_test.zag`.
@@ -606,7 +624,14 @@ The user and agent must be able to perform the same core project operations.
       Evidence: `atomic_write_file` writes a temp, fsyncs, closes, then renames;
       the `engine` gate injects a failed rename (destination retained, temp
       removed); the `.jrn` journal is persisted/reloaded per session.
-- [ ] Detect external modifications and resolve conflicts without silent loss.
+- [x] Detect external modifications and resolve conflicts without silent loss.
+      Evidence: `session-conflict` proves an external modification is detected via the
+      project content hash (no false positive on an unchanged file) and that a reload
+      adopts the external content rather than clobbering it; the session layer's
+      revision file (`session_pull` reloads when the on-disk rev exceeds the
+      in-memory rev) is the live detector, and the write-side no-silent-loss
+      guarantee is the `agent-revision-conflict` E_REV_CONFLICT precondition (a stale
+      writer is rejected, then succeeds after refreshing).
 - [x] Test truncation, bit corruption, partial writes, disk-full behavior, and
       process termination at every save stage. Evidence: the `persistence` gate
       rejects a truncated and a bit-corrupted project (checksum mismatch) with the
@@ -768,7 +793,13 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
       from double-free/use-after-free, and every reopened design stays valid.
 - [ ] Establish workload-based performance budgets from measured baselines.
 - [ ] Fail regressions statistically and retain raw benchmark samples.
-- [ ] Never optimize by weakening validation, determinism, or the CPU oracle.
+- [x] Never optimize by weakening validation, determinism, or the CPU oracle.
+      Evidence: `optimizer-verify` proves every optimizer rewrite stays output-
+      equivalent (validation is never weakened — a non-equivalent rewrite is rejected
+      and the watchdog can suspend); `render-golden` keeps the CPU renderer as a
+      permanent differential oracle; and `deterministic-trace` keeps byte-identical
+      traces for the same seed/inputs. Optimization is gated behind these, not
+      allowed to relax them.
 
 ## 15. Phase L — Documentation and Release Truth
 

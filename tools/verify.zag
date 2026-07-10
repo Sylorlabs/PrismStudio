@@ -114,6 +114,8 @@ fn gates_3(f: i32) i32 {
     if (!run_suite("optimizer-verify", "rm -f probe/opt_verify_test.new && ../zag/zag-poc/znc probe/opt_verify_test.zag -o probe/opt_verify_test.new && mv -f probe/opt_verify_test.new probe/opt_verify_test && ./probe/opt_verify_test")) { f = f + 1; }
     if (!run_suite("optimizer-schedule", "rm -f probe/opt_schedule_test.new && ../zag/zag-poc/znc probe/opt_schedule_test.zag -o probe/opt_schedule_test.new && mv -f probe/opt_schedule_test.new probe/opt_schedule_test && ./probe/opt_schedule_test")) { f = f + 1; }
     if (!run_suite("provenance-units", "rm -f probe/provenance_units_test.new && ../zag/zag-poc/znc probe/provenance_units_test.zag -o probe/provenance_units_test.new && mv -f probe/provenance_units_test.new probe/provenance_units_test && ./probe/provenance_units_test")) { f = f + 1; }
+    if (!run_suite("design-db", "rm -f /tmp/triton_designdb.zpa* && ../zag/zag-poc/znc probe/design_db_test.zag -o probe/design_db_test.new && mv -f probe/design_db_test.new probe/design_db_test && ./probe/design_db_test")) { f = f + 1; }
+    if (!run_suite("session-conflict", "rm -f /tmp/triton_session_conflict.zpa* && ../zag/zag-poc/znc probe/session_conflict_test.zag -o probe/session_conflict_test.new && mv -f probe/session_conflict_test.new probe/session_conflict_test && ./probe/session_conflict_test")) { f = f + 1; }
     return f;
 }
 
