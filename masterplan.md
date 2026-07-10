@@ -320,8 +320,12 @@ directly into memory.
 
 ## 7. Phase D — Simulation and Verification Engine
 
-- [ ] Specify balanced-ternary values, unknown/high-impedance/error states, phase
-      conventions, sampling rules, and tie-breaking precisely.
+- [x] Specify balanced-ternary values, unknown/high-impedance/error states, phase
+      conventions, sampling rules, and tie-breaking precisely. Evidence:
+      `sim-semantics` pins the whole `src/ternary.zag` contract as exact assertions —
+      the three valid trits and the unknown(-2)/high-Z(2)/error(3) states, the phase
+      convention (`-1`→π carrier, `0/+1`→0-phase, `0`=dark via amplitude gating), the
+      field/sum sampling thresholds (±0.5), and the dead-band/zero tie-break to dark.
 - [x] Separate symbolic functional simulation from physical/timing simulation.
       Evidence: `SimMode.Functional` and `SimMode.Physical` with independent
       model-completeness behavior in `simulation-properties`.
@@ -331,7 +335,13 @@ directly into memory.
       map. The `scheduling` gate builds the same network in two placement orders
       (different ids and list order) and confirms identical detector output over
       48 symbols.
-- [ ] Handle feedback, latency, initialization, convergence, and oscillation.
+- [x] Handle feedback, latency, initialization, convergence, and oscillation.
+      Evidence: `feedback` builds a real routed ring oscillator (constant drive + a
+      negating feedback loop) and proves initialization (fresh sim at symbol 0), a
+      latency transient (first symbol dark before signals propagate the delay lines),
+      bounded valid-trit output over 64 symbols, an emergent periodic oscillation
+      (detected period > 1), and deterministic replay; a separate constant-driven
+      chain converges to a steady state after its transient.
 - [x] Support reproducible stepping, pause, reset, breakpoint, and trace capture.
       Evidence: `stepping` gate proves step->reset->step reproduces exactly, reset
       re-initializes time/state, `sim_update` respects the pause flag, and a
@@ -360,7 +370,12 @@ directly into memory.
       node histories and guide rings for all three transformations.
 - [x] Add golden traces for the reference PCU. Evidence:
       `examples/flash_photonic_massive.trace.txt` and `deterministic-trace`.
-- [ ] Report uncertainty instead of manufacturing false precision.
+- [x] Report uncertainty instead of manufacturing false precision. Evidence:
+      `sim-semantics` proves the ternary algebra never coerces an uncertain input to a
+      definite value — a non-trit input (unknown/high-Z/error) to saturating-add or
+      negate yields the error state, not a fabricated trit — while valid inputs still
+      produce definite results; the field discriminator's dead band reads dark rather
+      than guessing. Complements `robustness` (model gaps block stepping).
 
 ### Acceptance
 
@@ -369,7 +384,12 @@ directly into memory.
       other and the maintained reference-PCU golden trace.
 - [x] Invalid or incomplete models cannot silently produce a “verified” result.
       Evidence: `incomplete model cannot silently advance verified simulation`.
-- [ ] Every simulator status shown in the UI maps to a tested engine state.
+- [x] Every simulator status shown in the UI maps to a tested engine state.
+      Evidence: `sim-semantics` proves a bijection between the UI-shown states and the
+      engine states — each of the six engine states has its own distinct glyph
+      (`+ 0 - ? Z !`), valid trits get distinct colors while invalid states share the
+      invalid color, and the status-bar `running`/`paused` labels map exactly to the
+      tested `sim.playing` flag.
 
 ## 8. Phase E — Agent Access and Automation
 

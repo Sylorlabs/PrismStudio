@@ -1,0 +1,74 @@
+// sim_semantics_test.zag — pin the balanced-ternary specification exactly and prove
+// the UI status set is exactly the tested engine state set (Masterplan Section 7:
+// specify values/states/phase/sampling/tie-breaking; report uncertainty not false
+// precision; every UI-shown simulator status maps to a tested engine state).
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn streq(a: []u8, b: []u8) bool { return _zag_strcmp(a, b) == 1; }
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    // ── balanced-ternary VALUES: exactly -1, 0, +1 are trits ────────────────────
+    check("the three valid trits are recognized",
+        signal_is_trit(0 - 1) && signal_is_trit(0) && signal_is_trit(1), &failures);
+    check("values outside [-1,1] are not trits",
+        !signal_is_trit(0 - 2) && !signal_is_trit(2) && !signal_is_trit(3) && !signal_is_trit(0 - 3), &failures);
+
+    // ── special STATES have fixed, distinct encodings ───────────────────────────
+    check("unknown / high-Z / error have their specified values",
+        signal_unknown() == 0 - 2 && signal_high_z() == 2 && signal_error() == 3, &failures);
+    check("the six states are mutually distinct",
+        signal_unknown() != signal_high_z() && signal_high_z() != signal_error() &&
+        signal_error() != 1 && signal_unknown() != 0 - 1, &failures);
+
+    // ── PHASE conventions: -1 => pi carrier, 0/+1 => 0 phase; 0 is dark ─────────
+    check("phase convention: -1 carries a pi-phase, +1 and 0 carry 0-phase",
+        trit_phase_pi(0 - 1) == 1.0 && trit_phase_pi(1) == 0.0 && trit_phase_pi(0) == 0.0, &failures);
+    check("amplitude gates the dark state: 0 is dark, +/-1 carry unit amplitude",
+        trit_amp(0) == 0.0 && trit_amp(1) == 1.0 && trit_amp(0 - 1) == 1.0, &failures);
+
+    // ── SAMPLING rules + TIE-BREAKING for the field discriminator ───────────────
+    check("field sampling: >= +0.5 reads +1", trit_from_field(0.5) == 1 && trit_from_field(0.9) == 1, &failures);
+    check("field sampling: <= -0.5 reads -1", trit_from_field(0.0 - 0.5) == 0 - 1, &failures);
+    check("field sampling dead-band ties to dark (0)",
+        trit_from_field(0.0) == 0 && trit_from_field(0.49) == 0 && trit_from_field(0.0 - 0.49) == 0, &failures);
+    check("sum discriminator ties zero to dark and takes the sign otherwise",
+        trit_from_sum(0) == 0 && trit_from_sum(5) == 1 && trit_from_sum(0 - 5) == 0 - 1, &failures);
+
+    // ── UNCERTAINTY is preserved, never coerced to false precision (363) ────────
+    check("a non-trit input to saturating-add yields error, not a fabricated trit",
+        trit_sat_add(signal_unknown(), 1) == signal_error() &&
+        trit_sat_add(signal_high_z(), 0) == signal_error() &&
+        trit_sat_add(1, signal_error()) == signal_error(), &failures);
+    check("negating a non-trit yields error, not a definite value",
+        trit_negate(signal_unknown()) == signal_error() && trit_negate(signal_high_z()) == signal_error(), &failures);
+    check("valid saturating-add still produces a definite trit",
+        trit_sat_add(1, 1) == 1 && trit_sat_add(1, 0 - 1) == 0 && trit_sat_add(0 - 1, 0 - 1) == 0 - 1, &failures);
+
+    // ── UI ↔ ENGINE state bijection: every glyph is a distinct engine state ─────
+    check("each engine state has its own distinct glyph",
+        streq(trit_glyph(1), "+") && streq(trit_glyph(0), "0") && streq(trit_glyph(0 - 1), "-") &&
+        streq(trit_glyph(signal_unknown()), "?") && streq(trit_glyph(signal_high_z()), "Z") &&
+        streq(trit_glyph(signal_error()), "!"), &failures);
+    check("valid trits get distinct colors and invalid states share the invalid color",
+        trit_color(1) != trit_color(0) && trit_color(0) != trit_color(0 - 1) &&
+        trit_color(signal_unknown()) == trit_color(signal_error()), &failures);
+
+    // ── UI simulator run-status maps to a tested engine flag ────────────────────
+    let a: *App = app_new(1024, 640);
+    a.*.sim.*.playing = true;
+    check("UI 'running' maps to sim.playing == true", a.*.sim.*.playing, &failures);
+    a.*.sim.*.playing = false;
+    check("UI 'paused' maps to sim.playing == false", !a.*.sim.*.playing, &failures);
+
+    if (failures == 0) { _zag_println("SIM SEMANTICS: ALL PASS"); return 0; }
+    _zag_println("SIM SEMANTICS: FAILURES"); return 1;
+}

@@ -109,6 +109,8 @@ fn gates_3(f: i32) i32 {
     if (!run_suite("bench", "rm -f tools/bench.bin && ../zag/zag-poc/znc tools/bench.zag -o tools/bench.bin && ./tools/bench.bin")) { f = f + 1; }
     if (!run_suite("agent-matrix", "sh tools/agent_matrix.sh")) { f = f + 1; }
     if (!run_suite("crash-recovery", "rm -f /tmp/triton_crash_* && ../zag/zag-poc/znc probe/crash_recovery_test.zag -o probe/crash_recovery_test.new && mv -f probe/crash_recovery_test.new probe/crash_recovery_test && ./probe/crash_recovery_test")) { f = f + 1; }
+    if (!run_suite("sim-semantics", "rm -f probe/sim_semantics_test.new && ../zag/zag-poc/znc probe/sim_semantics_test.zag -o probe/sim_semantics_test.new && mv -f probe/sim_semantics_test.new probe/sim_semantics_test && ./probe/sim_semantics_test")) { f = f + 1; }
+    if (!run_suite("feedback", "rm -f probe/feedback_test.new && ../zag/zag-poc/znc probe/feedback_test.zag -o probe/feedback_test.new && mv -f probe/feedback_test.new probe/feedback_test && ./probe/feedback_test")) { f = f + 1; }
     return f;
 }
 

@@ -66,3 +66,5 @@ probe/gpu_vgpu_test
 probe/render_golden_test
 tools/bench.bin
 probe/crash_recovery_test
+probe/sim_semantics_test
+probe/feedback_test

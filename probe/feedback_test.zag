@@ -1,0 +1,142 @@
+// feedback_test.zag — feedback, latency, initialization, convergence, and
+// oscillation (Masterplan Section 7). Builds real routed networks: a ring
+// oscillator (constant drive + a negating feedback loop) that must produce a
+// bounded, deterministic, periodic output, and a saturating-feedback network that
+// must converge to a steady state. Proves the engine handles delayed feedback
+// without diverging.
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn route(a: *App, fc: i32, fp: i32, tc: i32, tp: i32) i32 {
+    let fi: i32 = scene_comp_index(a.*.scene, fc);
+    let ti: i32 = scene_comp_index(a.*.scene, tc);
+    if (fi < 0 || ti < 0) { return 0 - 1; }
+    let src: Comp = a.*.scene.*.comps.data[fi];
+    let dst: Comp = a.*.scene.*.comps.data[ti];
+    let path: list.ArrayList[Vox] = list.make[Vox](32);
+    if (!route_guide(a.*.scene, comp_port_attach(src, fp), comp_port_attach(dst, tp), &path)) {
+        list.free[Vox](&path);
+        return 0 - 1;
+    }
+    return scene_add_guide(a.*.scene, fc, fp, tc, tp, path);
+}
+
+fn set_preset(a: *App, id: i32, p: i32) void {
+    let i: i32 = scene_comp_index(a.*.scene, id);
+    if (i >= 0) { a.*.scene.*.comps.data[i].preset = p; }
+}
+fn set_logic(a: *App, id: i32, op: i32) void {
+    let i: i32 = scene_comp_index(a.*.scene, id);
+    if (i >= 0) { a.*.scene.*.comps.data[i].logic_op = op; }
+}
+
+// smallest period p in [1..len/2] over a window, or -1 if none (p==1 is constant)
+fn detect_period(seq: *list.ArrayList[i32], start: i32, len: i32) i32 {
+    let p: i32 = 1;
+    while (p <= len / 2) {
+        let ok: bool = true;
+        let i: i32 = 0;
+        while (i + p < len) {
+            if (seq.*.data[start + i] != seq.*.data[start + i + p]) { ok = false; }
+            i = i + 1;
+        }
+        if (ok) { return p; }
+        p = p + 1;
+    }
+    return 0 - 1;
+}
+
+// build the ring oscillator; returns chamber-A id (or -1 if routing failed)
+fn build_ring(a: *App) i32 {
+    let _pl: i32 = scene_place(a.*.scene, Kind.Plate, vox(0, 0, 0), 0);
+    let em: i32 = scene_place(a.*.scene, Kind.Emitter, vox(1, 1, 2), 0);
+    let ca: i32 = scene_place(a.*.scene, Kind.Chamber, vox(3, 1, 3), 0);
+    let cb: i32 = scene_place(a.*.scene, Kind.Chamber, vox(5, 1, 3), 0);
+    if (em < 0 || ca < 0 || cb < 0) { return 0 - 1; }
+    set_preset(a, em, 6);      // constant +1 drive
+    set_logic(a, ca, 3);       // A: balanced saturating add of its two inputs
+    set_logic(a, cb, 2);       // B: negate
+    if (route(a, em, 0, ca, 0) < 0) { return 0 - 1; }   // drive -> A.in_a
+    if (route(a, ca, 3, cb, 0) < 0) { return 0 - 1; }   // A.out -> B.in_a
+    if (route(a, cb, 3, ca, 1) < 0) { return 0 - 1; }   // B.out -> A.in_b  (feedback)
+    return ca;
+}
+
+fn run_capture(a: *App, id: i32, n: i32, seq: *list.ArrayList[i32]) void {
+    sim_recompile(a.*.sim, a.*.scene);
+    let k: i32 = 0;
+    while (k < n) {
+        sim_step(a.*.sim, a.*.scene);
+        list.push[i32](seq, sim_history(a.*.sim, id, 0));
+        k = k + 1;
+    }
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    let a: *App = app_new(1024, 640);
+    let aid: i32 = build_ring(a);
+    check("the feedback ring network routes and builds", aid >= 0, &failures);
+
+    // initialization: a fresh sim starts at symbol 0 before stepping
+    sim_recompile(a.*.sim, a.*.scene);
+    check("a fresh simulation initializes at symbol 0", a.*.sim.*.symbol == 0, &failures);
+
+    let seq: list.ArrayList[i32] = list.make[i32](80);
+    let k: i32 = 0;
+    while (k < 64) { sim_step(a.*.sim, a.*.scene); list.push[i32](&seq, sim_history(a.*.sim, aid, 0)); k = k + 1; }
+
+    // latency + initialization: the loop is dark on the first symbol (nothing has
+    // propagated through the delay lines yet)
+    check("latency: the first symbol reads dark (0) before signals arrive",
+        seq.data[0] == 0, &failures);
+
+    // bounded: every output stays a valid trit (no runaway / garbage)
+    let bounded: bool = true;
+    let bi: i32 = 0;
+    while (bi < seq.len) { if (!signal_is_trit(seq.data[bi])) { bounded = false; } bi = bi + 1; }
+    check("feedback stays bounded to valid trits across 64 symbols", bounded, &failures);
+
+    // oscillation: the steady-state tail is periodic and NOT constant
+    let period: i32 = detect_period(&seq, 32, 32);
+    check("the ring oscillates with a bounded, detectable period > 1",
+        period >= 2 && period <= 32, &failures);
+
+    // determinism: an identical ring replays the identical sequence
+    let b: *App = app_new(1024, 640);
+    let bid: i32 = build_ring(b);
+    let seq2: list.ArrayList[i32] = list.make[i32](80);
+    run_capture(b, bid, 64, &seq2);
+    let same: bool = seq2.len == seq.len;
+    let si: i32 = 0;
+    while (si < seq.len && same) { if (seq.data[si] != seq2.data[si]) { same = false; } si = si + 1; }
+    check("the feedback network is deterministic on replay", same, &failures);
+
+    // convergence: a constant-driven chain settles to a steady state after the
+    // initialization/latency transient (dark -> constant), unlike the ring above
+    let c: *App = app_new(1024, 640);
+    let _cp: i32 = scene_place(c.*.scene, Kind.Plate, vox(0, 0, 0), 0);
+    let cem: i32 = scene_place(c.*.scene, Kind.Emitter, vox(1, 1, 2), 0);
+    let cc: i32 = scene_place(c.*.scene, Kind.Chamber, vox(3, 1, 3), 0);
+    let cd: i32 = scene_place(c.*.scene, Kind.Detector, vox(5, 1, 4), 0);
+    set_preset(c, cem, 6);       // constant +1 drive
+    set_logic(c, cc, 0);         // cavity passthrough discriminator
+    let r1: i32 = route(c, cem, 0, cc, 0);       // drive -> chamber
+    let r2: i32 = route(c, cc, 3, cd, 0);        // chamber -> detector
+    check("the convergence chain routes", r1 >= 0 && r2 >= 0, &failures);
+    let cseq: list.ArrayList[i32] = list.make[i32](64);
+    run_capture(c, cd, 48, &cseq);
+    let conv_period: i32 = detect_period(&cseq, 32, 16);
+    check("the constant-driven chain converges to a steady state (period 1) after a transient",
+        conv_period == 1 && cseq.data[0] != cseq.data[47] && signal_is_trit(cseq.data[47]), &failures);
+
+    if (failures == 0) { _zag_println("FEEDBACK: ALL PASS"); return 0; }
+    _zag_println("FEEDBACK: FAILURES"); return 1;
+}
