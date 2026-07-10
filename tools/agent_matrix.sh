@@ -14,13 +14,16 @@ rm -f /tmp/triton_cancel
 fail() { echo "agent-matrix: FAIL: $1" >&2; exit 1; }
 
 # ── preview: ask-before-write, no mutation ──────────────────────────────────
-$Z --agent --once 'preview place detector 2 1 6' | grep -q 'PREVIEW place ok' || fail "legal preview not ok"
-$Z --agent --once 'preview place plate 99 99 99' | grep -q 'PREVIEW place blocked' || fail "illegal preview not blocked"
-$Z --agent --once 'preview delete 4242' | grep -q 'no-such-id' || fail "missing-id delete preview"
-# preview leaves the scene unchanged in a live session (chamber id=3 survives)
-printf 'preview delete 3\npreview place detector 2 1 6\nlist\n' > "$TMP.tcmd"
-N=$($Z --agent "$TMP.tcmd" | grep -c '^C ')
-[ "$N" -eq 4 ] || fail "preview mutated the scene (got $N components, want 4)"
+# scene-independent: a plate needs only an empty lattice floor (no part under it),
+# so a far empty floor cell is always a legal placement regardless of the scene.
+$Z --agent --once 'preview place plate 60 0 60' | grep -q 'PREVIEW place ok' || fail "legal preview not ok"
+$Z --agent --once 'preview place plate 60 1 60' | grep -q 'PREVIEW place blocked' || fail "illegal preview not blocked (off-floor plate)"
+$Z --agent --once 'preview delete 999999' | grep -q 'no-such-id' || fail "missing-id delete preview"
+# preview leaves the scene unchanged: the component count is identical before/after
+BEFORE=$($Z --agent --once 'list' | grep -c '^C ')
+printf 'preview place plate 60 0 60\npreview delete 999999\nlist\n' > "$TMP.tcmd"
+AFTER=$($Z --agent "$TMP.tcmd" | grep -c '^C ')
+[ "$BEFORE" -eq "$AFTER" ] || fail "preview mutated the scene ($BEFORE -> $AFTER components)"
 
 # ── streaming progress + safe cancellation ──────────────────────────────────
 $Z --agent --once 'simstream 20' | grep -q 'DONE steps=20' || fail "simstream did not finish"
