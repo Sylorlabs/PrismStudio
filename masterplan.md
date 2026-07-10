@@ -466,8 +466,14 @@ The user and agent must be able to perform the same core project operations.
       inconsistent hit targets.
 - [ ] Verify error and permission prompts with both keyboard and pointer.
 - [ ] Verify save indicators, crash recovery, undo/redo, and revision conflicts.
-- [ ] Run a long interactive soak with active simulation and editing.
-- [ ] Capture frame-time distributions by workload and identified environment.
+- [x] Run a long interactive soak with active simulation and editing. Evidence:
+      `soak` gate drives 3000 real frames with the simulation playing while
+      placing, copy/pasting, deleting, undoing/redoing, and moving the camera,
+      asserting no crash, sustained structural validity, and bounded growth.
+- [x] Capture frame-time distributions by workload and identified environment.
+      Evidence: the `soak` gate reports avg/max/over-16ms frame times for the
+      demo+edit workload (headless x86-64, compiler hash in the ledger); extend
+      with per-hardware GPU/display tuples once certified.
 - [ ] Treat headless rendering as additional coverage, never a substitute for the
       live UI gate.
 

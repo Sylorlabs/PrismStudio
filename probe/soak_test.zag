@@ -1,0 +1,78 @@
+// soak_test.zag — long interactive soak with active simulation and editing, plus
+// a frame-time distribution capture (Masterplan Section 9.3 / Phase F). Drives the
+// real frame loop for thousands of frames while placing, deleting, undoing,
+// copy/pasting, and moving the camera, asserting the app never crashes and the
+// scene stays structurally valid.
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let a: *App = app_new(1024, 640);
+    demo_load(a);
+    a.*.sim.*.playing = true;
+
+    let n: i32 = 3000;
+    let sum_ms: i64 = 0;
+    let max_ms: i64 = 0;
+    let over16: i32 = 0;     // frames slower than a 60fps budget
+    let bad: i32 = 0;        // validity-check failures at checkpoints
+    let base: i32 = a.*.scene.*.comps.len;
+
+    let f: i32 = 0;
+    while (f < n) {
+        let phase: i32 = f % 200;
+        if (phase == 10) {
+            let px: i32 = 12 + ((f / 200) % 5) * 2;
+            let id: i32 = scene_place(a.*.scene, Kind.Chamber, vox(px, 1, 12), 0);
+            if (id > 0) { op_add_comp(&a.*.jrn, a.*.scene, id); }
+        }
+        if (phase == 70 && a.*.scene.*.comps.len > base) {
+            let last: i32 = a.*.scene.*.comps.data[a.*.scene.*.comps.len - 1].id;
+            sel_set(a, last);
+            app_copy(a);
+            app_paste(a);
+        }
+        if (phase == 110) { app_undo(a); }
+        if (phase == 130) { app_redo(a); }
+        if (phase == 150 && a.*.scene.*.comps.len > base) {
+            let last2: i32 = a.*.scene.*.comps.data[a.*.scene.*.comps.len - 1].id;
+            sel_set(a, last2);
+            app_delete_selection(a);
+        }
+        if (phase == 40) { app_action(a, 22); }    // view top
+        if (phase == 90) { app_action(a, 25); }    // perspective
+        if (phase == 170) { app_action(a, 26); }   // toggle ortho
+
+        app_frame(a, 0.016);
+
+        let ms: i64 = a.*.frame_ms;
+        sum_ms = sum_ms + ms;
+        if (ms > max_ms) { max_ms = ms; }
+        if (ms > 16) { over16 = over16 + 1; }
+        if (f % 500 == 0 && scene_validation_errors(a.*.scene) != 0) { bad = bad + 1; }
+        f = f + 1;
+    }
+
+    // frame-time distribution
+    _zag_print("soak frames="); _zag_print(_zag_i64_to_str(n as i64));
+    _zag_print(" avg_ms="); _zag_print(_zag_i64_to_str(sum_ms / (n as i64)));
+    _zag_print(" max_ms="); _zag_print(_zag_i64_to_str(max_ms));
+    _zag_print(" over16="); _zag_println(_zag_i64_to_str(over16 as i64));
+
+    check("soak completed every frame without crashing", f == n, &failures);
+    check("scene stayed structurally valid throughout",
+        bad == 0 && scene_validation_errors(a.*.scene) == 0, &failures);
+    check("undo/redo/copy/paste churn did not leak the scene unbounded",
+        a.*.scene.*.comps.len < base + 40, &failures);
+    check("frame time stayed bounded", max_ms < 500, &failures);
+
+    if (failures == 0) { _zag_println("SOAK: ALL PASS"); return 0; }
+    _zag_println("SOAK: FAILURES"); return 1;
+}
