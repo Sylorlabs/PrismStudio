@@ -675,20 +675,23 @@ fn draw_detector(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32) void {
     vp_box(f, cam, clip, gmn, gmx, rgb(218, 182, 98), 256, true);
 }
 
-// A waveguide drawn as slim beams colored by the trit currently arriving at
-// the sink (strict ternary code), with a rim accent so null guides stay legible.
+// A waveguide drawn as a true volumetric tube: each 6-connected path segment is
+// an axis-aligned box (square cross-section), colored by the trit currently
+// arriving at the sink (strict ternary code) with a rim-lit edge for legibility.
+// Segments overlap by the tube radius at each turn so corners join without gaps.
 fn draw_guide(f: *FB, cam: Cam, clip: Rect, g: Guide, selected: bool) void {
     let col: i64 = trit_color(g.live);
     let rim: i64 = trit_rim(g.live);
     if (selected) { rim = th_select(); }
+    let r: f64 = 0.15;   // tube half-thickness in voxels
     let i: i32 = 1;
     while (i < g.path.len) {
         let a: Vec3 = vox_center(list.get[Vox](g.path, i - 1));
         let b: Vec3 = vox_center(list.get[Vox](g.path, i));
-        line3(f, cam, clip, a, b, col, true);
-        let a_rim: Vec3 = v3(a.x, a.y + 0.1, a.z);
-        let b_rim: Vec3 = v3(b.x, b.y + 0.1, b.z);
-        line3(f, cam, clip, a_rim, b_rim, rim, false);
+        let mn: Vec3 = v3(fmin(a.x, b.x) - r, fmin(a.y, b.y) - r, fmin(a.z, b.z) - r);
+        let mx: Vec3 = v3(fmax(a.x, b.x) + r, fmax(a.y, b.y) + r, fmax(a.z, b.z) + r);
+        vp_box(f, cam, clip, mn, mx, col, 256, true);
+        vp_box_wire(f, cam, clip, mn, mx, rim);
         i = i + 1;
     }
 }

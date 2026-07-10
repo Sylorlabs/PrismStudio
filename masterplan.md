@@ -431,7 +431,11 @@ The user and agent must be able to perform the same core project operations.
 - [ ] Use world-space position, rotation, scale, mesh/material, camera, projection,
       depth testing, clipping, and world-space picking.
 - [ ] Support perspective and orthographic cameras, orbit, pan, zoom, and frame.
-- [ ] Render components and waveguides as actual volumes, not flat 2.5D lines.
+- [x] Render components and waveguides as actual volumes, not flat 2.5D lines.
+      Evidence: components render through `vp_box`, and `draw_guide` now renders
+      each 6-connected path segment as an axis-aligned volumetric tube (`vp_box` +
+      `vp_box_wire`, overlapping at turns); rendered in `x11-captures`,
+      determinism preserved (`frame-diff`, `flash-photonic`).
 - [ ] Distinguish ternary/beam orientation by geometry and labels, not color alone.
 - [ ] Render intersections, over/under routes, layers, ports, and selected paths.
 - [ ] Batch repeated geometry and update only dirty buffers/regions.
