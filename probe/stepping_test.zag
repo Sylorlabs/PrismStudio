@@ -1,0 +1,94 @@
+// stepping_test.zag — reproducible stepping / pause / reset (Masterplan Section 7
+// / Phase D). Stepping a network, resetting, and stepping again reproduces the
+// exact same output; reset re-initializes time and state; pause gates stepping.
+
+@import("../std/list.zag") as list
+@import("../src/flash_ir.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn find_kind(s: *Scene, k: Kind) i32 {
+    let i: i32 = 0;
+    while (i < s.*.comps.len) {
+        if (s.*.comps.data[i].kind == k) { return s.*.comps.data[i].id; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn build() *Scene {
+    let s: *Scene = scene_new();
+    let p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    let ci: i32 = scene_comp_index(s, c);
+    if (ci >= 0) { s.*.comps.data[ci].logic_op = 2; }
+    let _r: bool = p > 0 && e > 0 && c > 0 && d > 0 &&
+        flash_route(s, e, 0, c, 0) && flash_route(s, c, 3, d, 0);
+    return s;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let s: *Scene = build();
+    let d: i32 = find_kind(s, Kind.Detector);
+    let sim: *Sim = sim_new();
+    sim_recompile(sim, s);
+
+    // first run
+    let seq1: list.ArrayList[i32] = list.make[i32](32);
+    let i: i32 = 0;
+    while (i < 32) { sim_step(sim, s); list.push[i32](&seq1, sim_history(sim, d, 0)); i = i + 1; }
+    check("first run reached symbol 32", sim.*.symbol == 32, &failures);
+
+    // reset re-initializes time
+    sim_reset(sim, s);
+    check("reset returns the simulation to symbol 0", sim.*.symbol == 0, &failures);
+    check("reset re-initializes detector output to 0", sim_history(sim, d, 0) == 0, &failures);
+
+    // second run reproduces the first exactly
+    let seq2: list.ArrayList[i32] = list.make[i32](32);
+    let j: i32 = 0;
+    while (j < 32) { sim_step(sim, s); list.push[i32](&seq2, sim_history(sim, d, 0)); j = j + 1; }
+    let same: bool = true;
+    let nonzero: bool = false;
+    let k: i32 = 0;
+    while (k < 32) {
+        if (seq1.data[k] != seq2.data[k]) { same = false; }
+        if (seq1.data[k] != 0) { nonzero = true; }
+        k = k + 1;
+    }
+    check("step -> reset -> step reproduces the exact output", same, &failures);
+    check("the run produces a varying output (test is meaningful)", nonzero, &failures);
+
+    // pause gates stepping through sim_update
+    let sim2: *Sim = sim_new();
+    sim_recompile(sim2, s);
+    sim2.*.playing = false;
+    let paused_steps: i32 = sim_update(sim2, s, 1.0);
+    check("paused simulation does not advance", paused_steps == 0 && sim2.*.symbol == 0, &failures);
+    sim2.*.playing = true;
+    let ran_steps: i32 = sim_update(sim2, s, 1.0);
+    check("running simulation advances", ran_steps > 0 && sim2.*.symbol > 0, &failures);
+
+    // breakpoint: pause the instant the watched component reaches a trit
+    let sim3: *Sim = sim_new();
+    sim_recompile(sim3, s);
+    sim3.*.playing = true;
+    sim_set_breakpoint(sim3, d, 1);
+    let bs: i32 = sim_update(sim3, s, 100.0);   // enough budget for many steps
+    check("breakpoint pauses the simulation", !sim3.*.playing, &failures);
+    check("breakpoint fires exactly on the watched trit", sim_history(sim3, d, 0) == 1, &failures);
+    check("breakpoint stopped early, not at the step cap", bs < 100, &failures);
+    sim_clear_breakpoint(sim3);
+    sim3.*.playing = true;
+    let more: i32 = sim_update(sim3, s, 1.0);
+    check("clearing the breakpoint resumes stepping", more > 0, &failures);
+
+    if (failures == 0) { _zag_println("STEPPING: ALL PASS"); return 0; }
+    _zag_println("STEPPING: FAILURES"); return 1;
+}

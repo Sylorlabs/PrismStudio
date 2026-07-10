@@ -316,7 +316,11 @@ directly into memory.
       (different ids and list order) and confirms identical detector output over
       48 symbols.
 - [ ] Handle feedback, latency, initialization, convergence, and oscillation.
-- [ ] Support reproducible stepping, pause, reset, breakpoint, and trace capture.
+- [x] Support reproducible stepping, pause, reset, breakpoint, and trace capture.
+      Evidence: `stepping` gate proves step->reset->step reproduces exactly, reset
+      re-initializes time/state, `sim_update` respects the pause flag, and a
+      `sim_set_breakpoint` pauses the instant a watched component hits a trit
+      (clearing it resumes). Trace capture is covered by `deterministic-trace`.
 - [ ] Detect invalid inputs, model gaps, numerical instability, and overflow.
 - [ ] Bound memory and execution for hostile or accidental large designs.
 - [x] Add independent reference oracles for ternary algebra and small networks.

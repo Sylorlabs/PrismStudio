@@ -156,6 +156,8 @@ struct Sim {
     accum: f64,
     model_ok: bool,
     mode: SimMode,
+    bp_comp: i32,   // breakpoint: pause when this component outputs bp_trit (-1 off)
+    bp_trit: i32,
 }
 
 fn sim_new() *Sim {
@@ -170,8 +172,17 @@ fn sim_new() *Sim {
         .accum = 0.0,
         .model_ok = false,
         .mode = SimMode.Physical,
+        .bp_comp = 0 - 1,
+        .bp_trit = 0,
     });
 }
+
+fn sim_set_breakpoint(sim: *Sim, comp_id: i32, trit: i32) void {
+    sim.*.bp_comp = comp_id;
+    sim.*.bp_trit = trit;
+}
+
+fn sim_clear_breakpoint(sim: *Sim) void { sim.*.bp_comp = 0 - 1; }
 
 // Release a sim and every ring/history buffer it owns. Mirrors the teardown at
 // the top of sim_recompile; the pointer must not be used afterwards.
@@ -466,10 +477,16 @@ fn sim_update(sim: *Sim, s: *Scene, dt: f64) i32 {
     if (!sim.*.playing || !sim.*.model_ok) { return 0; }
     sim.*.accum = sim.*.accum + dt * sim.*.speed;
     let stepped: i32 = 0;
-    while (sim.*.accum >= 1.0 && stepped < 4096) {
+    let brk: bool = false;
+    while (sim.*.accum >= 1.0 && stepped < 4096 && !brk) {
         sim.*.accum = sim.*.accum - 1.0;
         sim_step(sim, s);
         stepped = stepped + 1;
+        // breakpoint: pause the moment the watched component hits its trit
+        if (sim.*.bp_comp >= 0 && sim_history(sim, sim.*.bp_comp, 0) == sim.*.bp_trit) {
+            sim.*.playing = false;
+            brk = true;
+        }
     }
     return stepped;
 }
