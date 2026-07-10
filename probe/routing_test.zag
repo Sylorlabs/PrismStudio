@@ -1,0 +1,70 @@
+// routing_test.zag — 3D waveguide routing properties (Masterplan Section 6.2 /
+// Phase C): named/inspectable cost terms, deterministic routing with replayable
+// failures, and true-3D paths confined to the waveguide layer band.
+
+@import("../std/list.zag") as list
+@import("../src/flash_ir.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn paths_equal(a: list.ArrayList[Vox], b: list.ArrayList[Vox]) bool {
+    if (a.len != b.len) { return false; }
+    let i: i32 = 0;
+    while (i < a.len) {
+        if (!vox_eq(a.data[i], b.data[i])) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn path_valid(p: list.ArrayList[Vox]) bool {
+    if (p.len < 2) { return false; }
+    let i: i32 = 0;
+    while (i < p.len) {
+        if (p.data[i].y < 1 || p.data[i].y > 12) { return false; }        // layer band
+        if (i > 0 && vox_manhattan(p.data[i - 1], p.data[i]) != 1) { return false; }  // 6-connected
+        i = i + 1;
+    }
+    return true;
+}
+
+fn attach(s: *Scene, id: i32, port: i32) Vox {
+    return comp_port_attach(s.*.comps.data[scene_comp_index(s, id)], port);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    check("routing cost terms are named and bends cost more than steps",
+        bend_cost() > step_cost() && step_cost() > 0, &failures);
+
+    let s: *Scene = scene_new();
+    let _p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let sa: Vox = attach(s, e, 0);
+    let ga: Vox = attach(s, c, 0);
+
+    let p1: list.ArrayList[Vox] = list.make[Vox](32);
+    let ok1: bool = route_guide(s, sa, ga, &p1);
+    let p2: list.ArrayList[Vox] = list.make[Vox](32);
+    let ok2: bool = route_guide(s, sa, ga, &p2);
+    check("routing is deterministic — same request, identical path",
+        ok1 && ok2 && paths_equal(p1, p2), &failures);
+    check("the routed path is 6-connected within the waveguide layer band",
+        path_valid(p1), &failures);
+
+    // Replayable failure: a goal outside the layer band fails, the same way twice.
+    let bad: Vox = vox(0, 50, 0);
+    let pf1: list.ArrayList[Vox] = list.make[Vox](8);
+    let f1: bool = route_guide(s, sa, bad, &pf1);
+    let pf2: list.ArrayList[Vox] = list.make[Vox](8);
+    let f2: bool = route_guide(s, sa, bad, &pf2);
+    check("an out-of-band route fails deterministically (replayable)", !f1 && !f2, &failures);
+
+    if (failures == 0) { _zag_println("ROUTING: ALL PASS"); return 0; }
+    _zag_println("ROUTING: FAILURES"); return 1;
+}

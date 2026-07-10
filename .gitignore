@@ -55,3 +55,4 @@ probe/stepping_test
 probe/drc_test
 probe/robustness_test
 probe/bounds_test
+probe/routing_test

@@ -249,8 +249,13 @@ directly into memory.
 
 ### 6.2 Routing and Timing
 
-- [ ] Route in true 3D with explicit layers and vertical transitions.
-- [ ] Make routing cost terms named, configurable, and inspectable.
+- [x] Route in true 3D with explicit layers and vertical transitions. Evidence:
+      `route_guide` searches the y=1..12 waveguide band on the 6-connected lattice;
+      the `routing` gate verifies a routed path is 6-connected and confined to the
+      layer band.
+- [x] Make routing cost terms named, configurable, and inspectable. Evidence:
+      named `step_cost`/`bend_cost`/`layer_min`/`layer_max`/`route_margin`
+      functions; the `routing` gate asserts bends cost more than steps.
 - [x] Detect collisions, illegal crossings, disconnected ports, loops, and
       unreachable routes. Evidence: `design-rules` gate proves occupancy/collision,
       boundary, ground-only, and needs-plate rejection with distinct diagnostic
@@ -262,7 +267,10 @@ directly into memory.
 - [x] Derive propagation delay from the selected physical model. Evidence:
       `guide_delay_fs_for`, `guide_delay_symbols_for_model`.
 - [ ] Report timing paths, bottlenecks, margins, and uncertainty.
-- [ ] Add deterministic routing seeds and replayable failures.
+- [x] Add deterministic routing seeds and replayable failures. Evidence:
+      `route_guide` is a fixed-cost A* with no RNG — the `routing` gate confirms
+      the same request yields an identical path and an out-of-band goal fails the
+      same way on replay.
 - [ ] Add incremental rerouting that preserves unaffected manual routes.
 
 ### 6.3 Reference PCU
