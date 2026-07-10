@@ -1,0 +1,86 @@
+// opt_schedule_test.zag — optimizer background scheduling and watchdog
+// (Masterplan Sections 20.5/20.6): off-critical-path backoff, incremental
+// change-keyed rescheduling, never re-proposing a rejected rewrite, and a
+// watchdog that suspends on anomaly rather than degrading the app.
+
+@import("../std/list.zag") as list
+@import("../src/optimizer.zag")
+@import("../src/flash_ir.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn build_chain(dead: i32) *Scene {
+    let s: *Scene = scene_new();
+    let _p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    let _ok: bool = flash_route(s, e, 0, c, 0) && flash_route(s, c, 3, d, 0);
+    let k: i32 = 0;
+    while (k < dead) {
+        let z: i32 = 5 + k;
+        let _de: i32 = scene_place(s, Kind.Emitter, vox(1, 1, z), 0);
+        let _dc: i32 = scene_place(s, Kind.Chamber, vox(4, 1, z), 0);
+        k = k + 1;
+    }
+    return s;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    // ── backoff predicate: run only when fully idle ─────────────────────────────
+    check("optimizer runs only when idle, enabled, and not suspended",
+        opt_should_run(true, false, false, false, false, false, false, false, false), &failures);
+    check("any interaction or active simulation holds the optimizer off",
+        !opt_should_run(true, false, true, false, false, false, false, false, false) &&   // moving
+        !opt_should_run(true, false, false, true, false, false, false, false, false) &&   // dragging
+        !opt_should_run(true, false, false, false, true, false, false, false, false) &&   // grabbing
+        !opt_should_run(true, false, false, false, false, false, false, true, false) &&   // simulating
+        !opt_should_run(true, false, false, false, false, false, false, false, true) &&   // panel open
+        !opt_should_run(false, false, false, false, false, false, false, false, false) && // disabled
+        !opt_should_run(true, true, false, false, false, false, false, false, false),     // suspended
+        &failures);
+
+    // ── change-keyed incremental scheduling ─────────────────────────────────────
+    let s: *Scene = build_chain(2);
+    let e: *OptEngine = opt_engine_new();
+    let first: bool = opt_engine_refresh_keyed(e, s);
+    check("the first analysis runs and surfaces a badge", first && opt_engine_badge(e) == 1, &failures);
+    let second: bool = opt_engine_refresh_keyed(e, s);
+    check("an unchanged scene does no work (change-keyed no-op)",
+        !second && opt_engine_badge(e) == 1, &failures);
+
+    // ── rejected rewrites are never re-proposed ─────────────────────────────────
+    opt_engine_ignore_pending(e);
+    check("ignoring clears the badge and records the rejection", opt_engine_badge(e) == 0, &failures);
+    scene_mark_render(s);   // an edit reschedules analysis
+    let after_ignore: bool = opt_engine_refresh_keyed(e, s);
+    check("a rejected rewrite is not re-proposed after re-analysis",
+        !after_ignore && opt_engine_badge(e) == 0, &failures);
+
+    // positive control: a different fresh engine on an unseen scene still proposes
+    let s2: *Scene = build_chain(2);
+    let e2: *OptEngine = opt_engine_new();
+    check("a fresh engine still surfaces a valid proposal (analysis is live)",
+        opt_engine_refresh_keyed(e2, s2) && opt_engine_badge(e2) == 1, &failures);
+
+    // ── watchdog suspends on anomaly and refuses further work ───────────────────
+    opt_engine_note_anomaly(e2, 1);
+    check("the watchdog suspends the engine and records the reason",
+        opt_engine_suspended(e2) && opt_engine_suspend_code(e2) == 1 && opt_engine_badge(e2) == 0, &failures);
+    scene_mark_render(s2);
+    check("a suspended optimizer refuses all work",
+        !opt_engine_refresh_keyed(e2, s2) && opt_engine_badge(e2) == 0, &failures);
+    opt_engine_resume(e2);
+    check("resume clears suspension and lets analysis run again",
+        !opt_engine_suspended(e2) && opt_engine_refresh_keyed(e2, s2) && opt_engine_badge(e2) == 1, &failures);
+
+    opt_engine_free(e); opt_engine_free(e2); scene_free(s); scene_free(s2);
+
+    if (failures == 0) { _zag_println("OPT SCHEDULE: ALL PASS"); return 0; }
+    _zag_println("OPT SCHEDULE: FAILURES"); return 1;
+}

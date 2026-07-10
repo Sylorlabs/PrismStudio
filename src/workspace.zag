@@ -1582,10 +1582,11 @@ fn app_frame(a: *App, dt: f64) void {
     // move, split, menu, modal, or active simulation). With auto-apply off — the
     // default — a tick only updates the Optimizer badge and never mutates the
     // project, so it is a pure runtime observer.
-    if (a.*.frame % 60 == 0 && !a.*.moving && !a.*.cam_drag && a.*.grab == 0 &&
-        a.*.modal == modal_none() && a.*.menu < 0 && !a.*.sim.*.playing &&
-        !a.*.opt_open && !a.*.settings_open && !a.*.palette_open) {
-        let _oc: bool = opt_engine_refresh(a.*.opt, a.*.scene);
+    if (a.*.frame % 60 == 0 &&
+        opt_should_run(a.*.opt.*.enabled, a.*.opt.*.suspended, a.*.moving, a.*.cam_drag,
+                       a.*.grab != 0, a.*.menu >= 0, a.*.modal != modal_none(),
+                       a.*.sim.*.playing, a.*.opt_open || a.*.settings_open || a.*.palette_open)) {
+        let _oc: bool = opt_engine_refresh_keyed(a.*.opt, a.*.scene);
         if (a.*.opt.*.auto_apply && a.*.opt.*.has_pending) {
             opt_apply_gui(a);   // journaled + audited, single-undo
         }

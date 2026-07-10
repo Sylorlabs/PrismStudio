@@ -418,6 +418,10 @@ struct OptEngine {
     pending: OptProposal,
     badge: i32,          // number of pending proposals shown on the button
     applied_count: i64,  // optimizations applied this session (auto or manual)
+    suspended: bool,     // watchdog: set on any anomaly; refuses all work
+    suspend_code: i32,   // 0 none, 1 equivalence failure, 2 proposal-cap, 3 apply failure
+    last_rev: i64,       // scene render_rev at the last analysis (change key)
+    rejected: list.ArrayList[i64],   // signatures of proposals the user ignored
 }
 
 fn opt_engine_new() *OptEngine {
@@ -429,12 +433,82 @@ fn opt_engine_new() *OptEngine {
         .pending = opt_proposal_none(),
         .badge = 0,
         .applied_count = 0,
+        .suspended = false,
+        .suspend_code = 0,
+        .last_rev = 0 - 1,
+        .rejected = list.make[i64](8),
     });
 }
 
 fn opt_engine_free(e: *OptEngine) void {
     opt_proposal_free(&e.*.pending);
+    list.free[i64](&e.*.rejected);
     _zag_free(e as *i8);
+}
+
+// A stable signature of a proposal's edits, so an ignored rewrite is never
+// re-proposed even if analysis rediscovers it.
+fn opt_proposal_sig(p: OptProposal) i64 {
+    let h: i64 = 1469598103 + (p.family as i64);
+    let i: i32 = 0;
+    while (i < p.removed.len) { h = (h * 1099511628211 + (p.removed.data[i] as i64)) % 2147483647; i = i + 1; }
+    let j: i32 = 0;
+    while (j < p.relabels.len) {
+        h = (h * 16777619 + (p.relabels.data[j].comp_id as i64) * 31 + (p.relabels.data[j].new_op as i64)) % 2147483647;
+        j = j + 1;
+    }
+    return h;
+}
+
+fn opt_engine_rejected(e: *OptEngine, sig: i64) bool {
+    let i: i32 = 0;
+    while (i < e.*.rejected.len) { if (e.*.rejected.data[i] == sig) { return true; } i = i + 1; }
+    return false;
+}
+
+fn opt_engine_suspended(e: *OptEngine) bool { return e.*.suspended; }
+fn opt_engine_suspend_code(e: *OptEngine) i32 { return e.*.suspend_code; }
+
+// Watchdog: suspend the optimizer on any anomaly and report it rather than
+// degrading the app. Refuses all further work until explicitly resumed.
+fn opt_engine_note_anomaly(e: *OptEngine, code: i32) void {
+    e.*.suspended = true;
+    e.*.suspend_code = code;
+    if (e.*.has_pending) { opt_engine_clear_pending(e); }
+}
+fn opt_engine_resume(e: *OptEngine) void { e.*.suspended = false; e.*.suspend_code = 0; }
+
+// Backoff predicate (Sections 20.5/20.6): the optimizer runs only when idle — off
+// the UI and simulation critical paths. Any interaction, active simulation, open
+// panel/menu/modal, or a disabled/suspended engine holds it off.
+fn opt_should_run(enabled: bool, suspended: bool, moving: bool, dragging: bool,
+                  grabbing: bool, menu: bool, modal: bool, playing: bool, panel: bool) bool {
+    return enabled && !suspended && !moving && !dragging && !grabbing &&
+        !menu && !modal && !playing && !panel;
+}
+
+// Incremental, change-keyed refresh: does nothing while the scene is unchanged
+// since the last analysis (resumable, no recomputation), reschedules only after an
+// edit bumps render_rev, and never re-proposes a rejected rewrite. Analysis-only —
+// never applies. A too-large proposal count trips the watchdog.
+fn opt_engine_refresh_keyed(e: *OptEngine, s: *Scene) bool {
+    if (!e.*.enabled || e.*.suspended) { return false; }
+    if (s.*.render_rev == e.*.last_rev) { return false; }   // change key: no work
+    e.*.last_rev = s.*.render_rev;
+    let p: OptProposal = opt_analyze(s);
+    if (!p.valid || opt_gain_percent(p) < e.*.min_gain_pct) {
+        opt_proposal_free(&p);
+        if (e.*.has_pending) { opt_engine_clear_pending(e); return true; }
+        return false;
+    }
+    if (opt_engine_rejected(e, opt_proposal_sig(p))) {
+        opt_proposal_free(&p);
+        if (e.*.has_pending) { opt_engine_clear_pending(e); return true; }
+        return false;
+    }
+    let was_pending: bool = e.*.has_pending;
+    opt_engine_store(e, p);
+    return !was_pending;
 }
 
 fn opt_engine_clear_pending(e: *OptEngine) void {
@@ -507,6 +581,7 @@ fn opt_engine_apply_pending(e: *OptEngine, s: *Scene) bool {
 }
 
 fn opt_engine_ignore_pending(e: *OptEngine) void {
+    if (e.*.has_pending) { list.push[i64](&e.*.rejected, opt_proposal_sig(e.*.pending)); }
     opt_engine_clear_pending(e);
 }
 

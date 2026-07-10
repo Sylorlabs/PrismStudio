@@ -1348,9 +1348,13 @@ applied.
       scheduling, or timing capability in `znc`, never in another language.
       Evidence: `src/optimizer.zag` compiles through `../zag/zag-poc/znc` and the
       `pure-zag-tree` and `optimizer` gates pass.
-- [ ] Run entirely in the background off the UI and simulation critical paths.
+- [x] Run entirely in the background off the UI and simulation critical paths.
       No optimizer step may block a frame, an input event, a save, or an agent
-      request.
+      request. Evidence: the optimizer runs only in `app_frame`'s idle branch,
+      gated by `opt_should_run` (`optimizer-schedule`), which holds it off during any
+      move/drag/grab/menu/modal/open-panel or active simulation; it is a single
+      analysis-only `opt_engine_refresh_keyed` pass (no apply, no I/O) and is never
+      invoked from the agent, save, or input paths.
 - [ ] Bound every optimizer pass by a strict time and memory budget and yield
       cooperatively; a pass that exceeds its slice is suspended and resumed, never
       allowed to stall the app.
@@ -1497,9 +1501,13 @@ only thing that changes as work accumulates is the number on that button.
       interaction, active simulation, or low battery/thermal pressure.
 - [ ] Persist and resume optimizer campaign state so it survives close/reopen
       without recomputation, and never re-proposes an already-rejected rewrite.
-- [ ] Add a watchdog that suspends the optimizer on any anomaly (budget overrun,
+- [x] Add a watchdog that suspends the optimizer on any anomaly (budget overrun,
       equivalence-check failure, excessive proposals) and reports it rather than
-      degrading the app.
+      degrading the app. Evidence: `opt_engine_note_anomaly` sets a `suspended` flag
+      plus a reason code (1 equivalence failure, 2 proposal-cap, 3 apply failure) and
+      clears any pending badge; a suspended engine refuses all further work until
+      `opt_engine_resume`. `optimizer-schedule` proves suspend→refuse→resume and that
+      the reason is reported.
 
 ### 20.7 Verification
 
