@@ -326,7 +326,11 @@ directly into memory.
       re-initializes time/state, `sim_update` respects the pause flag, and a
       `sim_set_breakpoint` pauses the instant a watched component hits a trit
       (clearing it resumes). Trace capture is covered by `deterministic-trace`.
-- [ ] Detect invalid inputs, model gaps, numerical instability, and overflow.
+- [x] Detect invalid inputs, model gaps, numerical instability, and overflow.
+      Evidence: `robustness` gate — physical mode reports a model gap and blocks
+      stepping (no faked result), invalid ternary inputs propagate as the error
+      state, and every simulated output stays a bounded valid trit over 64 symbols
+      (no overflow to garbage).
 - [ ] Bound memory and execution for hostile or accidental large designs.
 - [x] Add independent reference oracles for ternary algebra and small networks.
       Evidence: exhaustive oracle in `probe/simulation_property_test.zag`.

@@ -53,3 +53,4 @@ probe/lifecycle_test
 probe/scheduling_test
 probe/stepping_test
 probe/drc_test
+probe/robustness_test

@@ -1,0 +1,65 @@
+// robustness_test.zag — detect invalid inputs, model gaps, and numerical bounds
+// (Masterplan Section 7 / Phase D). A model gap blocks a verified physical run,
+// invalid ternary states propagate as error, and every simulated output stays a
+// bounded valid trit (no numeric overflow to garbage).
+
+@import("../std/list.zag") as list
+@import("../src/flash_ir.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn build() *Scene {
+    let s: *Scene = scene_new();
+    let p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    let _r: bool = p > 0 && e > 0 && c > 0 && d > 0 &&
+        flash_route(s, e, 0, c, 0) && flash_route(s, c, 3, d, 0);
+    return s;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    // ── model gap ────────────────────────────────────────────────────────────
+    let s: *Scene = build();
+    let sim: *Sim = sim_new();
+    sim.*.mode = SimMode.Physical;
+    s.*.model.group_index.known = false;   // an incompletely characterized model
+    sim_recompile(sim, s);
+    check("physical mode detects the model gap", !sim.*.model_ok, &failures);
+    sim_step(sim, s);
+    check("a model gap blocks stepping (no faked verified result)", sim.*.symbol == 0, &failures);
+    sim.*.mode = SimMode.Functional;
+    sim_recompile(sim, s);
+    check("functional mode advances independently of the gap", sim.*.model_ok, &failures);
+
+    // ── invalid ternary inputs propagate as error ─────────────────────────────
+    check("an unknown input yields the error state", trit_sat_add(signal_unknown(), 1) == signal_error(), &failures);
+    check("error propagates through addition", trit_sat_add(signal_error(), 0) == signal_error(), &failures);
+    check("negating a non-trit yields error", trit_negate(signal_high_z()) == signal_error(), &failures);
+
+    // ── numerical bounds: no overflow to garbage ──────────────────────────────
+    let s2: *Scene = build();
+    let sim2: *Sim = sim_new();
+    sim_recompile(sim2, s2);
+    let bounded: bool = true;
+    let step: i32 = 0;
+    while (step < 64) {
+        sim_step(sim2, s2);
+        let i: i32 = 0;
+        while (i < sim2.*.nodes.len) {
+            if (!signal_is_trit(sim2.*.nodes.data[i].out_t)) { bounded = false; }
+            i = i + 1;
+        }
+        step = step + 1;
+    }
+    check("every simulated output stays a bounded valid trit (no overflow)", bounded, &failures);
+
+    if (failures == 0) { _zag_println("ROBUSTNESS: ALL PASS"); return 0; }
+    _zag_println("ROBUSTNESS: FAILURES"); return 1;
+}
