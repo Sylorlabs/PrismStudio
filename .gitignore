@@ -48,3 +48,4 @@ probe/outline_test
 probe/dpi_test
 probe/soak_test
 probe/provenance_test
+probe/units_test

@@ -95,6 +95,36 @@ fn model_validate(m: DeviceModel) bool {
         m.emitter_wavelength_step_nm.value > 0.0 && m.chamber_resonance_nm.value > 0.0;
 }
 
+fn units_eq(u: []u8, exp: []u8) bool {
+    if (u.len != exp.len) { return false; }
+    let i: i32 = 0;
+    while (i < u.len) {
+        if (u[i] != exp[i]) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn param_dim_ok(p: PhysicalParam, exp_units: []u8, lo: f64, hi: f64) bool {
+    if (!units_eq(p.units, exp_units)) { return false; }
+    if (!p.known) { return true; }   // an unknown value is allowed; it is not faked
+    return p.value >= lo && p.value <= hi;
+}
+
+// Load-time dimensional + unit sanity for a device model: every parameter must
+// carry the correct unit string and, when known, a physically plausible value.
+// Rejects e.g. a group index below 1 or a wavelength outside the optical range.
+fn model_units_dims_valid(m: DeviceModel) bool {
+    return param_dim_ok(m.pitch_nm, "nm", 1.0, 100000.0) &&
+        param_dim_ok(m.group_index, "1", 1.0, 10.0) &&
+        param_dim_ok(m.emitter_rate_ghz, "GHz", 0.001, 100000.0) &&
+        param_dim_ok(m.chamber_rate_ghz, "GHz", 0.001, 100000.0) &&
+        param_dim_ok(m.detector_rate_ghz, "GHz", 0.001, 100000.0) &&
+        param_dim_ok(m.emitter_wavelength_min_nm, "nm", 100.0, 100000.0) &&
+        param_dim_ok(m.emitter_wavelength_step_nm, "nm", 0.0001, 1000.0) &&
+        param_dim_ok(m.chamber_resonance_nm, "nm", 100.0, 100000.0);
+}
+
 fn model_known_mask(m: DeviceModel) i64 {
     let mask: i64 = 0;
     if (m.pitch_nm.known) { mask = mask | 1; }

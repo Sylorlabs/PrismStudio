@@ -174,7 +174,12 @@ hardware, kernel, firmware, driver, display role, and date.
       `evidence_class_name` (all six classes); the inspector renders the class
       per parameter and the `provenance` gate asserts the mapping and unknown
       handling.
-- [ ] Validate dimensions and units at load time.
+- [x] Validate dimensions and units at load time. Evidence:
+      `model_units_dims_valid` checks each parameter's unit string and, when known,
+      a physically plausible range; `design_load_into` rejects a violating model
+      (e.g. group index < 1, wavelength out of the optical range) and the
+      transactional load leaves the active scene intact. `units-dims` gate; valid
+      projects (reference PCU) still load (`flash-photonic`, `engine`).
 - [x] Reject incompatible device-model versions with an actionable diagnostic.
       Evidence: `device-model-version` verifies opening a project with device
       model schema `99` returns stable `E_MODEL_VERSION ... expected 1`.

@@ -1,0 +1,67 @@
+// units_test.zag — unit + dimension validation at load time (Masterplan Section
+// 5.1 / Phase B). A device model with the wrong units, or a physically impossible
+// value (e.g. a group index below 1), must be rejected on load, leaving the
+// active scene intact.
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    check("the illustrative model passes unit/dimension validation",
+        model_units_dims_valid(model_reference_illustrative()), &failures);
+
+    // group index below 1 is physically impossible for these guides.
+    let m1: DeviceModel = model_reference_illustrative();
+    m1.group_index.value = 0.5;
+    check("a group index below 1 is rejected", !model_units_dims_valid(m1), &failures);
+
+    // wrong unit string is rejected.
+    let m2: DeviceModel = model_reference_illustrative();
+    m2.emitter_rate_ghz.units = "nm";
+    check("a wrong unit string is rejected", !model_units_dims_valid(m2), &failures);
+
+    // wavelength outside the optical range is rejected.
+    let m3: DeviceModel = model_reference_illustrative();
+    m3.chamber_resonance_nm.value = 5.0;
+    check("a wavelength outside the optical range is rejected", !model_units_dims_valid(m3), &failures);
+
+    // an unknown parameter is allowed (a 0 value that is explicitly not known).
+    let m4: DeviceModel = model_reference_illustrative();
+    m4.group_index.known = false;
+    m4.group_index.value = 0.0;
+    check("an unknown parameter is allowed, not faked", model_units_dims_valid(m4), &failures);
+
+    // ── load-time enforcement ────────────────────────────────────────────────
+    // Build an active scene with a component, then try to load a project whose
+    // model carries an impossible group index.
+    let active: *Scene = scene_new();
+    let pid: i32 = scene_place(active, Kind.Plate, vox(0, 0, 0), 0);
+    let active_n: i32 = active.*.comps.len;
+
+    let bad: *Scene = scene_new();
+    let _bp: i32 = scene_place(bad, Kind.Plate, vox(0, 0, 0), 0);
+    bad.*.model.group_index.value = 0.5;
+    let saved: bool = design_save(bad, "/tmp/triton_bad_dims.zpa");
+
+    let loaded: bool = design_load(active, "/tmp/triton_bad_dims.zpa");
+    check("load rejects a dimensionally-invalid model", saved && !loaded, &failures);
+    check("rejected load leaves the active scene intact",
+        active.*.comps.len == active_n && scene_comp_index(active, pid) >= 0, &failures);
+
+    // A valid model still loads.
+    let good: *Scene = scene_new();
+    let _gp: i32 = scene_place(good, Kind.Plate, vox(0, 0, 0), 0);
+    let gsaved: bool = design_save(good, "/tmp/triton_good_dims.zpa");
+    let target: *Scene = scene_new();
+    check("a valid model still loads", gsaved && design_load(target, "/tmp/triton_good_dims.zpa"), &failures);
+
+    if (failures == 0) { _zag_println("UNITS: ALL PASS"); return 0; }
+    _zag_println("UNITS: FAILURES"); return 1;
+}

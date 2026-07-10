@@ -1065,6 +1065,8 @@ fn design_load_into(s: *Scene, path: []u8) bool {
                 s.*.model.emitter_wavelength_min_nm.value = (list.get[i64](nums, 7) as f64) / 1000.0;
                 s.*.model.emitter_wavelength_step_nm.value = (list.get[i64](nums, 8) as f64) / 1000000.0;
                 s.*.model.chamber_resonance_nm.value = (list.get[i64](nums, 9) as f64) / 1000.0;
+                // reject physically impossible units/dimensions at load time
+                if (!model_units_dims_valid(s.*.model)) { list.free[i64](&nums); return false; }
             }
         }
         if (line.len > 2 && (line[0] as i32) == 'c' && (line[1] as i32) == 32) {
