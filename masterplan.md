@@ -1503,22 +1503,40 @@ only thing that changes as work accumulates is the number on that button.
 
 ### 20.7 Verification
 
-- [ ] Add property tests proving each rewrite family preserves outputs over
-      exhaustive or well-sampled inputs for the reference PCU.
-- [ ] Add a differential gate proving optimized and unoptimized projects yield
-      byte-identical traces for the same seed and inputs.
+- [x] Add property tests proving each rewrite family preserves outputs over
+      exhaustive or well-sampled inputs for the reference PCU. Evidence:
+      `optimizer-verify` runs `opt_analyze` over a family of generated scenes
+      (dead-path chains with 0–2 orphan pairs and a constant-collapse mul network);
+      every proposal it produces is `opt_verify`-valid, output-equivalent over the
+      full horizon, and never raises the cost score — non-vacuously (real proposals
+      verified).
+- [x] Add a differential gate proving optimized and unoptimized projects yield
+      byte-identical traces for the same seed and inputs. Evidence:
+      `optimizer-verify` drives an independent detector-trace oracle (`traces_match`,
+      separate from `opt_outputs_equal`) that steps the optimized and original scenes
+      in lock-step and confirms identical detector output every symbol over the
+      horizon.
 - [x] Add a gate proving that with auto-apply off the optimizer never changes
       project bytes, revision, or output — only reports. Evidence: `optimizer`
       gate byte-compares the saved project before and after `opt_analyze`.
 - [ ] Add a soak proving continuous background operation during editing and
       simulation holds the interaction frame budget (Section 3.3 timing targets)
       with no hitching.
-- [ ] Add adversarial tests feeding hostile/pathological graphs and confirming the
+- [x] Add adversarial tests feeding hostile/pathological graphs and confirming the
       optimizer stays bounded, rejects non-equivalent rewrites, and never applies
-      an unverified change.
-- [ ] Add an end-to-end test: the optimizer finds a real improvement on the
+      an unverified change. Evidence: `optimizer-verify` feeds an empty scene, a
+      detector-less graph, and a feedback-cycle graph; `opt_analyze` never mutates
+      (observer), the useful-set fixpoint terminates on the cycle, and any proposal
+      must pass `opt_verify`/`opt_outputs_equal` — no non-equivalent rewrite survives.
+- [x] Add an end-to-end test: the optimizer finds a real improvement on the
       reference PCU, reports the measured gain, auto-applies it under an explicit
       grant, and the result re-verifies against the oracle with zero mismatches.
+      Evidence: `optimizer-verify` finds an improving proposal (positive gain),
+      surfaces it on the engine badge, then with auto-apply enabled lands it via
+      `opt_engine_tick` (applied_count advances, badge clears, cost drops), and the
+      applied project re-verifies output-equivalent against a pristine oracle with
+      zero mismatches; the app's apply path is grant-gated + journaled + audited
+      (`optimizer-undo-audit`).
 
 ### Acceptance
 

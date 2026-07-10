@@ -1,0 +1,196 @@
+// opt_verify_test.zag — optimizer rewrite-family verification (Masterplan Section
+// 20.6): property tests proving each family preserves outputs over generated
+// scenes, an independent differential oracle, adversarial/pathological inputs, and
+// an end-to-end improvement. These complement optimizer_test's single-scenario
+// coverage by exercising the family PROPERTY across many inputs.
+
+@import("../std/list.zag") as list
+@import("../src/optimizer.zag")
+@import("../src/flash_ir.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+// working E->C->D chain plus `dead` orphan emitter/chamber pairs (no route)
+fn build_chain(dead: i32) *Scene {
+    let s: *Scene = scene_new();
+    let _p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    let _ok: bool = flash_route(s, e, 0, c, 0) && flash_route(s, c, 3, d, 0);
+    let k: i32 = 0;
+    while (k < dead) {
+        let z: i32 = 5 + k;
+        let _de: i32 = scene_place(s, Kind.Emitter, vox(1, 1, z), 0);
+        let _dc: i32 = scene_place(s, Kind.Chamber, vox(4, 1, z), 0);
+        k = k + 1;
+    }
+    return s;
+}
+
+// mul(op5) chamber whose IN.B is a constant -1 emitter -> collapses to a negate
+fn build_const_mul() *Scene {
+    let s: *Scene = scene_new();
+    let _p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
+    let er: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
+    let ec: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 5), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4, 1, 3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7, 1, 4), 0);
+    let ci: i32 = scene_comp_index(s, c);
+    if (ci >= 0) { s.*.comps.data[ci].logic_op = 5; }
+    let eci: i32 = scene_comp_index(s, ec);
+    if (eci >= 0) { s.*.comps.data[eci].preset = 4; }   // constant -1
+    let _ok: bool = flash_route(s, er, 0, c, 0) && flash_route(s, ec, 0, c, 1) && flash_route(s, c, 3, d, 0);
+    return s;
+}
+
+// independent detector-trace differential oracle (does NOT call opt_outputs_equal)
+fn traces_match(a: *Scene, b: *Scene, horizon: i32) bool {
+    let sa: *Sim = sim_new();
+    let sb: *Sim = sim_new();
+    sim_recompile(sa, a);
+    sim_recompile(sb, b);
+    let ok: bool = sa.*.model_ok && sb.*.model_ok;
+    let step: i32 = 0;
+    while (ok && step < horizon) {
+        sim_step(sa, a);
+        sim_step(sb, b);
+        let i: i32 = 0;
+        while (ok && i < sa.*.nodes.len) {
+            let n: SNode = sa.*.nodes.data[i];
+            if (n.kind == Kind.Detector) {
+                let bi: i32 = sim_node_index(sb, n.comp_id);
+                if (bi < 0 || sb.*.nodes.data[bi].out_t != n.out_t) { ok = false; }
+            }
+            i = i + 1;
+        }
+        step = step + 1;
+    }
+    sim_free(sa);
+    sim_free(sb);
+    return ok;
+}
+
+// verify a scene's proposal (if any) preserves outputs and never raises cost
+fn family_property_holds(s: *Scene, produced: *i32) bool {
+    let before_c: i32 = s.*.comps.len;
+    let before_g: i32 = s.*.guides.len;
+    let p: OptProposal = opt_analyze(s);
+    // analyze is a strict observer
+    if (s.*.comps.len != before_c || s.*.guides.len != before_g) { opt_proposal_free(&p); return false; }
+    let ok: bool = true;
+    if (p.family != opt_family_none()) {
+        produced.* = produced.* + 1;
+        let cand: *Scene = opt_build_candidate(s, p.removed, p.relabels);
+        if (!opt_verify(s, &p)) { ok = false; }
+        if (!opt_outputs_equal(s, cand, opt_horizon())) { ok = false; }
+        if (opt_cost_score(opt_cost(cand)) > opt_cost_score(opt_cost(s))) { ok = false; }
+        scene_free(cand);
+    }
+    opt_proposal_free(&p);
+    return ok;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    // ── property test over a family of generated scenes (20.6) ──────────────────
+    let produced: i32 = 0;
+    let prop_ok: bool = true;
+    let d: i32 = 0;
+    while (d <= 2) { let s: *Scene = build_chain(d); if (!family_property_holds(s, &produced)) { prop_ok = false; } scene_free(s); d = d + 1; }
+    let m: *Scene = build_const_mul(); if (!family_property_holds(m, &produced)) { prop_ok = false; } scene_free(m);
+    check("every proposed rewrite preserves outputs and never raises cost", prop_ok, &failures);
+    check("the property test is non-vacuous (real proposals were verified)", produced >= 2, &failures);
+
+    // ── independent differential oracle: optimized == original outputs (20.6) ───
+    let s2: *Scene = build_chain(2);
+    let p2: OptProposal = opt_analyze(s2);
+    let cand2: *Scene = opt_build_candidate(s2, p2.removed, p2.relabels);
+    check("an independent detector-trace diff confirms optimized == original",
+        traces_match(s2, cand2, opt_horizon()), &failures);
+    scene_free(cand2); opt_proposal_free(&p2); scene_free(s2);
+
+    // ── adversarial / pathological inputs stay safe (20.6) ──────────────────────
+    // empty (plate only)
+    let e0: *Scene = scene_new();
+    let _ep: i32 = scene_place(e0, Kind.Plate, vox(0, 0, 0), 0);
+    let ec0: i32 = e0.*.comps.len;
+    let pe: OptProposal = opt_analyze(e0);
+    check("an empty scene yields no proposal and is not mutated by analyze",
+        pe.family == opt_family_none() && e0.*.comps.len == ec0, &failures);
+    opt_proposal_free(&pe); scene_free(e0);
+
+    // no-detector graph: any proposal must still verify (equivalent) and not crash
+    let nd: *Scene = scene_new();
+    let _np: i32 = scene_place(nd, Kind.Plate, vox(0, 0, 0), 0);
+    let nde: i32 = scene_place(nd, Kind.Emitter, vox(1, 1, 2), 0);
+    let ndc: i32 = scene_place(nd, Kind.Chamber, vox(4, 1, 3), 0);
+    let _nr: bool = flash_route(nd, nde, 0, ndc, 0);
+    let ndcount: i32 = nd.*.comps.len;
+    let pn: OptProposal = opt_analyze(nd);
+    let nd_ok: bool = nd.*.comps.len == ndcount;   // observer
+    if (pn.family != opt_family_none()) { if (!opt_verify(nd, &pn)) { nd_ok = false; } }
+    check("a detector-less graph is handled safely (observer + verified-or-none)", nd_ok, &failures);
+    opt_proposal_free(&pn); scene_free(nd);
+
+    // feedback cycle: the useful-set fixpoint must terminate and stay safe
+    let fc: *Scene = scene_new();
+    let _fp: i32 = scene_place(fc, Kind.Plate, vox(0, 0, 0), 0);
+    let fe: i32 = scene_place(fc, Kind.Emitter, vox(1, 1, 2), 0);
+    let fa: i32 = scene_place(fc, Kind.Chamber, vox(3, 1, 3), 0);
+    let fb: i32 = scene_place(fc, Kind.Chamber, vox(5, 1, 3), 0);
+    let fd: i32 = scene_place(fc, Kind.Detector, vox(7, 1, 4), 0);
+    let _fr: bool = flash_route(fc, fe, 0, fa, 0) && flash_route(fc, fa, 3, fb, 0) &&
+        flash_route(fc, fb, 3, fa, 1) && flash_route(fc, fb, 3, fd, 0);
+    let fccount: i32 = fc.*.comps.len;
+    let pf: OptProposal = opt_analyze(fc);   // must terminate despite the cycle
+    let fc_ok: bool = fc.*.comps.len == fccount;
+    if (pf.family != opt_family_none()) {
+        let cf: *Scene = opt_build_candidate(fc, pf.removed, pf.relabels);
+        if (!opt_outputs_equal(fc, cf, opt_horizon())) { fc_ok = false; }
+        scene_free(cf);
+    }
+    check("a feedback-cycle graph terminates analysis and stays equivalent", fc_ok, &failures);
+    opt_proposal_free(&pf); scene_free(fc);
+
+    // ── end-to-end: the optimizer finds a real improvement and applies it (20.6) ─
+    let e2e: *Scene = build_chain(2);
+    let ref_: *Scene = build_chain(2);         // pristine reference for equivalence
+    let cost_before: i64 = opt_cost_score(opt_cost(e2e));
+    let pe2: OptProposal = opt_analyze(e2e);
+    check("end-to-end: a real improving proposal is found with positive gain",
+        pe2.family != opt_family_none() && pe2.valid && opt_gain_percent(pe2) > 0, &failures);
+    let applied: bool = opt_apply(e2e, &pe2);
+    check("end-to-end: apply succeeds, lowers cost, stays valid and output-equivalent",
+        applied && opt_cost_score(opt_cost(e2e)) < cost_before &&
+        scene_validation_errors(e2e) == 0 && opt_outputs_equal(e2e, ref_, opt_horizon()), &failures);
+    opt_proposal_free(&pe2); scene_free(e2e); scene_free(ref_);
+
+    // ── end-to-end via the background engine auto-apply path (20.6) ─────────────
+    // The engine reports the gain (badge) then, with auto-apply enabled, applies it;
+    // the applied project re-verifies against a pristine oracle. In the app this
+    // apply is grant-gated + journaled + audited (optimizer-undo-audit gate).
+    let ae: *Scene = build_chain(2);
+    let aref: *Scene = build_chain(2);
+    let eng: *OptEngine = opt_engine_new();
+    // report-only first: the badge surfaces the pending gain, project unchanged
+    let ac0: i32 = ae.*.comps.len;
+    let _r: bool = opt_engine_refresh(eng, ae);
+    check("the engine surfaces a pending gain on its badge without mutating",
+        opt_engine_badge(eng) == 1 && ae.*.comps.len == ac0, &failures);
+    // now auto-apply
+    eng.*.auto_apply = true;
+    let _t: bool = opt_engine_tick(eng, ae);
+    check("engine auto-apply lands the optimization and re-verifies against the oracle",
+        eng.*.applied_count == 1 && opt_engine_badge(eng) == 0 &&
+        ae.*.comps.len < ac0 && scene_validation_errors(ae) == 0 &&
+        opt_outputs_equal(ae, aref, opt_horizon()), &failures);
+    opt_engine_free(eng); scene_free(ae); scene_free(aref);
+
+    if (failures == 0) { _zag_println("OPT VERIFY: ALL PASS"); return 0; }
+    _zag_println("OPT VERIFY: FAILURES"); return 1;
+}
