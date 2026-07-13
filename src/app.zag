@@ -17,11 +17,13 @@
 @import("tiles.zag")
 @import("editops.zag")
 @import("optimizer.zag")
+@import("uilayer.zag")
 
 // tools
 fn tool_select() i32 { return 0; }
 fn tool_route() i32 { return 1; }
 fn tool_place_base() i32 { return 2; }   // tool = 2 + kind_index
+fn tool_measure() i32 { return 0 - 2; }  // negative: never mistaken for a place tool
 
 // key codes from the X11 layer
 fn key_esc() i32 { return 27; }
@@ -115,6 +117,89 @@ struct App {
     clipboard: list.ArrayList[Comp],   // copied component snapshots (copy/paste)
     hover_comp: i32,                    // component under the cursor in select mode
     ui_scale: i32,                      // HiDPI factor (1/2/3): logical px -> physical
+    // ── library panel (Section 3.7) ──
+    lib_search: TextEdit,
+    lib_tab: i32,              // 0 All, then library_tab_count()-1 categories
+    lib_scroll: i32,
+    lib_drag: i32,             // kind index dragged out of a card; -1 none
+    // ── outliner (Section 3.9) ──
+    out_search: TextEdit,
+    rename_id: i32,            // comp id being renamed inline; -1 none
+    rename_edit: TextEdit,
+    locked: list.ArrayList[i32],       // locked component ids (uneditable)
+    groups: list.ArrayList[i32],       // pairs: comp_id, group_id
+    group_next: i32,
+    out_drag_id: i32,          // outliner row being dragged; -1 none
+    // ── context menu (Section 3.6) ──
+    ctx_open: bool,
+    ctx_x: i32,
+    ctx_y: i32,
+    ctx_comp: i32,             // right-clicked comp id; -1 for empty space
+    rmb_x: i32,                // RMB press position (click vs orbit-drag)
+    rmb_y: i32,
+    rmb_live: bool,
+    // ── inspector (Section 3.8) ──
+    insp_open_t: i32,          // Transform section expanded
+    insp_open_e: i32,          // Engine section expanded
+    insp_open_m: i32,          // Model section expanded
+    insp_open_p: i32,          // Ports section expanded
+    insp_edit_field: i32,      // numeric field being typed; -1 none
+    insp_edit: TextEdit,
+    insp_err: []u8,            // inline validation error text
+    insp_err_frame: i64,
+    // ── signal timeline (Section 3.10) ──
+    tl_zoom: i32,              // px per symbol (2..14)
+    tl_scrub: i32,             // history offset; 0 = live edge
+    tl_scroll: i32,
+    tl_pin: list.ArrayList[i32],
+    tl_hide: list.ArrayList[i32],
+    tl_drag: i32,              // 1 while scrubbing
+    tl_show_hidden: bool,
+    // ── measure tool (Section 3.4) ──
+    measure_n: i32,            // placed measure points (0/1/2)
+    measure_a: Vox,
+    measure_b: Vox,
+    // ── design warnings (Section 3.4) ──
+    warn_ids: list.ArrayList[i32],     // component ids with active warnings
+    warn_codes: list.ArrayList[i32],   // parallel warning codes
+    warn_rev: i64,                     // scene revision at last rebuild
+    warn_open: bool,                   // status-bar warnings popup
+    // ── view extras (Section 3.5) ──
+    sect_on: bool,             // section (clip) view
+    sect_y: i32,               // clip level: hide cells above this y
+    // ── polish (Section 3.11) ──
+    sel_frame: i64,            // frame of last selection change (outline fade)
+    invalid_frame: i64,        // frame of last rejected action (flash)
+    invalid_text: []u8,
+    // double-click tracking
+    click_frame: i64,
+    click_x: i32,
+    click_y: i32,
+    // object/alignment snapping (Section 3.4)
+    snap_obj: bool,
+    snap_ax: i32,              // aligned x lattice line while placing (-1000000 none)
+    snap_az: i32,
+    // retained panel surfaces (Section 3.12)
+    ps_left: PanelSurface,
+    ps_right: PanelSurface,
+    ps_bottom: PanelSurface,
+    anim_live_prev: bool,      // an ease was mid-flight last frame
+    log_rev: i64,              // bumps on every app_log append
+    pulse_frame: i64,          // frame of the last sim step (beam pulse, 3.11)
+    // dirty-region presentation: the union of screen rectangles that changed
+    // this frame. present_full forces a whole-frame upload; present_none skips
+    // the upload entirely (nothing visibly changed). Consumed by the X11 loop.
+    present_x0: i32,
+    present_y0: i32,
+    present_x1: i32,
+    present_y1: i32,
+    present_full: bool,
+    present_none: bool,
+    pl_draws_prev: i64,
+    pr_draws_prev: i64,
+    pb_draws_prev: i64,
+    present_sym_prev: i64,     // sim symbol at last present-decision
+    present_rev_prev: i64,     // scene render_rev at last present-decision
 }
 
 fn app_new(w: i32, h: i32) *App {
@@ -188,6 +273,74 @@ fn app_new(w: i32, h: i32) *App {
         .clipboard = list.make[Comp](8),
         .hover_comp = 0 - 1,
         .ui_scale = 1,
+        .lib_search = textedit_new(),
+        .lib_tab = 0,
+        .lib_scroll = 0,
+        .lib_drag = 0 - 1,
+        .out_search = textedit_new(),
+        .rename_id = 0 - 1,
+        .rename_edit = textedit_new(),
+        .locked = list.make[i32](8),
+        .groups = list.make[i32](8),
+        .group_next = 1,
+        .out_drag_id = 0 - 1,
+        .ctx_open = false,
+        .ctx_x = 0,
+        .ctx_y = 0,
+        .ctx_comp = 0 - 1,
+        .rmb_x = 0,
+        .rmb_y = 0,
+        .rmb_live = false,
+        .insp_open_t = 1,
+        .insp_open_e = 1,
+        .insp_open_m = 1,
+        .insp_open_p = 1,
+        .insp_edit_field = 0 - 1,
+        .insp_edit = textedit_new(),
+        .insp_err = "",
+        .insp_err_frame = 0 - 1000,
+        .tl_zoom = 7,
+        .tl_scrub = 0,
+        .tl_scroll = 0,
+        .tl_pin = list.make[i32](4),
+        .tl_hide = list.make[i32](4),
+        .tl_drag = 0,
+        .tl_show_hidden = false,
+        .measure_n = 0,
+        .measure_a = vox(0, 0, 0),
+        .measure_b = vox(0, 0, 0),
+        .warn_ids = list.make[i32](8),
+        .warn_codes = list.make[i32](8),
+        .warn_rev = 0 - 1,
+        .warn_open = false,
+        .sect_on = false,
+        .sect_y = 4,
+        .sel_frame = 0 - 1000,
+        .invalid_frame = 0 - 1000,
+        .invalid_text = "",
+        .click_frame = 0 - 1000,
+        .click_x = 0,
+        .click_y = 0,
+        .snap_obj = true,
+        .snap_ax = 0 - 1000000,
+        .snap_az = 0 - 1000000,
+        .ps_left = ps_new(),
+        .ps_right = ps_new(),
+        .ps_bottom = ps_new(),
+        .anim_live_prev = true,
+        .log_rev = 0,
+        .pulse_frame = 0 - 1000,
+        .present_x0 = 0,
+        .present_y0 = 0,
+        .present_x1 = 0,
+        .present_y1 = 0,
+        .present_full = true,
+        .present_none = false,
+        .pl_draws_prev = 0,
+        .pr_draws_prev = 0,
+        .pb_draws_prev = 0,
+        .present_sym_prev = 0 - 1,
+        .present_rev_prev = 0 - 1,
     });
     a.*.inp.w = w;
     a.*.inp.h = h;
@@ -209,19 +362,26 @@ fn app_layout_path() []u8 {
 fn app_layout_load(a: *App) void {
     let raw: []u8 = _zag_read_file(app_layout_path());
     if (raw.len <= 0) { return; }
-    let vals: list.ArrayList[i64] = list.make[i64](3);
+    let vals: list.ArrayList[i64] = list.make[i64](6);
     let pos: i32 = 0;
-    while (pos < raw.len && vals.len < 3) {
+    while (pos < raw.len && vals.len < 6) {
         while (pos < raw.len && ((raw[pos] as i32) == 32 || (raw[pos] as i32) == 10)) { pos = pos + 1; }
         let st: i32 = pos;
         while (pos < raw.len && (raw[pos] as i32) != 32 && (raw[pos] as i32) != 10) { pos = pos + 1; }
         if (pos > st) { list.push[i64](&vals, _zag_str_to_i64(raw[st..pos])); }
     }
-    if (vals.len == 3) {
-        a.*.left_w = clampi(vals.data[0] as i32, 170, a.*.inp.w / 3);
-        a.*.right_w = clampi(vals.data[1] as i32, 220, (a.*.inp.w * 2) / 5);
-        a.*.bottom_h = clampi(vals.data[2] as i32, 130, (a.*.inp.h * 11) / 20);
+    if (vals.len >= 3) {
+        // clamps keep the viewport visually dominant at any drag (Section 3.2)
+        a.*.left_w = clampi(vals.data[0] as i32, 170, a.*.inp.w / 4);
+        a.*.right_w = clampi(vals.data[1] as i32, 220, a.*.inp.w / 3);
+        a.*.bottom_h = clampi(vals.data[2] as i32, 130, (a.*.inp.h * 2) / 5);
     }
+    // optional trailing preferences (older files stop at three values)
+    if (vals.len >= 5) {
+        a.*.inp.reduced_motion = vals.data[3] != 0;
+        a.*.snap_obj = vals.data[4] != 0;
+    }
+    if (vals.len >= 6) { a.*.tl_zoom = clampi(vals.data[5] as i32, 2, 14); }
     list.free[i64](&vals);
 }
 
@@ -230,10 +390,18 @@ fn app_layout_save(a: *App) bool {
     let p2: []u8 = _zag_str_concat(p1, _zag_i64_to_str(a.*.right_w as i64));
     let p3: []u8 = _zag_str_concat(p2, " ");
     let p4: []u8 = _zag_str_concat(p3, _zag_i64_to_str(a.*.bottom_h as i64));
-    return atomic_write_file(app_layout_path(), _zag_str_concat(p4, "\n"));
+    let rm: i64 = 0;
+    if (a.*.inp.reduced_motion) { rm = 1; }
+    let sn: i64 = 0;
+    if (a.*.snap_obj) { sn = 1; }
+    let p5: []u8 = _zag_str_concat(_zag_str_concat(p4, " "), _zag_i64_to_str(rm));
+    let p6: []u8 = _zag_str_concat(_zag_str_concat(p5, " "), _zag_i64_to_str(sn));
+    let p7: []u8 = _zag_str_concat(_zag_str_concat(p6, " "), _zag_i64_to_str(a.*.tl_zoom as i64));
+    return atomic_write_file(app_layout_path(), _zag_str_concat(p7, "\n"));
 }
 
 fn app_log(a: *App, msg: []u8) void {
+    a.*.log_rev = a.*.log_rev + 1;
     if (a.*.log.len >= 5) {
         let i: i32 = 0;
         while (i + 1 < a.*.log.len) {
@@ -255,6 +423,7 @@ fn app_mark_dirty(a: *App) void {
 // ── selection ─────────────────────────────────────────────────────────────────
 
 fn sel_clear(a: *App) void {
+    if (a.*.sel.len > 0 || a.*.sel_guide >= 0) { a.*.sel_frame = a.*.frame; }
     a.*.sel.len = 0;
     a.*.sel_guide = 0 - 1;
 }
@@ -272,6 +441,7 @@ fn sel_set(a: *App, id: i32) void {
     a.*.sel.len = 0;
     list.push[i32](&a.*.sel, id);
     a.*.sel_guide = 0 - 1;
+    a.*.sel_frame = a.*.frame;
 }
 
 fn sel_toggle(a: *App, id: i32) void {
@@ -291,10 +461,14 @@ fn sel_toggle(a: *App, id: i32) void {
     }
     list.push[i32](&a.*.sel, id);
     a.*.sel_guide = 0 - 1;
+    a.*.sel_frame = a.*.frame;
 }
 
 fn sel_add(a: *App, id: i32) void {
-    if (!sel_has(a, id)) { list.push[i32](&a.*.sel, id); }
+    if (!sel_has(a, id)) {
+        list.push[i32](&a.*.sel, id);
+        a.*.sel_frame = a.*.frame;
+    }
     a.*.sel_guide = 0 - 1;
 }
 
@@ -348,6 +522,174 @@ fn sel_prune(a: *App) void {
     if (a.*.sel_guide >= 0) {
         if (scene_guide_index(a.*.scene, a.*.sel_guide) < 0) { a.*.sel_guide = 0 - 1; }
     }
+}
+
+// ── locks (Section 3.9) ───────────────────────────────────────────────────────
+
+fn app_is_locked(a: *App, id: i32) bool {
+    let i: i32 = 0;
+    while (i < a.*.locked.len) {
+        if (list.get[i32](a.*.locked, i) == id) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn app_toggle_lock(a: *App, id: i32) void {
+    let i: i32 = 0;
+    while (i < a.*.locked.len) {
+        if (list.get[i32](a.*.locked, i) == id) {
+            let k: i32 = i;
+            while (k + 1 < a.*.locked.len) {
+                a.*.locked.data[k] = a.*.locked.data[k + 1];
+                k = k + 1;
+            }
+            a.*.locked.len = a.*.locked.len - 1;
+            return;
+        }
+        i = i + 1;
+    }
+    list.push[i32](&a.*.locked, id);
+}
+
+fn app_sel_any_locked(a: *App) bool {
+    let i: i32 = 0;
+    while (i < a.*.sel.len) {
+        if (app_is_locked(a, list.get[i32](a.*.sel, i))) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// ── grouping (Section 3.6) ────────────────────────────────────────────────────
+// Pairs (comp_id, group_id); selecting any member selects the whole group.
+
+fn app_group_of(a: *App, id: i32) i32 {
+    let i: i32 = 0;
+    while (i + 1 < a.*.groups.len) {
+        if (list.get[i32](a.*.groups, i) == id) { return list.get[i32](a.*.groups, i + 1); }
+        i = i + 2;
+    }
+    return 0 - 1;
+}
+
+fn app_group_drop(a: *App, id: i32) void {
+    let i: i32 = 0;
+    while (i + 1 < a.*.groups.len) {
+        if (list.get[i32](a.*.groups, i) == id) {
+            let k: i32 = i;
+            while (k + 2 < a.*.groups.len) {
+                a.*.groups.data[k] = a.*.groups.data[k + 2];
+                k = k + 1;
+            }
+            a.*.groups.len = a.*.groups.len - 2;
+            return;
+        }
+        i = i + 2;
+    }
+}
+
+// select every member of `gid` (used by group-aware clicks)
+fn sel_add_group(a: *App, gid: i32) void {
+    let i: i32 = 0;
+    while (i + 1 < a.*.groups.len) {
+        if (list.get[i32](a.*.groups, i + 1) == gid) {
+            sel_add(a, list.get[i32](a.*.groups, i));
+        }
+        i = i + 2;
+    }
+}
+
+fn app_group_selection(a: *App) void {
+    if (a.*.sel.len < 2) {
+        app_log(a, "group: select two or more parts first");
+        return;
+    }
+    let gid: i32 = a.*.group_next;
+    a.*.group_next = a.*.group_next + 1;
+    let i: i32 = 0;
+    while (i < a.*.sel.len) {
+        let id: i32 = list.get[i32](a.*.sel, i);
+        app_group_drop(a, id);
+        list.push[i32](&a.*.groups, id);
+        list.push[i32](&a.*.groups, gid);
+        i = i + 1;
+    }
+    app_log(a, _zag_str_concat(_zag_i64_to_str(a.*.sel.len as i64), " parts grouped"));
+}
+
+fn app_ungroup_selection(a: *App) void {
+    let n: i32 = 0;
+    let i: i32 = 0;
+    while (i < a.*.sel.len) {
+        let id: i32 = list.get[i32](a.*.sel, i);
+        if (app_group_of(a, id) >= 0) { app_group_drop(a, id); n = n + 1; }
+        i = i + 1;
+    }
+    if (n > 0) { app_log(a, "ungrouped"); }
+}
+
+// ── invalid-action feedback (Section 3.11) ───────────────────────────────────
+
+fn app_invalid(a: *App, msg: []u8) void {
+    a.*.invalid_frame = a.*.frame;
+    a.*.invalid_text = msg;
+    app_log(a, msg);
+}
+
+// ── design warnings (Section 3.4) ────────────────────────────────────────────
+// warning codes: 1 input port not driven, 2 output port unconnected
+
+fn warn_text(code: i32) []u8 {
+    if (code == 1) { return "input not driven"; }
+    return "output unconnected";
+}
+
+// Rebuild the warnings list when the design changed. Only facts the engine
+// knows are reported: port connectivity of active parts. Never fabricated.
+fn app_warnings_rebuild(a: *App) void {
+    if (a.*.warn_rev == a.*.scene.*.render_rev) { return; }
+    a.*.warn_rev = a.*.scene.*.render_rev;
+    a.*.warn_ids.len = 0;
+    a.*.warn_codes.len = 0;
+    let s: *Scene = a.*.scene;
+    let i: i32 = 0;
+    while (i < s.*.comps.len) {
+        let c: Comp = s.*.comps.data[i];
+        let np: i32 = kind_port_count(c.kind);
+        let pi: i32 = 0;
+        while (pi < np) {
+            if (!scene_port_in_use(s, c.id, pi)) {
+                let p: Port = kind_port(c.kind, pi);
+                let code: i32 = 1;
+                if (p.is_output) { code = 2; }
+                list.push[i32](&a.*.warn_ids, c.id);
+                list.push[i32](&a.*.warn_codes, code);
+            }
+            pi = pi + 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn app_comp_warning(a: *App, id: i32) i32 {
+    let i: i32 = 0;
+    while (i < a.*.warn_ids.len) {
+        if (list.get[i32](a.*.warn_ids, i) == id) { return list.get[i32](a.*.warn_codes, i); }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ── double-click tracking ─────────────────────────────────────────────────────
+
+fn app_dblclick(a: *App) bool {
+    let is2: bool = (a.*.frame - a.*.click_frame) < 18 &&
+        iabs(a.*.inp.mx - a.*.click_x) <= 4 && iabs(a.*.inp.my - a.*.click_y) <= 4;
+    a.*.click_frame = a.*.frame;
+    a.*.click_x = a.*.inp.mx;
+    a.*.click_y = a.*.inp.my;
+    return is2;
 }
 
 // ── zone layout ───────────────────────────────────────────────────────────────
@@ -408,9 +750,10 @@ fn app_splitters(a: *App) void {
         if (a.*.grab != 0) { let _saved_layout: bool = app_layout_save(a); }
         a.*.grab = 0;
     }
-    if (a.*.grab == 1) { a.*.left_w = clampi(inp.*.mx, 170, inp.*.w / 3); }
-    if (a.*.grab == 2) { a.*.right_w = clampi(inp.*.w - inp.*.mx, 220, (inp.*.w * 2) / 5); }
-    if (a.*.grab == 3) { a.*.bottom_h = clampi(inp.*.h - inp.*.my - status_h(), 130, (inp.*.h * 11) / 20); }
+    // clamps keep the viewport visually dominant at any drag (Section 3.2)
+    if (a.*.grab == 1) { a.*.left_w = clampi(inp.*.mx, 170, inp.*.w / 4); }
+    if (a.*.grab == 2) { a.*.right_w = clampi(inp.*.w - inp.*.mx, 220, inp.*.w / 3); }
+    if (a.*.grab == 3) { a.*.bottom_h = clampi(inp.*.h - inp.*.my - status_h(), 130, (inp.*.h * 2) / 5); }
     if (a.*.grab != 0) { inp.*.capture = 1; }
 }
 
@@ -445,6 +788,12 @@ fn app_frame_all(a: *App) void {
     a.*.cam.target = v3((mnx + mxx) * 0.5, (mny + mxy) * 0.5, (mnz + mxz) * 0.5);
     let span: f64 = fmax(mxx - mnx, fmax(mxy - mny, mxz - mnz));
     a.*.cam.dist = clampf(span * 1.35 + 9.0, 10.0, 200.0);
+}
+
+// Reset view (Section 3.5): the exact default camera, including projection.
+fn app_reset_view(a: *App) void {
+    a.*.cam = cam_new();
+    app_log(a, "view reset");
 }
 
 fn app_frame_selected(a: *App) void {
@@ -488,6 +837,10 @@ fn app_delete_selection(a: *App) void {
         a.*.sel_guide = 0 - 1;
         app_mark_dirty(a);
         app_log(a, "waveguide removed");
+        return;
+    }
+    if (app_sel_any_locked(a)) {
+        app_invalid(a, "delete blocked: selection contains locked parts");
         return;
     }
     let n: i32 = a.*.sel.len;
@@ -609,6 +962,10 @@ fn app_duplicate(a: *App) void {
 
 fn app_start_move(a: *App) void {
     if (a.*.sel.len == 0) { return; }
+    if (app_sel_any_locked(a)) {
+        app_invalid(a, "move blocked: selection contains locked parts");
+        return;
+    }
     a.*.moving = true;
     a.*.move_delta = vox(0, 0, 0);
     // anchor at the primary component's origin
@@ -757,10 +1114,31 @@ fn app_viewport_input(a: *App) void {
     a.*.ghost_ok = 0 - 1;
     a.*.hover_pc = 0 - 1;
     a.*.hover_ok = false;
+    a.*.snap_ax = 0 - 1000000;
+    a.*.snap_az = 0 - 1000000;
 
-    // camera: MMB orbit / Shift+MMB pan / RMB orbit / wheel zoom
+    // RMB: a short press-and-release is a context menu; a drag orbits.
+    if (over && btn_pressed(inp, 2)) {
+        a.*.rmb_live = true;
+        a.*.rmb_x = inp.*.mx;
+        a.*.rmb_y = inp.*.my;
+    }
+    let rmb_moved: bool = iabs(inp.*.mx - a.*.rmb_x) > 4 || iabs(inp.*.my - a.*.rmb_y) > 4;
+    if (a.*.rmb_live && btn_released(inp, 2) && !rmb_moved) {
+        a.*.rmb_live = false;
+        let hit: i32 = vp_pick_comp(a.*.scene, a.*.cam, vp, inp.*.mx, inp.*.my);
+        if (hit >= 0 && !sel_has(a, hit)) { sel_set(a, hit); }
+        a.*.ctx_open = true;
+        a.*.ctx_comp = hit;
+        a.*.ctx_x = inp.*.mx;
+        a.*.ctx_y = inp.*.my;
+        return;
+    }
+    if (!btn_down(inp, 2) && !btn_down(inp, 1)) { a.*.rmb_live = false; }
+
+    // camera: MMB orbit / Shift+MMB pan / RMB-drag orbit / wheel zoom
     if (over || inp.*.capture == 2) {
-        let dragging: bool = btn_down(inp, 1) || btn_down(inp, 2);
+        let dragging: bool = btn_down(inp, 1) || (btn_down(inp, 2) && (rmb_moved || !a.*.rmb_live));
         a.*.cam_drag = dragging;
         if (dragging) {
             inp.*.capture = 2;
@@ -815,6 +1193,25 @@ fn app_viewport_input(a: *App) void {
         a.*.hover_cell = hov.cell;
     }
 
+    // measure tool (Section 3.4): two picked lattice points
+    if (a.*.tool == tool_measure()) {
+        let mh0: CellHit = vp_cell_at(a.*.cam, vp, inp.*.mx, inp.*.my, 1);
+        if (mh0.ok) {
+            a.*.hover_ok = true;
+            a.*.hover_cell = mh0.cell;
+            if (btn_pressed(inp, 0)) {
+                if (a.*.measure_n == 1) {
+                    a.*.measure_b = mh0.cell;
+                    a.*.measure_n = 2;
+                } else {
+                    a.*.measure_a = mh0.cell;
+                    a.*.measure_n = 1;
+                }
+            }
+        }
+        return;
+    }
+
     // move mode
     if (a.*.moving) {
         let mh: CellHit = vp_cell_at(a.*.cam, vp, inp.*.mx, inp.*.my, a.*.move_anchor.y);
@@ -822,22 +1219,48 @@ fn app_viewport_input(a: *App) void {
             a.*.move_delta = vox(mh.cell.x - a.*.move_anchor.x, 0, mh.cell.z - a.*.move_anchor.z);
             a.*.move_ok = group_can_move(a.*.scene, &a.*.sel, a.*.move_delta);
         }
-        if (btn_pressed(inp, 0)) { app_commit_move(a); }
+        if (btn_pressed(inp, 0)) {
+            if (a.*.move_ok != 0) { a.*.invalid_frame = a.*.frame; }
+            app_commit_move(a);
+        }
         return;
     }
 
-    // place tools
-    if (a.*.tool >= tool_place_base()) {
-        let k: Kind = app_current_kind(a);
+    // place tools (armed from the library, keys, palette, or a card drag)
+    if (a.*.tool >= tool_place_base() || a.*.lib_drag >= 0) {
+        let k: Kind = kind_at(0);
+        if (a.*.lib_drag >= 0) { k = kind_at(a.*.lib_drag); }
+        else { k = app_current_kind(a); }
         let level: i32 = 1;
         if (kind_ground_only(k)) { level = 0; }
         let ch: CellHit = vp_cell_at(a.*.cam, vp, inp.*.mx, inp.*.my, level);
         if (ch.ok) {
             let e: Vox = rot_ext(kind_fp(k), a.*.ghost_rot);
             let origin: Vox = vox(ch.cell.x - e.x / 2, level, ch.cell.z - e.z / 2);
+            // object-alignment snapping (Section 3.4): pull the ghost onto a
+            // neighbor's lattice row/column when within one cell
+            if (a.*.snap_obj) {
+                let si: i32 = 0;
+                while (si < a.*.scene.*.comps.len) {
+                    let sc: Comp = a.*.scene.*.comps.data[si];
+                    if (sc.kind == k) {
+                        if (a.*.snap_ax == 0 - 1000000 && iabs(origin.x - sc.origin.x) == 1) {
+                            origin.x = sc.origin.x;
+                            a.*.snap_ax = sc.origin.x;
+                        }
+                        if (a.*.snap_az == 0 - 1000000 && iabs(origin.z - sc.origin.z) == 1) {
+                            origin.z = sc.origin.z;
+                            a.*.snap_az = sc.origin.z;
+                        }
+                    }
+                    si = si + 1;
+                }
+            }
             a.*.ghost_origin = origin;
             a.*.ghost_ok = scene_can_place(a.*.scene, k, origin, a.*.ghost_rot);
-            if (btn_pressed(inp, 0)) {
+            let commit: bool = btn_pressed(inp, 0);
+            if (a.*.lib_drag >= 0) { commit = btn_released(inp, 0); }
+            if (commit) {
                 if (a.*.ghost_ok == 0) {
                     let id: i32 = scene_place(a.*.scene, k, origin, a.*.ghost_rot);
                     if (id > 0) {
@@ -848,19 +1271,47 @@ fn app_viewport_input(a: *App) void {
                         app_log(a, _zag_str_concat("placed ", a.*.scene.*.comps.data[ci].name_));
                     }
                 } else {
-                    app_log(a, _zag_str_concat("cannot place: ", place_err_text(a.*.ghost_ok)));
+                    app_invalid(a, _zag_str_concat("cannot place: ", place_err_text(a.*.ghost_ok)));
                 }
             }
         }
+        if (a.*.lib_drag >= 0 && btn_released(inp, 0)) { a.*.lib_drag = 0 - 1; }
         return;
     }
 
-    // route tool
+    // route tool: click-click, or press an output and drag to an input
     if (a.*.tool == tool_route()) {
         let port: i32 = 0;
         let pc: i32 = vp_pick_port(a.*.scene, a.*.cam, vp, inp.*.mx, inp.*.my, &port);
         a.*.hover_pc = pc;
         a.*.hover_pp = port;
+        // drag-to-route commit: release over a valid input while armed
+        if (btn_released(inp, 0) && a.*.route_c >= 0 && pc >= 0 &&
+            !(pc == a.*.route_c && port == a.*.route_p)) {
+            let rci: i32 = scene_comp_index(a.*.scene, pc);
+            let rcc: Comp = a.*.scene.*.comps.data[rci];
+            let rp: Port = kind_port(rcc.kind, port);
+            if (!rp.is_output && !scene_port_in_use(a.*.scene, pc, port) && pc != a.*.route_c) {
+                let ssci: i32 = scene_comp_index(a.*.scene, a.*.route_c);
+                let ssrc: Comp = a.*.scene.*.comps.data[ssci];
+                let sstart: Vox = comp_port_attach(ssrc, a.*.route_p);
+                let sgoal: Vox = comp_port_attach(rcc, port);
+                let spath: list.ArrayList[Vox] = list.make[Vox](32);
+                if (route_guide(a.*.scene, sstart, sgoal, &spath)) {
+                    let sgid: i32 = scene_add_guide(a.*.scene, a.*.route_c, a.*.route_p, pc, port, spath);
+                    op_add_guide(&a.*.jrn, a.*.scene, sgid);
+                    a.*.sel_guide = sgid;
+                    a.*.sel.len = 0;
+                    app_mark_dirty(a);
+                    app_log(a, "waveguide routed");
+                } else {
+                    list.free[Vox](&spath);
+                    app_invalid(a, "route: no path through the lattice");
+                }
+                a.*.route_c = 0 - 1;
+                return;
+            }
+        }
         if (btn_pressed(inp, 0) && pc >= 0) {
             let ci: i32 = scene_comp_index(a.*.scene, pc);
             let c: Comp = a.*.scene.*.comps.data[ci];
@@ -911,6 +1362,7 @@ fn app_viewport_input(a: *App) void {
     if (a.*.box_sel) { a.*.hover_comp = 0 - 1; }
     if (btn_pressed(inp, 0)) {
         let hit: i32 = a.*.hover_comp;
+        let dbl: bool = app_dblclick(a);
         if (hit < 0) {
             // empty press: begin a rubber-band box; clear/commit deferred to release
             a.*.box_sel = true;
@@ -920,6 +1372,11 @@ fn app_viewport_input(a: *App) void {
             a.*.box_sel = false;
             if (shift_down(inp)) { sel_toggle(a, hit); }
             else { sel_set(a, hit); }
+            // clicking a grouped part selects the whole group (Section 3.6)
+            let gid: i32 = app_group_of(a, hit);
+            if (gid >= 0 && !shift_down(inp)) { sel_add_group(a, gid); }
+            // double-click frames the part (Section 3.9 behavior, in-viewport too)
+            if (dbl) { app_frame_selected(a); }
         }
     }
     if (a.*.box_sel && btn_released(inp, 0)) {
@@ -950,8 +1407,10 @@ fn app_keys(a: *App) void {
     }
 
     if (key_hit(inp, key_esc())) {
-        if (a.*.menu >= 0) { a.*.menu = 0 - 1; }
+        if (a.*.ctx_open) { a.*.ctx_open = false; }
+        else if (a.*.menu >= 0) { a.*.menu = 0 - 1; }
         else if (a.*.moving) { a.*.moving = false; }
+        else if (a.*.measure_n > 0) { a.*.measure_n = 0; }
         else if (a.*.tool != tool_select()) { app_cancel(a); }
         else { sel_clear(a); }
     }
@@ -971,6 +1430,10 @@ fn app_keys(a: *App) void {
         if (key_hit(inp, 'y' as i32)) { app_redo(a); }
         if (key_hit(inp, 'c' as i32)) { app_copy(a); }
         if (key_hit(inp, 'v' as i32)) { app_paste(a); }
+        if (key_hit(inp, 'g' as i32)) {
+            if (shift_down(inp)) { app_ungroup_selection(a); }
+            else { app_group_selection(a); }
+        }
         if (key_hit(inp, 'q' as i32)) { a.*.quit = true; }
         return;
     }
@@ -980,20 +1443,60 @@ fn app_keys(a: *App) void {
         a.*.tool = tool_route();
         a.*.route_c = 0 - 1;
     }
-    if (key_hit(inp, 'r' as i32)) { a.*.ghost_rot = (a.*.ghost_rot + 1) % 4; }
+    if (key_hit(inp, 'm' as i32)) {
+        a.*.tool = tool_measure();
+        a.*.measure_n = 0;
+    }
+    if (key_hit(inp, 'r' as i32)) {
+        a.*.ghost_rot = (a.*.ghost_rot + 1) % 4;
+        // with a selection in select mode, R rotates the part itself (journaled)
+        if (a.*.tool == tool_select() && sel_primary(a) >= 0 && !a.*.moving) {
+            if (app_is_locked(a, sel_primary(a))) {
+                app_invalid(a, "rotate blocked: part is locked");
+            } else {
+                let ci_r: i32 = scene_comp_index(a.*.scene, sel_primary(a));
+                if (ci_r >= 0) {
+                    let nr: i32 = (a.*.scene.*.comps.data[ci_r].rot + 1) % 4;
+                    let rv: i32 = op_rotate(&a.*.jrn, a.*.scene, sel_primary(a), nr);
+                    if (rv == 0) { app_mark_dirty(a); app_log(a, "rotated"); }
+                    else { app_invalid(a, _zag_str_concat("cannot rotate: ", place_err_text(rv))); }
+                }
+            }
+        }
+    }
+    // F2 renames the primary selection inline (committed in the outliner)
+    if (key_hit(inp, 291) && sel_primary(a) >= 0) {
+        a.*.rename_id = sel_primary(a);
+        let ci_n: i32 = scene_comp_index(a.*.scene, a.*.rename_id);
+        if (ci_n >= 0) {
+            textedit_set(&a.*.rename_edit, a.*.scene.*.comps.data[ci_n].name_);
+            a.*.rename_edit.focus = true;
+        }
+    }
     if (key_hit(inp, 'x' as i32) || key_hit(inp, key_del())) { app_delete_selection(a); }
     if (key_hit(inp, 'f' as i32)) { app_frame_selected(a); }
     if (key_hit(inp, key_home())) { app_frame_all(a); }
     if (key_hit(inp, 'g' as i32)) { app_start_move(a); }
     if (key_hit(inp, 'd' as i32) && shift_down(inp)) { app_duplicate(a); }
     if (key_hit(inp, key_space())) { a.*.sim.*.playing = !a.*.sim.*.playing; }
+    // section (clip) view level (Section 3.5)
+    if (a.*.sect_on && key_hit(inp, '[' as i32)) {
+        if (a.*.sect_y > 0) { a.*.sect_y = a.*.sect_y - 1; }
+        scene_mark_render(a.*.scene);
+    }
+    if (a.*.sect_on && key_hit(inp, ']' as i32)) {
+        a.*.sect_y = a.*.sect_y + 1;
+        scene_mark_render(a.*.scene);
+    }
     if (key_hit(inp, 't' as i32)) {
         let pid: i32 = sel_primary(a);
         if (pid >= 0) {
             let ci: i32 = scene_comp_index(a.*.scene, pid);
             if (ci >= 0) {
                 if (a.*.scene.*.comps.data[ci].kind == Kind.Emitter) {
-                    a.*.scene.*.comps.data[ci].preset = (a.*.scene.*.comps.data[ci].preset + 1) % 4;
+                    // journaled property edit: preset cycling is a single undo
+                    op_set_prop(&a.*.jrn, a.*.scene, pid, prop_preset(),
+                                (a.*.scene.*.comps.data[ci].preset + 1) % 4);
                     app_mark_dirty(a);
                     app_log(a, "emitter pattern preset cycled");
                 }

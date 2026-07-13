@@ -306,17 +306,36 @@ fn run_x11() i32 {
 
             let t0: i64 = _zag_clock_monotonic_ms();
             app_frame(a, dt);
-            if (arg_has("--test-pattern")) { fb_test_pattern(&a.*.f); }
-            // while orbiting, blit every other frame — halves display cost on weak GPUs
-            let do_blit: bool = true;
-            if (a.*.cam_drag && (a.*.frame & 1) == 1) { do_blit = false; }
-            if (do_blit) {
-                if (uscale > 1) {
+            if (arg_has("--test-pattern")) { fb_test_pattern(&a.*.f); a.*.present_full = true; a.*.present_none = false; }
+            // a resize/expose since last present forces a whole-frame upload
+            if (x.*.needs_full) {
+                a.*.present_full = true;
+                a.*.present_none = false;
+                x.*.needs_full = false;
+            }
+            // Dirty-region present: upload only what changed. A static frame
+            // uploads nothing; orbiting uploads just the viewport; cached panels
+            // are skipped. HiDPI scaling still presents the whole frame.
+            if (uscale > 1) {
+                if (!a.*.present_none) {
                     fb_resize(&phys, x.*.win_w, x.*.win_h);
                     fb_upscale(&phys, &a.*.f, uscale);
                     x11_put_frame(x, phys.px.data, phys.w, phys.h);
-                } else {
-                    x11_put_frame(x, a.*.f.px.data, a.*.f.w, a.*.f.h);
+                }
+            } else if (a.*.present_full) {
+                x11_put_frame(x, a.*.f.px.data, a.*.f.w, a.*.f.h);
+            } else if (!a.*.present_none) {
+                let px0: i32 = a.*.present_x0;
+                let py0: i32 = a.*.present_y0;
+                let px1: i32 = a.*.present_x1;
+                let py1: i32 = a.*.present_y1;
+                if (px0 < 0) { px0 = 0; }
+                if (py0 < 0) { py0 = 0; }
+                if (px1 > a.*.f.w) { px1 = a.*.f.w; }
+                if (py1 > a.*.f.h) { py1 = a.*.f.h; }
+                if (px1 > px0 && py1 > py0) {
+                    x11_put_frame_rect(x, a.*.f.px.data, a.*.f.w, a.*.f.h,
+                                       px0, py0, px1 - px0, py1 - py0);
                 }
             }
             a.*.frame_ms = _zag_clock_monotonic_ms() - t0;

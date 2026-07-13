@@ -901,11 +901,30 @@ fn draw_guide_base(f: *FB, cam: Cam, clip: Rect, g: Guide) void {
     draw_guide(f, cam, clip, dark, false);
 }
 
+// True when the section (clip) view hides this component: every part whose
+// base sits above the section level is omitted (Section 3.5).
+fn sect_hides_comp(sect_on: bool, sect_y: i32, c: Comp) bool {
+    if (!sect_on) { return false; }
+    return c.origin.y > sect_y;
+}
+
+fn sect_hides_guide(sect_on: bool, sect_y: i32, g: Guide) bool {
+    if (!sect_on) { return false; }
+    let lo: i32 = 1000000;
+    let i: i32 = 0;
+    while (i < g.path.len) {
+        let v: Vox = list.get[Vox](g.path, i);
+        if (v.y < lo) { lo = v.y; }
+        i = i + 1;
+    }
+    return lo > sect_y;
+}
+
 // ── STATIC scene layer ────────────────────────────────────────────────────────
 // Everything that only changes when the design (or camera) changes: grid,
 // culled components, guide bodies. Rasterized once into the viewport tile
 // cache; per-frame dynamics (live trits, selection, ghosts) overlay on top.
-fn vp_draw_static(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim) void {
+fn vp_draw_static(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sect_on: bool, sect_y: i32) void {
     vp_clear(f, clip);
     vp_grid(f, cam, clip);
 
@@ -919,7 +938,7 @@ fn vp_draw_static(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim) void {
         let ci: i32 = scene_comp_index(s, ids.data[i]);
         if (ci >= 0) {
             let c: Comp = s.*.comps.data[ci];
-            if (c.visible) {
+            if (c.visible && !sect_hides_comp(sect_on, sect_y, c)) {
                 let lod: i32 = lod_level(cam, c);
                 if (c.kind == Kind.Plate) { draw_plate(f, cam, clip, c, lod); }
                 if (c.kind == Kind.Emitter) { draw_emitter(f, cam, clip, c, lod); }
@@ -934,7 +953,9 @@ fn vp_draw_static(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim) void {
     while (gi < s.*.guides.len) {
         let g: Guide = s.*.guides.data[gi];
         if (!use_query || vp_guide_in_bounds(g, b)) {
-            draw_guide_base(f, cam, clip, g);
+            if (!sect_hides_guide(sect_on, sect_y, g)) {
+                draw_guide_base(f, cam, clip, g);
+            }
         }
         gi = gi + 1;
     }
@@ -945,7 +966,7 @@ fn vp_draw_static(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim) void {
         let ci2: i32 = scene_comp_index(s, ids.data[i2]);
         if (ci2 >= 0) {
             let c2: Comp = s.*.comps.data[ci2];
-            if (c2.visible) {
+            if (c2.visible && !sect_hides_comp(sect_on, sect_y, c2)) {
                 let lod2: i32 = lod_level(cam, c2);
                 if (c2.kind == Kind.Chamber) {
                     // soh depth from the compiled sim node (cached adjacency)
@@ -963,10 +984,33 @@ fn vp_draw_static(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim) void {
     list.free[i32](&ids);
 }
 
+// Direction chevron at a guide's midpoint: beam orientation shown by geometry,
+// not just color (Section 3.4). Two short back-swept lines in the travel plane.
+fn draw_guide_dir(f: *FB, cam: Cam, clip: Rect, g: Guide) void {
+    if (g.path.len < 2) { return; }
+    let mi: i32 = g.path.len / 2;
+    let a: Vec3 = vox_center(list.get[Vox](g.path, mi - 1));
+    let b: Vec3 = vox_center(list.get[Vox](g.path, mi));
+    let d: Vec3 = vnorm(vsub(b, a));
+    let tip: Vec3 = v3((a.x + b.x) * 0.5 + d.x * 0.3, (a.y + b.y) * 0.5 + d.y * 0.3,
+                       (a.z + b.z) * 0.5 + d.z * 0.3);
+    // side vector perpendicular to travel in the horizontal plane (or x when vertical)
+    let side: Vec3 = v3(0.0 - d.z, 0.0, d.x);
+    if (vlen(side) < 0.001) { side = v3(1.0, 0.0, 0.0); }
+    side = vnorm(side);
+    let w1: Vec3 = v3(tip.x - d.x * 0.5 + side.x * 0.28, tip.y - d.y * 0.5,
+                      tip.z - d.z * 0.5 + side.z * 0.28);
+    let w2: Vec3 = v3(tip.x - d.x * 0.5 - side.x * 0.28, tip.y - d.y * 0.5,
+                      tip.z - d.z * 0.5 - side.z * 0.28);
+    let col: i64 = rgb(200, 205, 215);
+    line3(f, cam, clip, w1, tip, col, false);
+    line3(f, cam, clip, w2, tip, col, false);
+}
+
 // ── DYNAMIC overlay ───────────────────────────────────────────────────────────
 // Painted every frame over the blitted static layer (z-tested against its
 // cached depth): live carrier states and detector badges.
-fn vp_draw_live(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sel_guide: i32) void {
+fn vp_draw_live(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sel_guide: i32, sect_on: bool, sect_y: i32) void {
     let use_query: bool = s.*.comps.len > vp_query_threshold();
     let b: VoxBounds = vp_viewport_bounds(cam, clip);
 
@@ -974,9 +1018,21 @@ fn vp_draw_live(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sel_guide: i
     let gi: i32 = 0;
     while (gi < s.*.guides.len) {
         let g: Guide = s.*.guides.data[gi];
-        if (g.live != 0 || g.id == sel_guide) {
-            if (!use_query || vp_guide_in_bounds(g, b)) {
+        if (!sect_hides_guide(sect_on, sect_y, g)) {
+            let in_view: bool = !use_query || vp_guide_in_bounds(g, b);
+            if ((g.live != 0 || g.id == sel_guide) && in_view) {
                 draw_guide(f, cam, clip, g, g.id == sel_guide);
+            }
+            if (in_view) { draw_guide_dir(f, cam, clip, g); }
+            // the selected beam path stays readable through dense scenes: its
+            // centerline re-draws depth-test-free (Section 3.5)
+            if (g.id == sel_guide) {
+                let pi: i32 = 1;
+                while (pi < g.path.len) {
+                    line3z(f, cam, clip, vox_center(list.get[Vox](g.path, pi - 1)),
+                           vox_center(list.get[Vox](g.path, pi)), th_select(), false, true);
+                    pi = pi + 1;
+                }
             }
         }
         gi = gi + 1;
@@ -990,7 +1046,7 @@ fn vp_draw_live(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sel_guide: i
         let ci: i32 = scene_comp_index(s, ids.data[di]);
         if (ci >= 0) {
             let c6: Comp = s.*.comps.data[ci];
-            if (c6.kind == Kind.Detector && c6.visible) {
+            if (c6.kind == Kind.Detector && c6.visible && !sect_hides_comp(sect_on, sect_y, c6)) {
                 let ctr2: Vec3 = vox_center(c6.origin);
                 let above: Vec3 = v3(ctr2.x, ctr2.y + 1.1, ctr2.z);
                 let pp: P3 = vp_proj(cam, clip, above);

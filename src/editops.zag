@@ -413,6 +413,79 @@ fn op_rotate(j: *Journal, s: *Scene, id: i32, new_rot: i32) i32 {
     return 0;
 }
 
+// Property selectors for kind-8 ops.
+fn prop_preset() i32 { return 0; }
+fn prop_wl() i32 { return 1; }
+fn prop_logic() i32 { return 2; }
+
+fn comp_prop_get(s: *Scene, id: i32, prop: i32) i32 {
+    let ci: i32 = scene_comp_index(s, id);
+    if (ci < 0) { return 0; }
+    if (prop == prop_preset()) { return s.*.comps.data[ci].preset; }
+    if (prop == prop_wl()) { return s.*.comps.data[ci].wl_nm as i32; }
+    return s.*.comps.data[ci].logic_op;
+}
+
+fn comp_prop_set(s: *Scene, id: i32, prop: i32, v: i32) void {
+    let ci: i32 = scene_comp_index(s, id);
+    if (ci < 0) { return; }
+    if (prop == prop_preset()) { s.*.comps.data[ci].preset = v; }
+    if (prop == prop_wl()) { s.*.comps.data[ci].wl_nm = v as f64; }
+    if (prop == prop_logic()) { s.*.comps.data[ci].logic_op = v; }
+    scene_mark_topo_comp(s, id);
+    scene_mark_render(s);
+}
+
+// Set an integer component property as an undoable op (kind 8).
+fn op_set_prop(j: *Journal, s: *Scene, id: i32, prop: i32, new_v: i32) void {
+    let old_v: i32 = comp_prop_get(s, id, prop);
+    if (old_v == new_v) { return; }
+    comp_prop_set(s, id, prop, new_v);
+    let op: UOp = uop_empty();
+    op.kind = 8;
+    list.push[i32](&op.relabel_ids, id);
+    list.push[i32](&op.relabel_ids, prop);
+    list.push[i32](&op.relabel_old, old_v);
+    list.push[i32](&op.relabel_new, new_v);
+    journal_push(j, op);
+}
+
+// Rename a component as an undoable op (kind 9). The old name snapshot lives
+// in op.comp; the new name in comps[0]. The scene owns its own copy.
+fn op_rename(j: *Journal, s: *Scene, id: i32, new_name: []u8) void {
+    let ci: i32 = scene_comp_index(s, id);
+    if (ci < 0 || new_name.len == 0) { return; }
+    let op: UOp = uop_empty();
+    op.kind = 9;
+    op.comp = s.*.comps.data[ci];
+    op.comp.name_ = _zag_strdup(s.*.comps.data[ci].name_);
+    op.comp.id = id;
+    let nc: Comp = s.*.comps.data[ci];
+    nc.name_ = _zag_strdup(new_name);
+    list.push[Comp](&op.comps, nc);
+    s.*.comps.data[ci].name_ = _zag_strdup(new_name);
+    scene_mark_render(s);
+    journal_push(j, op);
+}
+
+// Resize a component as an undoable op (kind 10). Returns the scene_resize
+// verdict (0 on success); nothing is recorded on failure.
+fn op_resize(j: *Journal, s: *Scene, id: i32, new_size: Vox) i32 {
+    let ci: i32 = scene_comp_index(s, id);
+    if (ci < 0) { return 1; }
+    let old_size: Vox = s.*.comps.data[ci].size;
+    let v: i32 = scene_resize(s, id, new_size);
+    if (v != 0) { return v; }
+    let applied: Vox = s.*.comps.data[scene_comp_index(s, id)].size;
+    let op: UOp = uop_empty();
+    op.kind = 10;
+    list.push[i32](&op.relabel_ids, id);
+    op.old_origin = old_size;
+    op.new_origin = applied;
+    journal_push(j, op);
+    return 0;
+}
+
 // apply the inverse of `op` to the scene (op moves undo->redo)
 fn journal_undo(j: *Journal, s: *Scene) bool {
     if (j.*.undo.len == 0) { return false; }
@@ -482,6 +555,20 @@ fn journal_undo(j: *Journal, s: *Scene) bool {
     if (op.kind == 7) {
         let _r: i32 = scene_set_rot(s, op.relabel_ids.data[0], op.relabel_old.data[0]);
     }
+    if (op.kind == 8) {
+        comp_prop_set(s, op.relabel_ids.data[0], op.relabel_ids.data[1], op.relabel_old.data[0]);
+    }
+    if (op.kind == 9) {
+        let ci9: i32 = scene_comp_index(s, op.comp.id);
+        if (ci9 >= 0) {
+            if (s.*.comps.data[ci9].name_.len > 0) { _zag_str_free(s.*.comps.data[ci9].name_); }
+            s.*.comps.data[ci9].name_ = _zag_strdup(op.comp.name_);
+            scene_mark_render(s);
+        }
+    }
+    if (op.kind == 10) {
+        let _rs: i32 = scene_resize(s, op.relabel_ids.data[0], op.old_origin);
+    }
     list.push[UOp](&j.*.redo, op);
     return true;
 }
@@ -527,6 +614,20 @@ fn journal_redo(j: *Journal, s: *Scene) bool {
     }
     if (op.kind == 7) {
         let _r: i32 = scene_set_rot(s, op.relabel_ids.data[0], op.relabel_new.data[0]);
+    }
+    if (op.kind == 8) {
+        comp_prop_set(s, op.relabel_ids.data[0], op.relabel_ids.data[1], op.relabel_new.data[0]);
+    }
+    if (op.kind == 9) {
+        let ci9: i32 = scene_comp_index(s, op.comp.id);
+        if (ci9 >= 0 && op.comps.len > 0) {
+            if (s.*.comps.data[ci9].name_.len > 0) { _zag_str_free(s.*.comps.data[ci9].name_); }
+            s.*.comps.data[ci9].name_ = _zag_strdup(op.comps.data[0].name_);
+            scene_mark_render(s);
+        }
+    }
+    if (op.kind == 10) {
+        let _rs: i32 = scene_resize(s, op.relabel_ids.data[0], op.new_origin);
     }
     list.push[UOp](&j.*.undo, op);
     return true;

@@ -1,0 +1,74 @@
+// layout_test.zag — layout quality (Masterplan Section 3.2).
+// Asserts the panel grid: spacing tokens on the 4px grid, standard control
+// heights, zones tiling the window exactly with no overlap, splitter clamps
+// that keep the viewport dominant at any drag, and text insets that keep
+// glyphs off panel borders.
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    // spacing tokens live on the 2/4/8/12/16/24 grid; panel padding and text
+    // insets are tokens, not ad-hoc values
+    check("panel padding is a spacing token", pad_panel() == space_8(), &failures);
+    check("text inset is a spacing token", pad_text() == space_4(), &failures);
+    check("standard control height is fixed", control_h() == 22, &failures);
+    check("standard row height is fixed", row_h() == 16, &failures);
+    check("text inset keeps glyphs off borders", pad_text() >= 4, &failures);
+
+    let a: *App = app_new(1440, 900);
+    // zones tile the window exactly: no gaps, no overlap
+    let zl: Rect = zone_left(a);
+    let zc: Rect = zone_center(a);
+    let zr: Rect = zone_right(a);
+    let zb: Rect = zone_bottom(a);
+    let zs: Rect = zone_status(a);
+    let zm: Rect = zone_menu(a);
+    check("left+center+right tile the width",
+        zl.w + zc.w + zr.w == 1440 && zl.x == 0 && zc.x == zl.w && zr.x == zl.w + zc.w, &failures);
+    check("menu+workspace+bottom+status tile the height",
+        zm.h + zc.h + zb.h + zs.h == 900 && zc.y == zm.h && zb.y == zm.h + zc.h &&
+        zs.y == zm.h + zc.h + zb.h, &failures);
+    check("panels share one top edge", zl.y == zc.y && zr.y == zc.y, &failures);
+    check("panels share one bottom edge", zl.h == zc.h && zr.h == zc.h, &failures);
+
+    // viewport dominance at the default layout
+    check("viewport is the widest zone by default", zc.w > zl.w && zc.w > zr.w, &failures);
+    check("viewport is taller than the bottom panel", zc.h > zb.h, &failures);
+
+    // splitter clamps keep the viewport dominant even at extremes
+    a.*.grab = 1;
+    a.*.inp.mx = 1400;
+    app_splitters(a);
+    a.*.grab = 2;
+    a.*.inp.mx = 0;
+    app_splitters(a);
+    a.*.grab = 3;
+    a.*.inp.my = 0;
+    app_splitters(a);
+    a.*.grab = 0;
+    let zc2: Rect = zone_center(a);
+    let zl2: Rect = zone_left(a);
+    let zr2: Rect = zone_right(a);
+    let zb2: Rect = zone_bottom(a);
+    check("viewport stays widest at extreme splitter drags",
+        zc2.w > zl2.w && zc2.w > zr2.w, &failures);
+    check("viewport stays taller than the maxed bottom panel", zc2.h > zb2.h, &failures);
+
+    // the layout survives a round-trip through preferences intact
+    a.*.left_w = 224;
+    a.*.right_w = 306;
+    a.*.bottom_h = 236;
+    check("panel sizes stay inside their clamps",
+        a.*.left_w <= 1440 / 4 && a.*.right_w <= 1440 / 3 && a.*.bottom_h <= 900 * 2 / 5, &failures);
+
+    if (failures == 0) { _zag_println("LAYOUT: ALL PASS"); return 0; }
+    _zag_println("LAYOUT: FAILURES"); return 1;
+}

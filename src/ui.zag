@@ -22,25 +22,40 @@ fn type_section_h() i32 { return 16; }
 fn type_viewport_h() i32 { return 14; }
 fn type_debug_h() i32 { return 13; }
 
-fn radius_control() i32 { return 0; } // pixel-precise CAD controls stay square
+// Corner radii for the anti-aliased rounded chrome. Controls get a soft 3px,
+// panels/cards a slightly larger 5px — modern, not the old square CAD look.
+fn radius_control() i32 { return 3; }
+fn radius_panel() i32 { return 5; }
 fn elevation_panel() i32 { return 1; }
 
-fn th_bg() i64 { return rgb(24, 24, 27); }
-fn th_panel() i64 { return rgb(35, 35, 39); }
-fn th_panel_alt() i64 { return rgb(43, 43, 48); }
-fn th_header() i64 { return rgb(48, 48, 54); }
-fn th_outline() i64 { return rgb(14, 14, 16); }
-fn th_text() i64 { return rgb(205, 205, 210); }
-fn th_text_dim() i64 { return rgb(158, 160, 170); }
-fn th_accent() i64 { return rgb(71, 114, 179); }     // workbench blue
-fn th_accent_hot() i64 { return rgb(96, 142, 210); }
-fn th_select() i64 { return rgb(255, 168, 40); }     // selection orange
-fn th_danger() i64 { return rgb(200, 70, 70); }
-fn th_warning() i64 { return rgb(220, 158, 64); }
-fn th_ok() i64 { return rgb(90, 200, 120); }
-fn th_disabled() i64 { return rgb(82, 82, 88); }
-fn th_focus() i64 { return rgb(126, 166, 230); }
-fn th_vp_bg() i64 { return rgb(16, 16, 20); }
+// Layout rules (Section 3.2): every panel uses the same interior padding, text
+// never sits closer than pad_text() to a border, and standard controls share
+// one height so rows never jitter as content changes.
+fn pad_panel() i32 { return space_8(); }
+fn pad_text() i32 { return space_4(); }
+fn control_h() i32 { return 22; }
+fn row_h() i32 { return 16; }
+
+// Modern cool-dark palette: near-black blue-grey grounds, brighter text for
+// contrast, an indigo accent, and — critically — a SOFT light border instead
+// of the old hard black outline (hard 1px black is what read as 1990s).
+fn th_bg() i64 { return rgb(20, 21, 26); }
+fn th_panel() i64 { return rgb(28, 30, 37); }
+fn th_panel_alt() i64 { return rgb(38, 41, 50); }
+fn th_header() i64 { return rgb(33, 35, 43); }
+fn th_outline() i64 { return rgb(52, 56, 68); }        // subtle raised border
+fn th_outline_soft() i64 { return rgb(44, 47, 57); }   // barely-there divider
+fn th_text() i64 { return rgb(224, 226, 234); }
+fn th_text_dim() i64 { return rgb(142, 148, 162); }
+fn th_accent() i64 { return rgb(94, 124, 240); }       // indigo accent
+fn th_accent_hot() i64 { return rgb(124, 150, 255); }
+fn th_select() i64 { return rgb(255, 178, 66); }       // selection amber
+fn th_danger() i64 { return rgb(236, 96, 96); }
+fn th_warning() i64 { return rgb(232, 172, 72); }
+fn th_ok() i64 { return rgb(96, 210, 140); }
+fn th_disabled() i64 { return rgb(78, 82, 94); }
+fn th_focus() i64 { return rgb(124, 150, 255); }
+fn th_vp_bg() i64 { return rgb(15, 16, 21); }
 
 // ── geometry ──────────────────────────────────────────────────────────────────
 
@@ -75,6 +90,21 @@ struct Input {
     h: i32,
     capture: i32,
     quit: bool,
+    // retained widget-animation state (Section 3.11): interleaved key/blend
+    // pairs; blends ease toward 0/256 over a few frames (<100 ms at 60 fps)
+    anim: list.ArrayList[i64],
+    anim_live: bool,        // any blend mid-flight this frame
+    reduced_motion: bool,   // Settings toggle: all eases become instant
+    frame: i64,
+    // tooltip tracking: the widget under the cursor registers its tip each
+    // frame; after a dwell the overlay pass draws it
+    tip_key: i64,
+    tip_dwell: i32,
+    tip_text: []u8,
+    tip_x: i32,
+    tip_y: i32,
+    // true while any text field owns the keyboard (suppresses app shortcuts)
+    text_focus: bool,
 }
 
 fn input_new() Input {
@@ -84,7 +114,111 @@ fn input_new() Input {
         .w = 1440, .h = 900,
         .capture = 0,
         .quit = false,
+        .anim = list.make[i64](64),
+        .anim_live = false,
+        .reduced_motion = false,
+        .frame = 0,
+        .tip_key = 0,
+        .tip_dwell = 0,
+        .tip_text = "",
+        .tip_x = 0,
+        .tip_y = 0,
+        .text_focus = false,
     };
+}
+
+// Stable per-widget key from its screen rect.
+fn ui_key(r: Rect) i64 {
+    return (r.x as i64) * 1000003 + (r.y as i64) * 7919 + (r.w as i64) * 131 + (r.h as i64);
+}
+
+// Retained hover blend 0..256 for a widget (Section 3.11). Eases by 72/frame
+// (~4 frames, ~67 ms at 60 fps); reduced motion snaps instantly.
+fn input_hot(in: *Input, key: i64, hovered: bool) i32 {
+    let target: i64 = 0;
+    if (hovered) { target = 256; }
+    if (in.*.reduced_motion) { return target as i32; }
+    let i: i32 = 0;
+    while (i + 1 < in.*.anim.len) {
+        if (list.get[i64](in.*.anim, i) == key) {
+            let v: i64 = list.get[i64](in.*.anim, i + 1);
+            if (v < target) { v = v + 72; if (v > target) { v = target; } }
+            else if (v > target) { v = v - 72; if (v < target) { v = target; } }
+            list.set[i64](&in.*.anim, i + 1, v);
+            if (v != target) { in.*.anim_live = true; }
+            return v as i32;
+        }
+        i = i + 2;
+    }
+    // new entry (bounded: recycle from the start once large)
+    if (in.*.anim.len > 512) { in.*.anim.len = 0; }
+    list.push[i64](&in.*.anim, key);
+    let v0: i64 = 0;
+    if (hovered) { v0 = 72; in.*.anim_live = true; }
+    list.push[i64](&in.*.anim, v0);
+    return v0 as i32;
+}
+
+// One-shot value flash (changed-value highlight): store the frame it fired.
+fn input_flash(in: *Input, key: i64) void {
+    let i: i32 = 0;
+    while (i + 1 < in.*.anim.len) {
+        if (list.get[i64](in.*.anim, i) == key) {
+            list.set[i64](&in.*.anim, i + 1, in.*.frame);
+            return;
+        }
+        i = i + 2;
+    }
+    list.push[i64](&in.*.anim, key);
+    list.push[i64](&in.*.anim, in.*.frame);
+}
+
+// 256..0 decay over ~24 frames since the flash fired (0 when never fired).
+fn input_flash_level(in: *Input, key: i64) i32 {
+    if (in.*.reduced_motion) { return 0; }
+    let i: i32 = 0;
+    while (i + 1 < in.*.anim.len) {
+        if (list.get[i64](in.*.anim, i) == key) {
+            let age: i64 = in.*.frame - list.get[i64](in.*.anim, i + 1);
+            if (age < 0 || age > 24) { return 0; }
+            in.*.anim_live = true;
+            return ((24 - age) * 256 / 24) as i32;
+        }
+        i = i + 2;
+    }
+    return 0;
+}
+
+// Register a tooltip for the widget under the cursor. Drawn by ui_tip_flush
+// after a ~30-frame dwell so tips inform without being noisy (Section 3.6).
+fn ui_tip(in: *Input, r: Rect, text: []u8) void {
+    if (!rect_has(r, in.*.mx, in.*.my)) { return; }
+    let key: i64 = ui_key(r);
+    if (in.*.tip_key == key) {
+        if (in.*.tip_dwell < 1000) { in.*.tip_dwell = in.*.tip_dwell + 1; }
+    } else {
+        in.*.tip_key = key;
+        in.*.tip_dwell = 1;
+    }
+    in.*.tip_text = text;
+    in.*.tip_x = r.x;
+    in.*.tip_y = r.y + r.h + 4;
+}
+
+// Overlay pass: draw the pending tooltip once its dwell elapsed. The caller
+// invokes this after all panels so the tip renders above everything.
+fn ui_tip_flush(f: *FB, in: *Input) void {
+    if (in.*.tip_dwell < 30 || in.*.tip_text.len == 0) { return; }
+    let w: i32 = text_w(in.*.tip_text) + pad_text() * 2 + 2;
+    let h: i32 = 17;
+    let x: i32 = in.*.tip_x;
+    let y: i32 = in.*.tip_y;
+    if (x + w > f.*.w - 2) { x = f.*.w - 2 - w; }
+    if (y + h > f.*.h - 2) { y = in.*.tip_y - h - 24; }
+    draw_shadow(f, x, y, w, h, radius_control());
+    fill_round_rect(f, x, y, w, h, radius_control(), rgb(18, 20, 27));
+    round_rect_outline(f, x, y, w, h, radius_control(), th_outline());
+    draw_text(f, x + pad_text() + 1, y + 5, in.*.tip_text, th_text());
 }
 
 fn btn_down(in: *Input, bit: i32) bool {
@@ -121,29 +255,35 @@ fn hover(in: *Input, r: Rect) bool {
 
 // ── widgets ───────────────────────────────────────────────────────────────────
 
-// Panel background with a 24px title strip; returns the content rect.
+// Panel background with a title strip; returns the content rect. Flat-topped
+// (panels tile edge to edge) with a soft header divider — the rounded, floating
+// look is reserved for cards, controls, and overlays.
 fn ui_panel(f: *FB, r: Rect, title: []u8) Rect {
     fill_rect(f, r.x, r.y, r.w, r.h, th_panel());
-    rect_outline(f, r.x, r.y, r.w, r.h, th_outline());
-    fill_rect(f, r.x + 1, r.y + 1, r.w - 2, 22, th_header());
-    draw_text(f, r.x + 9, r.y + 8, title, th_text());
-    return rect(r.x + 1, r.y + 23, r.w - 2, r.h - 24);
+    fill_rect(f, r.x, r.y, r.w, 24, th_header());
+    hline(f, r.x, r.y + 24, r.w, th_outline_soft());
+    draw_text(f, r.x + pad_panel(), r.y + 9, title, th_text_dim());
+    return rect(r.x + 1, r.y + 25, r.w - 2, r.h - 26);
 }
 
 fn ui_button(f: *FB, in: *Input, r: Rect, label: []u8, active: bool) bool {
     let h: bool = hover(in, r);
+    let hot: i32 = input_hot(in, ui_key(r), h);
     let col: i64 = th_panel_alt();
     if (active) { col = th_accent(); }
-    if (h) {
-        if (btn_down(in, 0)) { col = th_accent_hot(); }
-        else if (active) { col = th_accent_hot(); }
-        else { col = th_header(); }
+    if (h && btn_down(in, 0)) { col = th_accent_hot(); }
+    else if (active && h) { col = th_accent_hot(); }
+    else if (hot > 0) {
+        // eased hover transition (<100 ms), never a position change
+        col = mix(th_header(), col, hot);
     }
-    fill_rect(f, r.x, r.y, r.w, r.h, col);
-    rect_outline(f, r.x, r.y, r.w, r.h, th_outline());
+    fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), col);
+    let bord: i64 = th_outline();
+    if (active) { bord = th_accent_hot(); }
+    round_rect_outline(f, r.x, r.y, r.w, r.h, radius_control(), bord);
     let tw: i32 = text_w(label);
     let tcol: i64 = th_text();
-    if (active) { tcol = rgb(240, 244, 250); }
+    if (active) { tcol = rgb(245, 247, 252); }
     draw_text(f, r.x + (r.w - tw) / 2, r.y + (r.h - 7) / 2, label, tcol);
     return h && btn_released(in, 0);
 }
@@ -151,21 +291,165 @@ fn ui_button(f: *FB, in: *Input, r: Rect, label: []u8, active: bool) bool {
 // Small icon-ish button (fixed label, e.g. "x" / ">" / "o").
 fn ui_mini(f: *FB, in: *Input, r: Rect, label: []u8, tint: i64) bool {
     let h: bool = hover(in, r);
-    if (h) { fill_rect(f, r.x, r.y, r.w, r.h, th_header()); }
+    if (h) { fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), th_header()); }
     draw_text(f, r.x + (r.w - text_w(label)) / 2, r.y + (r.h - 7) / 2, label, tint);
     return h && btn_released(in, 0);
+}
+
+// ── text field ────────────────────────────────────────────────────────────────
+// Retained single-line editor. The owner keeps one TextEdit per field; the
+// widget grabs the keyboard while focused (in.text_focus) so app shortcuts
+// stay quiet. Returns true when the content changed this frame.
+
+struct TextEdit {
+    buf: list.ArrayList[u8],
+    focus: bool,
+    committed: bool,   // Enter was pressed this frame
+}
+
+fn textedit_new() TextEdit {
+    return TextEdit{ .buf = list.make[u8](24), .focus = false, .committed = false };
+}
+
+fn textedit_set(te: *TextEdit, s: []u8) void {
+    te.*.buf.len = 0;
+    let i: i32 = 0;
+    while (i < s.len && i < 60) {
+        list.push[u8](&te.*.buf, s[i]);
+        i = i + 1;
+    }
+}
+
+fn textedit_text(te: *TextEdit) []u8 {
+    return te.*.buf.data[0..te.*.buf.len];
+}
+
+fn ui_textfield(f: *FB, in: *Input, r: Rect, te: *TextEdit, placeholder: []u8) bool {
+    let h: bool = hover(in, r);
+    if (btn_pressed(in, 0)) { te.*.focus = h; }
+    te.*.committed = false;
+    let changed: bool = false;
+    if (te.*.focus) {
+        in.*.text_focus = true;
+        let i: i32 = 0;
+        while (i < in.*.keys.len) {
+            let k: i32 = list.get[i32](in.*.keys, i);
+            if (k == 27) { te.*.focus = false; }                    // Esc
+            else if (k == 13) { te.*.focus = false; te.*.committed = true; }
+            else if (k == 8) {
+                if (te.*.buf.len > 0) { te.*.buf.len = te.*.buf.len - 1; changed = true; }
+            } else if (k >= 32 && k < 127 && te.*.buf.len < 60) {
+                list.push[u8](&te.*.buf, k as u8);
+                changed = true;
+            }
+            i = i + 1;
+        }
+    }
+    let bg: i64 = rgb(16, 17, 22);
+    fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), bg);
+    let oc: i64 = th_outline();
+    if (te.*.focus) { oc = th_focus(); }
+    else if (h) { oc = th_disabled(); }
+    round_rect_outline(f, r.x, r.y, r.w, r.h, radius_control(), oc);
+    let ty: i32 = r.y + (r.h - 7) / 2;
+    if (te.*.buf.len > 0) {
+        // right-anchor overflow so the caret end stays visible
+        let maxc: i32 = (r.w - pad_text() * 2 - 4) / 6;
+        let st: i32 = 0;
+        if (te.*.buf.len > maxc) { st = te.*.buf.len - maxc; }
+        draw_text(f, r.x + pad_text() + 1, ty, te.*.buf.data[st..te.*.buf.len], th_text());
+        if (te.*.focus) {
+            let cw: i32 = text_w(te.*.buf.data[st..te.*.buf.len]);
+            fill_rect(f, r.x + pad_text() + 2 + cw, r.y + 3, 1, r.h - 6, th_accent_hot());
+        }
+    } else {
+        if (placeholder.len > 0) { draw_text(f, r.x + pad_text() + 1, ty, placeholder, th_text_dim()); }
+        if (te.*.focus) { fill_rect(f, r.x + pad_text() + 2, r.y + 3, 1, r.h - 6, th_accent_hot()); }
+    }
+    return changed;
+}
+
+// ── collapsible section header (Section 3.2) ─────────────────────────────────
+// Full-width header row with a disclosure arrow and optional count badge.
+// `open` flips on click; returns the current open state.
+fn ui_section(f: *FB, in: *Input, x: i32, y: i32, w: i32, title: []u8, open: *i32, count: i32) bool {
+    let r: Rect = rect(x, y, w, row_h());
+    let h: bool = hover(in, r);
+    let hot: i32 = input_hot(in, ui_key(r), h);
+    if (hot > 0) { fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), mix(th_header(), th_panel(), hot)); }
+    let arrow: []u8 = ">";
+    if (open.* == 1) { arrow = "v"; }
+    draw_text(f, x + pad_text(), y + 4, arrow, th_text_dim());
+    draw_text(f, x + pad_text() + 12, y + 4, title, th_text());
+    if (count >= 0) {
+        let cnt: []u8 = _zag_i64_to_str(count as i64);
+        draw_text(f, x + w - text_w(cnt) - pad_text() - 2, y + 4, cnt, th_text_dim());
+    }
+    if (h && btn_released(in, 0)) {
+        if (open.* == 1) { open.* = 0; } else { open.* = 1; }
+    }
+    return open.* == 1;
+}
+
+// ── empty state (Section 3.2) ─────────────────────────────────────────────────
+// Centered, quiet guidance instead of a dead panel.
+fn ui_empty_state(f: *FB, r: Rect, title: []u8, hint: []u8) void {
+    let cy: i32 = r.y + r.h / 2 - 20;
+    if (cy < r.y + 8) { cy = r.y + 8; }
+    let bx: i32 = r.x + (r.w - 22) / 2;
+    round_rect_outline(f, bx, cy, 22, 16, 3, th_disabled());
+    hline(f, bx + 5, cy + 8, 12, th_disabled());
+    let tx: i32 = r.x + (r.w - text_w(title)) / 2;
+    if (tx < r.x + pad_text()) { tx = r.x + pad_text(); }
+    draw_text(f, tx, cy + 24, title, th_text_dim());
+    if (hint.len > 0) {
+        let hx: i32 = r.x + (r.w - text_w(hint)) / 2;
+        if (hx < r.x + pad_text()) { hx = r.x + pad_text(); }
+        draw_text(f, hx, cy + 38, hint, th_disabled());
+    }
+}
+
+// ── numeric field with step controls (Section 3.8) ───────────────────────────
+// [-] value unit [+] ; click the value to type an exact number (precise typing
+// routes through the caller's TextEdit). Returns +1/-1 step, 0 no change.
+fn ui_numfield(f: *FB, in: *Input, r: Rect, value: []u8, unit: []u8, flash_key: i64) i32 {
+    let bw: i32 = 14;
+    let minus: Rect = rect(r.x, r.y, bw, r.h);
+    let plus: Rect = rect(r.x + r.w - bw, r.y, bw, r.h);
+    let mid: Rect = rect(r.x + bw, r.y, r.w - bw * 2, r.h);
+    // changed-value highlight fades over ~400 ms
+    let fl: i32 = input_flash_level(in, flash_key);
+    let bg: i64 = rgb(16, 17, 22);
+    if (fl > 0) { bg = mix(th_accent(), bg, fl / 2); }
+    fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), bg);
+    let vs: []u8 = value;
+    if (unit.len > 0) { vs = _zag_str_concat(_zag_str_concat(value, " "), unit); }
+    draw_text(f, mid.x + (mid.w - text_w(vs)) / 2, r.y + (r.h - 7) / 2, vs, th_text());
+    let dm: bool = hover(in, minus);
+    let dp: bool = hover(in, plus);
+    if (dm) { fill_round_rect(f, minus.x, minus.y, minus.w, minus.h, radius_control(), th_header()); }
+    if (dp) { fill_round_rect(f, plus.x, plus.y, plus.w, plus.h, radius_control(), th_header()); }
+    round_rect_outline(f, r.x, r.y, r.w, r.h, radius_control(), th_outline());
+    draw_text(f, minus.x + 4, r.y + (r.h - 7) / 2, "-", th_text());
+    draw_text(f, plus.x + 4, r.y + (r.h - 7) / 2, "+", th_text());
+    if (dm && btn_released(in, 0)) { return 0 - 1; }
+    if (dp && btn_released(in, 0)) { return 1; }
+    return 0;
 }
 
 // Horizontal slider; `dragging` persists across frames (0/1 flag in App).
 // Returns the updated value.
 fn ui_slider(f: *FB, in: *Input, r: Rect, value: f64, min_v: f64, max_v: f64, dragging: *i32) f64 {
-    fill_rect(f, r.x, r.y, r.w, r.h, th_panel_alt());
-    rect_outline(f, r.x, r.y, r.w, r.h, th_outline());
+    let rad: i32 = r.h / 2;
+    fill_round_rect(f, r.x, r.y, r.w, r.h, rad, th_panel_alt());
     let frac: f64 = (value - min_v) / (max_v - min_v);
     if (frac < 0.0) { frac = 0.0; }
     if (frac > 1.0) { frac = 1.0; }
     let fillw: i32 = ((r.w as f64) * frac) as i32;
-    fill_rect(f, r.x, r.y, fillw, r.h, th_accent());
+    if (fillw > 0) {
+        if (fillw < r.h) { fillw = r.h; }
+        fill_round_rect(f, r.x, r.y, fillw, r.h, rad, th_accent());
+    }
 
     if (hover(in, r) && btn_pressed(in, 0)) {
         dragging.* = 1;

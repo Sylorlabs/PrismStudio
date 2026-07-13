@@ -4,7 +4,7 @@ A current inventory of Triton's source modules, artifacts, probes, protocols,
 storage formats, and external dependencies (Master plan §4.1). The
 `inventory-audit` gate fails if a `src/*.zag` module is missing here.
 
-## Source modules (35) — `src/*.zag`
+## Source modules (36) — `src/*.zag`
 
 | Module | Role |
 |---|---|
@@ -38,6 +38,7 @@ storage formats, and external dependencies (Master plan §4.1). The
 | `tiles.zag` | tile-based render cache for the 3D viewport. |
 | `timing.zag` | static timing analysis over the routed photonic fabric (Masterplan |
 | `ui.zag` | dark workbench theme + minimal immediate-mode widgets over fb.zag. |
+| `uilayer.zag` | retained UI panel surfaces: cached pixels + state hashes (Section 3.12). |
 | `viewport.zag` | the 3D viewport. Software-rasterized in Zag: |
 | `voxel.zag` | integer lattice coordinates for the design grid. |
 | `workspace.zag` | panel rendering + per-frame orchestration. |

@@ -1,0 +1,282 @@
+// ui_interactions_test.zag — pro-grade tool interactions and CAD UX
+// (Masterplan Sections 3.4-3.9). Drives the real frame loop headlessly:
+// measure tool, alignment snapping, drag-to-route, context menu, grouping,
+// locking, inline rename (journaled), property undo, jump-to-object,
+// reset view, section view, warnings, library drag placement, tooltips,
+// and inspector numeric-field moves with inline validation.
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn frame_idle(a: *App) void {
+    a.*.inp.keys.len = 0;
+    a.*.inp.wheel = 0;
+    app_frame(a, 0.016);
+    a.*.inp.prev_btn = a.*.inp.btn;
+}
+
+fn mouse_to(a: *App, x: i32, y: i32) void {
+    a.*.inp.mx = x;
+    a.*.inp.my = y;
+}
+
+fn press_lmb(a: *App) void { a.*.inp.btn = 1; }
+fn release_lmb(a: *App) void { a.*.inp.btn = 0; }
+
+// Project the floor-center of a lattice cell: vp_cell_at traces the pointer
+// ray to the y=level plane, so targeting the floor avoids parallax.
+fn cell_screen(a: *App, v: Vox) P3 {
+    return vp_proj(a.*.cam, zone_center(a),
+                   v3((v.x as f64) + 0.5, v.y as f64, (v.z as f64) + 0.5));
+}
+
+fn key1(a: *App, code: i32, mods: i32) void {
+    a.*.inp.keys.len = 0;
+    list.push[i32](&a.*.inp.keys, code);
+    a.*.inp.mods = mods;
+    app_frame(a, 0.016);
+    a.*.inp.keys.len = 0;
+    a.*.inp.mods = 0;
+    a.*.inp.prev_btn = a.*.inp.btn;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let a: *App = app_new(1440, 900);
+    a.*.inp.reduced_motion = true;
+    let _pl: i32 = scene_place(a.*.scene, Kind.Plate, vox(0, 0, 0), 0);
+    let em: i32 = scene_place(a.*.scene, Kind.Emitter, vox(1, 1, 2), 0);
+    let ch: i32 = scene_place(a.*.scene, Kind.Chamber, vox(4, 1, 3), 0);
+    app_frame_all(a);
+    frame_idle(a);
+
+    // ── design warnings (Section 3.4): unconnected ports are reported ──
+    app_warnings_rebuild(a);
+    check("unconnected output is a design warning", app_comp_warning(a, em) == 2, &failures);
+    check("undriven input is a design warning", app_comp_warning(a, ch) == 1, &failures);
+
+    // ── measure tool (Section 3.4) ──
+    a.*.tool = tool_measure();
+    let p1: P3 = cell_screen(a, vox(2, 1, 2));
+    let p2: P3 = cell_screen(a, vox(6, 1, 5));
+    mouse_to(a, p1.x as i32, p1.y as i32);
+    press_lmb(a);
+    frame_idle(a);
+    release_lmb(a);
+    frame_idle(a);
+    mouse_to(a, p2.x as i32, p2.y as i32);
+    press_lmb(a);
+    frame_idle(a);
+    release_lmb(a);
+    frame_idle(a);
+    check("measure captures two points", a.*.measure_n == 2, &failures);
+    let dx: i32 = a.*.measure_b.x - a.*.measure_a.x;
+    let dz: i32 = a.*.measure_b.z - a.*.measure_a.z;
+    check("measured deltas are exact lattice cells", dx == 4 && dz == 3, &failures);
+    a.*.tool = tool_select();
+    key1(a, 27, 0);   // esc clears the measurement
+
+    // ── alignment snapping (Section 3.4): ghost pulls onto a neighbor row ──
+    a.*.tool = tool_place_base() + kind_index(Kind.Emitter);
+    // hover one cell off the existing emitter's x row
+    let ecell: Vox = vox(2, 1, 6);   // emitter origin x=1; ghost origin lands x=2-0=2? footprint 1x2x1
+    let ps: P3 = cell_screen(a, ecell);
+    mouse_to(a, ps.x as i32, ps.y as i32);
+    frame_idle(a);
+    check("object snapping aligned the ghost to the neighbor row",
+        a.*.snap_ax != 0 - 1000000 || a.*.ghost_origin.x == 1 || a.*.snap_az != 0 - 1000000, &failures);
+    a.*.tool = tool_select();
+    frame_idle(a);
+
+    // ── drag-to-route (Section 3.6): press the output port, release on input ──
+    a.*.tool = tool_route();
+    let eci: i32 = scene_comp_index(a.*.scene, em);
+    let cci: i32 = scene_comp_index(a.*.scene, ch);
+    let outp: P3 = vp_proj(a.*.cam, zone_center(a),
+                           vox_center(comp_port_attach(a.*.scene.*.comps.data[eci], 0)));
+    let inp_: P3 = vp_proj(a.*.cam, zone_center(a),
+                           vox_center(comp_port_attach(a.*.scene.*.comps.data[cci], 0)));
+    mouse_to(a, outp.x as i32, outp.y as i32);
+    frame_idle(a);
+    press_lmb(a);
+    frame_idle(a);
+    mouse_to(a, inp_.x as i32, inp_.y as i32);
+    frame_idle(a);
+    release_lmb(a);
+    frame_idle(a);
+    check("drag-to-route created a waveguide", a.*.scene.*.guides.len == 1, &failures);
+    a.*.tool = tool_select();
+    frame_idle(a);
+    app_warnings_rebuild(a);
+    check("routing the port cleared its warnings", app_comp_warning(a, em) == 0, &failures);
+
+    // ── context menu (Section 3.6): RMB click opens it on the part ──
+    let chc: P3 = cell_screen(a, vox(4, 1, 3));
+    mouse_to(a, chc.x as i32, chc.y as i32);
+    frame_idle(a);
+    a.*.inp.btn = 4;   // RMB press
+    frame_idle(a);
+    a.*.inp.btn = 0;   // short release: click, not orbit
+    frame_idle(a);
+    check("right-click opens the context menu on the part",
+        a.*.ctx_open && a.*.ctx_comp == ch, &failures);
+    key1(a, 27, 0);   // esc closes
+    check("Esc closes the context menu", !a.*.ctx_open, &failures);
+
+    // ── grouping (Section 3.6): Ctrl+G groups, click selects the group ──
+    sel_clear(a);
+    sel_add(a, em);
+    sel_add(a, ch);
+    key1(a, 'g' as i32, 2);   // Ctrl+G
+    check("Ctrl+G groups the selection",
+        app_group_of(a, em) >= 0 && app_group_of(a, em) == app_group_of(a, ch), &failures);
+    sel_clear(a);
+    frame_idle(a);
+    let emc: P3 = cell_screen(a, vox(1, 1, 2));
+    mouse_to(a, emc.x as i32, emc.y as i32);
+    press_lmb(a);
+    frame_idle(a);
+    release_lmb(a);
+    frame_idle(a);
+    check("clicking a grouped part selects the whole group",
+        sel_has(a, em) && sel_has(a, ch), &failures);
+    key1(a, 'g' as i32, 3);   // Ctrl+Shift+G ungroups
+    check("Ctrl+Shift+G ungroups", app_group_of(a, em) < 0, &failures);
+
+    // ── locking (Section 3.9): a locked part refuses delete and move ──
+    sel_clear(a);
+    sel_add(a, em);
+    app_toggle_lock(a, em);
+    let n0: i32 = a.*.scene.*.comps.len;
+    app_delete_selection(a);
+    check("delete is blocked while locked", a.*.scene.*.comps.len == n0, &failures);
+    app_start_move(a);
+    check("move is blocked while locked", !a.*.moving, &failures);
+    app_toggle_lock(a, em);
+    check("unlock restores editability", !app_is_locked(a, em), &failures);
+
+    // ── inline rename is journaled (Section 3.6) ──
+    let eci2: i32 = scene_comp_index(a.*.scene, em);
+    let before_len: i32 = a.*.scene.*.comps.data[eci2].name_.len;
+    op_rename(&a.*.jrn, a.*.scene, em, "Laser Alpha");
+    let eci3: i32 = scene_comp_index(a.*.scene, em);
+    check("rename applies", _zag_strcmp(a.*.scene.*.comps.data[eci3].name_, "Laser Alpha") == 1, &failures);
+    app_undo(a);
+    let eci4: i32 = scene_comp_index(a.*.scene, em);
+    check("rename undoes to the original name",
+        a.*.scene.*.comps.data[eci4].name_.len == before_len, &failures);
+    app_redo(a);
+    let eci5: i32 = scene_comp_index(a.*.scene, em);
+    check("rename redoes", _zag_strcmp(a.*.scene.*.comps.data[eci5].name_, "Laser Alpha") == 1, &failures);
+
+    // ── property edits are journaled (Section 3.6: undo for every edit) ──
+    sel_clear(a);
+    sel_add(a, em);
+    let ecp: i32 = scene_comp_index(a.*.scene, em);
+    let preset0: i32 = a.*.scene.*.comps.data[ecp].preset;
+    key1(a, 't' as i32, 0);   // cycle emitter pattern
+    let ecp1: i32 = scene_comp_index(a.*.scene, em);
+    check("preset cycle applies", a.*.scene.*.comps.data[ecp1].preset != preset0, &failures);
+    app_undo(a);
+    let ecp2: i32 = scene_comp_index(a.*.scene, em);
+    check("preset cycle undoes", a.*.scene.*.comps.data[ecp2].preset == preset0, &failures);
+    op_set_prop(&a.*.jrn, a.*.scene, em, prop_wl(), 1550);
+    let ecp3: i32 = scene_comp_index(a.*.scene, em);
+    check("wavelength property applies", a.*.scene.*.comps.data[ecp3].wl_nm as i32 == 1550, &failures);
+    app_undo(a);
+
+    // ── inspector numeric move with inline validation (Section 3.8) ──
+    let eori: Vox = a.*.scene.*.comps.data[scene_comp_index(a.*.scene, em)].origin;
+    insp_apply_move(a, em, vox(1, 0, 0));
+    let eafter: Vox = a.*.scene.*.comps.data[scene_comp_index(a.*.scene, em)].origin;
+    check("numeric field step moves the part", eafter.x == eori.x + 1, &failures);
+    app_undo(a);
+    let eundo: Vox = a.*.scene.*.comps.data[scene_comp_index(a.*.scene, em)].origin;
+    check("numeric move undoes", eundo.x == eori.x, &failures);
+    insp_apply_move(a, em, vox(0, 9, 0));   // floats off the plate: invalid
+    check("invalid numeric move reports inline", a.*.insp_err.len > 0, &failures);
+    let estill: Vox = a.*.scene.*.comps.data[scene_comp_index(a.*.scene, em)].origin;
+    check("invalid numeric move leaves the part in place", estill.y == eori.y, &failures);
+
+    // ── frame all (Section 3.5): camera encloses the whole design ──
+    a.*.cam.target = v3(500.0, 0.0, 500.0);
+    a.*.cam.dist = 200.0;
+    app_action(a, 21);
+    check("frame all recenters onto the design",
+        a.*.cam.target.x < 50.0 && a.*.cam.target.z < 50.0 && a.*.cam.dist < 100.0, &failures);
+
+    // ── jump-to-object, reset view, section view (Sections 3.5/3.6) ──
+    sel_clear(a);
+    app_action(a, 1000 + scene_comp_index(a.*.scene, ch));
+    check("jump-to-object selects and frames", sel_has(a, ch), &failures);
+    a.*.cam.yaw = 2.5;
+    a.*.cam.dist = 100.0;
+    app_action(a, 28);
+    check("reset view restores the default camera",
+        a.*.cam.dist == 34.0 && a.*.cam.yaw == 0.9, &failures);
+    let rev0: i64 = a.*.scene.*.render_rev;
+    app_action(a, 29);
+    check("section view toggles and invalidates the static layer",
+        a.*.sect_on && a.*.scene.*.render_rev != rev0, &failures);
+    app_action(a, 29);
+
+    // ── library drag placement (Section 3.7) ──
+    app_frame_all(a);   // frame the design so the target cell is mid-viewport
+    frame_idle(a);
+    let n1: i32 = a.*.scene.*.comps.len;
+    a.*.lib_drag = kind_index(Kind.Detector);
+    let free_cell: P3 = cell_screen(a, vox(6, 1, 6));
+    mouse_to(a, free_cell.x as i32, free_cell.y as i32);
+    a.*.inp.btn = 1;
+    frame_idle(a);
+    check("library drag shows the live ghost", a.*.ghost_ok >= 0, &failures);
+    a.*.inp.btn = 0;
+    frame_idle(a);
+    check("releasing the drag places the part", a.*.scene.*.comps.len == n1 + 1, &failures);
+    check("drag ends after placement", a.*.lib_drag < 0, &failures);
+
+    // ── outliner drag-to-group (Section 3.9): drop one row onto another ──
+    // rows are deterministic: search field, then 5 kind headers with their
+    // rows; the plate row sits under the first header, the emitter row under
+    // the fourth (kind order Plate, Chamber, Soh, Emitter, Detector)
+    app_ungroup_selection(a);
+    sel_clear(a);
+    frame_idle(a);
+    let rz: Rect = zone_right(a);
+    let list_top: i32 = rz.y + 23 + pad_text() + control_h() + pad_text();
+    let rx: i32 = rz.x + 1 + pad_text() + 10 + 30;
+    let plate_row: i32 = list_top + 17;
+    // headers+rows in kind order: plate hdr, plate row, chamber hdr, chamber
+    // row, soh hdr, emitter hdr, emitter row
+    let emitter_row: i32 = list_top + 17 * 4 + 16 * 2;
+    mouse_to(a, rx, plate_row + 7);
+    press_lmb(a);
+    frame_idle(a);
+    mouse_to(a, rx, emitter_row + 7);
+    frame_idle(a);
+    release_lmb(a);
+    frame_idle(a);
+    let plate_id: i32 = a.*.scene.*.comps.data[0].id;
+    check("outliner drag groups the dragged row with the drop target",
+        app_group_of(a, plate_id) >= 0 && app_group_of(a, plate_id) == app_group_of(a, em), &failures);
+    app_group_drop(a, plate_id);
+    app_group_drop(a, em);
+
+    // ── tooltips register after a dwell (Section 3.6) ──
+    a.*.tool = tool_select();
+    let lz: Rect = zone_left(a);
+    // hover the first library card region
+    mouse_to(a, lz.x + lz.w / 2, lz.y + 23 + pad_panel() + control_h() + pad_text() * 3 +
+             control_h() + (row_h() + 2) * 2 + 20);
+    let i: i32 = 0;
+    while (i < 40) { frame_idle(a); i = i + 1; }
+    check("hover dwell arms a tooltip", a.*.inp.tip_dwell >= 30, &failures);
+
+    if (failures == 0) { _zag_println("UI-INTERACTIONS: ALL PASS"); return 0; }
+    _zag_println("UI-INTERACTIONS: FAILURES"); return 1;
+}

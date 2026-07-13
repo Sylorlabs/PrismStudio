@@ -1,0 +1,107 @@
+// uilayer.zag — retained UI panel surfaces (Section 3.12).
+//
+// Each side panel renders into the shared framebuffer, then its pixels are
+// captured into a PanelSurface keyed by a state hash. While the panel's
+// inputs are unchanged and the pointer is elsewhere, the next frames blit the
+// captured surface back instead of re-running the panel's widget code: the UI
+// keeps its own draw list (one blit command per panel), its own clipping
+// rectangles, and does not rebuild every widget every frame. Viewport redraw
+// therefore never forces a panel redraw, and a signal step only re-renders
+// the panels whose displayed data actually changed.
+
+@import("../std/list.zag") as list
+@import("fb.zag")
+@import("ui.zag")
+
+struct PanelSurface {
+    px: list.ArrayList[i64],
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    valid: bool,
+    hash: i64,
+    draws: i64,   // times the panel widget code ran
+    blits: i64,   // times the cached surface was reused
+}
+
+fn ps_new() PanelSurface {
+    return PanelSurface{
+        .px = list.make[i64](16),
+        .x = 0, .y = 0, .w = 0, .h = 0,
+        .valid = false,
+        .hash = 0,
+        .draws = 0,
+        .blits = 0,
+    };
+}
+
+// FNV-style fold for building panel state hashes.
+fn ps_hash(h: i64, v: i64) i64 {
+    return h * 1099511628211 + v;
+}
+
+// True when the cached surface cannot stand in for this frame.
+fn ps_stale(ps: *PanelSurface, r: Rect, hash: i64) bool {
+    if (!ps.*.valid) { return true; }
+    if (ps.*.x != r.x || ps.*.y != r.y || ps.*.w != r.w || ps.*.h != r.h) { return true; }
+    return ps.*.hash != hash;
+}
+
+// Capture the just-drawn panel rect out of the framebuffer.
+fn ps_capture(f: *FB, r: Rect, ps: *PanelSurface, hash: i64) void {
+    let need: i32 = r.w * r.h;
+    if (ps.*.px.len < need) {
+        list.free[i64](&ps.*.px);
+        ps.*.px = list.make[i64](need);
+    }
+    ps.*.px.len = need;
+    let row: i32 = 0;
+    while (row < r.h) {
+        let sy: i32 = r.y + row;
+        if (sy >= 0 && sy < f.*.h) {
+            let src: i32 = sy * f.*.w + r.x;
+            let dst: i32 = row * r.w;
+            let xx: i32 = 0;
+            while (xx < r.w) {
+                ps.*.px.data[dst + xx] = f.*.px.data[src + xx];
+                xx = xx + 1;
+            }
+        }
+        row = row + 1;
+    }
+    ps.*.x = r.x;
+    ps.*.y = r.y;
+    ps.*.w = r.w;
+    ps.*.h = r.h;
+    ps.*.valid = true;
+    ps.*.hash = hash;
+    ps.*.draws = ps.*.draws + 1;
+}
+
+// Blit the cached surface back — one draw-list command per panel, whole rows
+// batched per scanline.
+fn ps_blit(f: *FB, ps: *PanelSurface) void {
+    let row: i32 = 0;
+    while (row < ps.*.h) {
+        let dy: i32 = ps.*.y + row;
+        if (dy >= 0 && dy < f.*.h) {
+            let dst: i32 = dy * f.*.w + ps.*.x;
+            let src: i32 = row * ps.*.w;
+            let xx: i32 = 0;
+            while (xx + 4 <= ps.*.w) {
+                f.*.px.data[dst + xx] = ps.*.px.data[src + xx];
+                f.*.px.data[dst + xx + 1] = ps.*.px.data[src + xx + 1];
+                f.*.px.data[dst + xx + 2] = ps.*.px.data[src + xx + 2];
+                f.*.px.data[dst + xx + 3] = ps.*.px.data[src + xx + 3];
+                xx = xx + 4;
+            }
+            while (xx < ps.*.w) {
+                f.*.px.data[dst + xx] = ps.*.px.data[src + xx];
+                xx = xx + 1;
+            }
+        }
+        row = row + 1;
+    }
+    ps.*.blits = ps.*.blits + 1;
+}

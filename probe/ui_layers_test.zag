@@ -1,0 +1,132 @@
+// ui_layers_test.zag — retained UI panel surfaces (Masterplan Section 3.12).
+// Drives the real frame loop headlessly and asserts the dirty-flag contract:
+//   * idle frames with the pointer in the viewport reuse every cached panel
+//     surface (viewport redraw does not force panel redraw)
+//   * hovering a panel re-runs only that panel's widget code and never
+//     invalidates the 3D scene (no scene rebuild from UI hover)
+//   * a simulation step re-renders the panels whose displayed data changed
+//     and leaves the others cached (waveform update is not a full UI rebuild)
+//   * state changes (selection, search text) invalidate through the hash,
+//     never through time — a missed invalidation would fail here
+//   * the text atlas is built and glyph runs render from it
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn frame_idle(a: *App) void {
+    a.*.inp.keys.len = 0;
+    a.*.inp.prev_btn = 0;
+    a.*.inp.btn = 0;
+    a.*.inp.wheel = 0;
+    app_frame(a, 0.016);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let a: *App = app_new(1440, 900);
+    a.*.inp.reduced_motion = true;   // no eases: cache behavior is deterministic
+    demo_load(a);
+    a.*.sim.*.playing = false;
+    app_frame_all(a);
+
+    check("text atlas built (96 glyphs x 9 rows)", a.*.f.glyphs.len == 96 * 9, &failures);
+
+    // settle: pointer dead center in the viewport, several frames
+    let vp: Rect = zone_center(a);
+    a.*.inp.mx = vp.x + vp.w / 2;
+    a.*.inp.my = vp.y + vp.h / 2;
+    let i: i32 = 0;
+    while (i < 6) { frame_idle(a); i = i + 1; }
+
+    // 1) idle viewport frames: all three panels blit, none redraws
+    let d_l: i64 = a.*.ps_left.draws;
+    let d_r: i64 = a.*.ps_right.draws;
+    let d_b: i64 = a.*.ps_bottom.draws;
+    let b_l: i64 = a.*.ps_left.blits;
+    i = 0;
+    while (i < 20) { frame_idle(a); i = i + 1; }
+    check("20 idle viewport frames reuse the left panel surface", a.*.ps_left.draws == d_l, &failures);
+    check("20 idle viewport frames reuse the outliner surface", a.*.ps_right.draws == d_r, &failures);
+    check("20 idle viewport frames reuse the timeline surface", a.*.ps_bottom.draws == d_b, &failures);
+    check("cached panels blit instead", a.*.ps_left.blits >= b_l + 20, &failures);
+
+    // 2) hovering the left panel redraws it, leaves the others cached, and
+    //    never invalidates the 3D static layer
+    let rev0: i64 = a.*.scene.*.render_rev;
+    let d_r2: i64 = a.*.ps_right.draws;
+    let lz: Rect = zone_left(a);
+    a.*.inp.mx = lz.x + lz.w / 2;
+    a.*.inp.my = lz.y + lz.h / 2;
+    frame_idle(a);
+    frame_idle(a);
+    check("panel hover re-runs that panel's widgets", a.*.ps_left.draws > d_l, &failures);
+    check("panel hover leaves other panels cached", a.*.ps_right.draws == d_r2, &failures);
+    check("panel hover does not force a 3D scene rebuild", a.*.scene.*.render_rev == rev0, &failures);
+
+    // 3) a sim step re-renders the timeline (data changed) but leaves the
+    //    inspector cached while nothing is selected
+    a.*.inp.mx = vp.x + vp.w / 2;
+    a.*.inp.my = vp.y + vp.h / 2;
+    frame_idle(a);
+    frame_idle(a);
+    sel_clear(a);
+    frame_idle(a);
+    let d_l3: i64 = a.*.ps_left.draws;
+    let d_b3: i64 = a.*.ps_bottom.draws;
+    sim_step(a.*.sim, a.*.scene);
+    frame_idle(a);
+    check("sim step re-renders the timeline", a.*.ps_bottom.draws > d_b3, &failures);
+    check("sim step leaves the unselected inspector cached", a.*.ps_left.draws == d_l3, &failures);
+
+    // 4) state changes invalidate through the hash with the pointer far away
+    let d_l4: i64 = a.*.ps_left.draws;
+    let d_r4: i64 = a.*.ps_right.draws;
+    sel_set(a, a.*.scene.*.comps.data[0].id);
+    frame_idle(a);
+    check("selection change redraws the inspector via its hash", a.*.ps_left.draws > d_l4, &failures);
+    check("selection change redraws the outliner via its hash", a.*.ps_right.draws > d_r4, &failures);
+    let d_r5: i64 = a.*.ps_right.draws;
+    textedit_set(&a.*.out_search, "emitter");
+    frame_idle(a);
+    check("search text change redraws the outliner via its hash", a.*.ps_right.draws > d_r5, &failures);
+    textedit_set(&a.*.out_search, "");
+
+    // 5) cached pixels are exactly what a fresh redraw produces
+    frame_idle(a);
+    frame_idle(a);
+    let lzr: Rect = rect(a.*.ps_left.x, a.*.ps_left.y, a.*.ps_left.w, a.*.ps_left.h);
+    // snapshot the blitted rect, then force a redraw and compare
+    let snap: list.ArrayList[i64] = list.make[i64](lzr.w * lzr.h);
+    let row: i32 = 0;
+    while (row < lzr.h) {
+        let xx: i32 = 0;
+        while (xx < lzr.w) {
+            list.push[i64](&snap, a.*.f.px.data[(lzr.y + row) * a.*.f.w + lzr.x + xx]);
+            xx = xx + 1;
+        }
+        row = row + 1;
+    }
+    a.*.ps_left.valid = false;   // force the widget path
+    frame_idle(a);
+    let same: bool = true;
+    row = 0;
+    while (row < lzr.h) {
+        let xx2: i32 = 0;
+        while (xx2 < lzr.w) {
+            if (a.*.f.px.data[(lzr.y + row) * a.*.f.w + lzr.x + xx2] !=
+                list.get[i64](snap, row * lzr.w + xx2)) { same = false; }
+            xx2 = xx2 + 1;
+        }
+        row = row + 1;
+    }
+    list.free[i64](&snap);
+    check("cached surface is pixel-identical to a fresh redraw", same, &failures);
+
+    if (failures == 0) { _zag_println("UI-LAYERS: ALL PASS"); return 0; }
+    _zag_println("UI-LAYERS: FAILURES"); return 1;
+}

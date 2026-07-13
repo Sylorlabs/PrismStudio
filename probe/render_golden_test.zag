@@ -71,11 +71,13 @@ fn main() i32 {
         mix(rgb(10, 20, 30), rgb(90, 80, 70), 0) == rgb(90, 80, 70), &failures);
 
     // ── golden scene: stable checksum for every primitive + UI text ────────────
+    // Frozen checksum covers every primitive plus a glyph run rendered through
+    // the default anti-aliased text path (scale2x coverage over the background).
     let g1: FB = fb_new(120, 72);
     draw_golden(&g1);
     let golden: i64 = fb_hash(&g1);
     check("golden scene matches the frozen reference checksum",
-        golden == 403867894, &failures);
+        golden == 75609228, &failures);
 
     // ── determinism: same scene renders bit-identical every time ───────────────
     let g2: FB = fb_new(120, 72);

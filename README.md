@@ -9,6 +9,18 @@ simplifications, and native line/MCP automation.
 Flash hardware IR (`.fir`) can be imported as a real routed photonic design and
 verified against the compiler-recorded balanced-ternary results.
 
+The workbench is a token-driven dark UI drawn entirely by Triton's own
+renderer: a searchable component-card library with category tabs and
+drag-into-viewport placement, an inspector with journaled numeric fields
+(steppers, precise typing, units, inline validation), a filterable outliner
+with lock/visibility toggles and warning badges, a zoomable/scrubbable signal
+timeline with pin/hide and 3D cross-highlight, a measure tool, grid/object/
+port snapping with pre-commit snap targets, right-click context menus, object
+grouping, inline rename, a section view, tooltips, reduced-motion mode, and a
+clickable design-warnings list. Side panels render into retained surfaces and
+redraw only when their displayed state changes; interaction budgets are
+enforced by the `ui-perf` verification gate rather than asserted here.
+
 Triton is software for design-model verification. It does not claim that the
 illustrative reference device has been fabricated, measured, or laboratory
 validated. Physical values shown by the bundled example model are labeled

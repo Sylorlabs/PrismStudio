@@ -1,0 +1,268 @@
+// ui_perf_test.zag — snappy-interaction budgets (Masterplan Section 3.3).
+// Measures the real frame loop headlessly on the demo design at 1440x900 and
+// enforces the interaction budgets: every measured scenario must average
+// under 16 ms/frame and never exceed 16 ms on this machine, and one-frame
+// visual feedback is proven by pixel change, not by timing.
+// Measured numbers print to stdout for the evidence ledger.
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn report(name_: []u8, avg_ms: i64, max_ms: i64) void {
+    _zag_print("  measured  ");
+    _zag_print(name_);
+    _zag_print("  avg_ms=");
+    _zag_print(_zag_i64_to_str(avg_ms));
+    _zag_print(" max_ms=");
+    _zag_println(_zag_i64_to_str(max_ms));
+}
+
+fn frame_once(a: *App) void {
+    a.*.inp.keys.len = 0;
+    a.*.inp.wheel = 0;
+    app_frame(a, 0.016);
+    a.*.inp.prev_btn = a.*.inp.btn;
+}
+
+// Run n frames; returns avg ms via avg_out and max single-frame ms via ret.
+fn bench(a: *App, n: i32, avg_out: *i64) i64 {
+    let total: i64 = 0;
+    let worst: i64 = 0;
+    let i: i32 = 0;
+    while (i < n) {
+        let t0: i64 = _zag_clock_monotonic_ms();
+        frame_once(a);
+        let dt: i64 = _zag_clock_monotonic_ms() - t0;
+        total = total + dt;
+        if (dt > worst) { worst = dt; }
+        i = i + 1;
+    }
+    avg_out.* = total / (n as i64);
+    return worst;
+}
+
+// Any pixel difference between two snapshots of a rect.
+fn rect_changed(f: *FB, r: Rect, snap: *list.ArrayList[i64]) bool {
+    let row: i32 = 0;
+    let idx: i32 = 0;
+    while (row < r.h) {
+        let xx: i32 = 0;
+        while (xx < r.w) {
+            if (f.*.px.data[(r.y + row) * f.*.w + r.x + xx] != list.get[i64](snap.*, idx)) {
+                return true;
+            }
+            idx = idx + 1;
+            xx = xx + 1;
+        }
+        row = row + 1;
+    }
+    return false;
+}
+
+fn rect_snap(f: *FB, r: Rect, out: *list.ArrayList[i64]) void {
+    out.*.len = 0;
+    let row: i32 = 0;
+    while (row < r.h) {
+        let xx: i32 = 0;
+        while (xx < r.w) {
+            list.push[i64](out, f.*.px.data[(r.y + row) * f.*.w + r.x + xx]);
+            xx = xx + 1;
+        }
+        row = row + 1;
+    }
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let budget: i64 = 16;
+    let a: *App = app_new(1440, 900);
+    demo_load(a);
+    a.*.sim.*.playing = false;
+    app_frame_all(a);
+    let vp: Rect = zone_center(a);
+    a.*.inp.mx = vp.x + vp.w / 2;
+    a.*.inp.my = vp.y + vp.h / 2;
+    let i: i32 = 0;
+    while (i < 8) { frame_once(a); i = i + 1; }
+
+    // 1) hover response: idle pointer in the viewport
+    let avg: i64 = 0;
+    let worst: i64 = bench(a, 120, &avg);
+    report("viewport-hover", avg, worst);
+    check("hover frames average under 16 ms", avg < budget, &failures);
+    check("hover never hitches past 16 ms", worst <= budget, &failures);
+
+    // 2) camera orbit at 60 FPS minimum: RMB drag, pointer moving every frame.
+    // A short warm-up first: the tile cache allocates its slabs on the first
+    // camera motion, a one-time cost that is not steady-state orbiting.
+    a.*.inp.btn = 4;   // RMB
+    i = 0;
+    while (i < 10) {
+        a.*.inp.mx = vp.x + vp.w / 2 + i;
+        frame_once(a);
+        i = i + 1;
+    }
+    let total_orbit: i64 = 0;
+    let worst_orbit: i64 = 0;
+    i = 0;
+    while (i < 120) {
+        a.*.inp.mx = vp.x + vp.w / 2 + (i % 40) - 20;
+        a.*.inp.my = vp.y + vp.h / 2 + (i % 24) - 12;
+        let t0: i64 = _zag_clock_monotonic_ms();
+        frame_once(a);
+        let dt: i64 = _zag_clock_monotonic_ms() - t0;
+        total_orbit = total_orbit + dt;
+        if (dt > worst_orbit) { worst_orbit = dt; }
+        i = i + 1;
+    }
+    a.*.inp.btn = 0;
+    frame_once(a);
+    report("camera-orbit", total_orbit / 120, worst_orbit);
+    check("camera orbit averages under 16 ms", total_orbit / 120 < budget, &failures);
+    check("camera orbit holds 60 FPS (max frame <= 16 ms)", worst_orbit <= budget, &failures);
+
+    // 3) smooth part dragging: move mode with the ghost following the pointer
+    sel_set(a, a.*.scene.*.comps.data[1].id);
+    frame_once(a);
+    app_start_move(a);
+    let total_mv: i64 = 0;
+    let worst_mv: i64 = 0;
+    i = 0;
+    while (i < 60) {
+        a.*.inp.mx = vp.x + vp.w / 2 + (i % 30) - 15;
+        let t0m: i64 = _zag_clock_monotonic_ms();
+        frame_once(a);
+        let dtm: i64 = _zag_clock_monotonic_ms() - t0m;
+        total_mv = total_mv + dtm;
+        if (dtm > worst_mv) { worst_mv = dtm; }
+        i = i + 1;
+    }
+    a.*.moving = false;
+    report("part-drag", total_mv / 60, worst_mv);
+    check("part dragging stays under 16 ms", total_mv / 60 < budget && worst_mv <= budget, &failures);
+
+    // 4) panel hover + resize: pointer over the library, then splitter drag
+    let lz: Rect = zone_left(a);
+    a.*.inp.mx = lz.x + lz.w / 2;
+    a.*.inp.my = lz.y + lz.h / 2;
+    let avg_p: i64 = 0;
+    let worst_p: i64 = bench(a, 60, &avg_p);
+    report("panel-hover", avg_p, worst_p);
+    check("panel hover frames stay under 16 ms", avg_p < budget && worst_p <= budget, &failures);
+
+    a.*.inp.mx = lz.x + lz.w;   // on the splitter
+    a.*.inp.my = lz.y + lz.h / 2;
+    frame_once(a);
+    a.*.inp.btn = 1;
+    let total_sp: i64 = 0;
+    let worst_sp: i64 = 0;
+    i = 0;
+    while (i < 40) {
+        a.*.inp.mx = lz.x + lz.w + (i % 16) - 8;
+        let t0s: i64 = _zag_clock_monotonic_ms();
+        frame_once(a);
+        let dts: i64 = _zag_clock_monotonic_ms() - t0s;
+        total_sp = total_sp + dts;
+        if (dts > worst_sp) { worst_sp = dts; }
+        i = i + 1;
+    }
+    a.*.inp.btn = 0;
+    frame_once(a);
+    report("panel-resize", total_sp / 40, worst_sp);
+    check("panel resizing stays under 16 ms", total_sp / 40 < budget && worst_sp <= budget, &failures);
+
+    // 5) text input: command palette open, one character per frame
+    a.*.palette_open = true;
+    a.*.palette_text.len = 0;
+    let total_tx: i64 = 0;
+    let worst_tx: i64 = 0;
+    i = 0;
+    while (i < 40) {
+        a.*.inp.keys.len = 0;
+        list.push[i32](&a.*.inp.keys, 'a' as i32 + (i % 26));
+        if (a.*.palette_text.len > 30) { a.*.palette_text.len = 0; }
+        let t0t: i64 = _zag_clock_monotonic_ms();
+        app_frame(a, 0.016);
+        let dtt: i64 = _zag_clock_monotonic_ms() - t0t;
+        total_tx = total_tx + dtt;
+        if (dtt > worst_tx) { worst_tx = dtt; }
+        i = i + 1;
+    }
+    a.*.palette_open = false;
+    a.*.inp.keys.len = 0;
+    report("text-input", total_tx / 40, worst_tx);
+    check("text input has no visible lag (under 16 ms)", total_tx / 40 < budget && worst_tx <= budget, &failures);
+
+    // 6) timeline scrub feels live
+    a.*.sim.*.playing = true;
+    i = 0;
+    while (i < 40) { frame_once(a); i = i + 1; }   // build some history
+    a.*.sim.*.playing = false;
+    let total_sc: i64 = 0;
+    let worst_sc: i64 = 0;
+    i = 0;
+    while (i < 40) {
+        a.*.tl_scrub = i % 24;
+        let t0c: i64 = _zag_clock_monotonic_ms();
+        frame_once(a);
+        let dtc: i64 = _zag_clock_monotonic_ms() - t0c;
+        total_sc = total_sc + dtc;
+        if (dtc > worst_sc) { worst_sc = dtc; }
+        i = i + 1;
+    }
+    a.*.tl_scrub = 0;
+    report("timeline-scrub", total_sc / 40, worst_sc);
+    check("timeline scrub stays under 16 ms", total_sc / 40 < budget && worst_sc <= budget, &failures);
+
+    // 7) button press shows visual feedback in the very next frame (pixel
+    //    proof). The probed button must be inactive so hover and pressed
+    //    states differ; the Select button with the route tool armed is.
+    a.*.tool = tool_route();
+    let btn: Rect = rect(lz.x + 1 + pad_panel(), lz.y + 23 + pad_panel(),
+                         (lz.w - 2 - pad_panel() * 2 - pad_text() * 2) / 3, control_h());
+    a.*.inp.mx = btn.x + btn.w / 2;
+    a.*.inp.my = btn.y + btn.h / 2;
+    frame_once(a);
+    frame_once(a);
+    frame_once(a);
+    frame_once(a);   // hover ease settles so the diff isolates the press
+    let snap: list.ArrayList[i64] = list.make[i64](btn.w * btn.h);
+    rect_snap(&a.*.f, btn, &snap);
+    a.*.inp.btn = 1;   // press: no release yet, purely visual
+    a.*.inp.keys.len = 0;
+    app_frame(a, 0.016);
+    check("button press feedback lands in the next frame", rect_changed(&a.*.f, btn, &snap), &failures);
+    a.*.inp.btn = 0;
+    a.*.inp.prev_btn = 1;
+    frame_once(a);
+    list.free[i64](&snap);
+
+    // 8) selection outline appears in the immediate next frame (pixel proof)
+    sel_clear(a);
+    a.*.inp.mx = vp.x + vp.w / 2;
+    a.*.inp.my = vp.y + vp.h / 2;
+    frame_once(a);
+    let vsnap: list.ArrayList[i64] = list.make[i64](64);
+    let probe_r: Rect = rect(vp.x + vp.w / 4, vp.y + vp.h / 4, vp.w / 2, vp.h / 2);
+    rect_snap(&a.*.f, probe_r, &vsnap);
+    sel_set(a, a.*.scene.*.comps.data[1].id);
+    frame_once(a);
+    check("selection outline appears immediately", rect_changed(&a.*.f, probe_r, &vsnap), &failures);
+    list.free[i64](&vsnap);
+
+    // 9) simple UI hover never rebuilds the scene
+    let rev0: i64 = a.*.scene.*.render_rev;
+    a.*.inp.mx = lz.x + lz.w / 2;
+    a.*.inp.my = lz.y + lz.h / 2;
+    i = 0;
+    while (i < 10) { frame_once(a); i = i + 1; }
+    check("UI hover causes no scene rebuild", a.*.scene.*.render_rev == rev0, &failures);
+
+    if (failures == 0) { _zag_println("UI-PERF: ALL PASS"); return 0; }
+    _zag_println("UI-PERF: FAILURES"); return 1;
+}

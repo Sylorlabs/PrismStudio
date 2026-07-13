@@ -66,6 +66,9 @@ fn app_action(a: *App, code: i32) void {
     if (code == 14) { sel_clear(a); }
     if (code == 15) { app_copy(a); }
     if (code == 16) { app_paste(a); }
+    if (code == 17) { app_group_selection(a); }
+    if (code == 18) { app_ungroup_selection(a); }
+    if (code == 19) { app_begin_rename(a, sel_primary(a)); }
     if (code == 20) { app_frame_selected(a); }
     if (code == 21) { app_frame_all(a); }
     if (code == 22) {
@@ -84,8 +87,17 @@ fn app_action(a: *App, code: i32) void {
         a.*.cam.yaw = 0.9;
         a.*.cam.pitch = 0.62;
     }
-    if (code == 26) { a.*.cam.ortho = !a.*.cam.ortho; }
+    if (code == 26) {
+        a.*.cam.ortho = !a.*.cam.ortho;
+        scene_mark_render(a.*.scene);   // projection change invalidates the tile cache
+    }
     if (code == 27) { a.*.ui_scale = (a.*.ui_scale % 3) + 1; }   // cycle 1x/2x/3x
+    if (code == 28) { app_reset_view(a); }
+    if (code == 29) {
+        a.*.sect_on = !a.*.sect_on;
+        scene_mark_render(a.*.scene);
+        if (a.*.sect_on) { app_log(a, "section view on ([ / ] adjust level)"); }
+    }
     if (code == 30) { a.*.modal = modal_keys(); }
     if (code == 31) { app_action_demo(a); }
     if (code == 40) { a.*.tool = tool_select(); }
@@ -94,7 +106,25 @@ fn app_action(a: *App, code: i32) void {
     if (code == 43) { a.*.opt_open = true; a.*.settings_open = false; }
     if (code == 44) { a.*.settings_open = true; a.*.opt_open = false; }
     if (code == 45) { a.*.palette_open = true; a.*.palette_text.len = 0; a.*.palette_sel = 0; }
+    if (code == 46) { a.*.tool = tool_measure(); a.*.measure_n = 0; }
+    if (code == 47) { a.*.inp.reduced_motion = !a.*.inp.reduced_motion; }
+    if (code == 48) { a.*.snap_obj = !a.*.snap_obj; }
     if (code >= 50 && code < 50 + kind_count()) { a.*.tool = tool_place_base() + (code - 50); }
+    // jump to object (Section 3.6): palette codes 1000+idx select and frame
+    if (code >= 1000 && code - 1000 < a.*.scene.*.comps.len) {
+        sel_set(a, a.*.scene.*.comps.data[code - 1000].id);
+        app_frame_selected(a);
+    }
+}
+
+// Begin inline rename of `id` (F2, menu, context menu, outliner double-slow-click).
+fn app_begin_rename(a: *App, id: i32) void {
+    if (id < 0) { return; }
+    let ci: i32 = scene_comp_index(a.*.scene, id);
+    if (ci < 0) { return; }
+    a.*.rename_id = id;
+    textedit_set(&a.*.rename_edit, a.*.scene.*.comps.data[ci].name_);
+    a.*.rename_edit.focus = true;
 }
 
 // ── command palette (Section 3.6) ─────────────────────────────────────────────
@@ -124,9 +154,17 @@ fn palette_commands(out: *list.ArrayList[PCmd]) void {
     list.push[PCmd](out, PCmd{ .label = "View: Right", .hint = "", .code = 24 });
     list.push[PCmd](out, PCmd{ .label = "View: Perspective", .hint = "", .code = 25 });
     list.push[PCmd](out, PCmd{ .label = "View: Toggle Orthographic", .hint = "", .code = 26 });
+    list.push[PCmd](out, PCmd{ .label = "View: Reset", .hint = "", .code = 28 });
+    list.push[PCmd](out, PCmd{ .label = "View: Toggle Section View", .hint = "", .code = 29 });
     list.push[PCmd](out, PCmd{ .label = "Cycle HiDPI Scale", .hint = "", .code = 27 });
     list.push[PCmd](out, PCmd{ .label = "Tool: Select", .hint = "Q", .code = 40 });
     list.push[PCmd](out, PCmd{ .label = "Tool: Route Waveguide", .hint = "E", .code = 41 });
+    list.push[PCmd](out, PCmd{ .label = "Tool: Measure", .hint = "M", .code = 46 });
+    list.push[PCmd](out, PCmd{ .label = "Group Selection", .hint = "Ctrl+G", .code = 17 });
+    list.push[PCmd](out, PCmd{ .label = "Ungroup Selection", .hint = "Ctrl+Shift+G", .code = 18 });
+    list.push[PCmd](out, PCmd{ .label = "Rename Selection", .hint = "F2", .code = 19 });
+    list.push[PCmd](out, PCmd{ .label = "Toggle Reduced Motion", .hint = "", .code = 47 });
+    list.push[PCmd](out, PCmd{ .label = "Toggle Object Snapping", .hint = "", .code = 48 });
     list.push[PCmd](out, PCmd{ .label = "Toggle Simulation", .hint = "Space", .code = 42 });
     list.push[PCmd](out, PCmd{ .label = "Open Optimizer", .hint = "", .code = 43 });
     list.push[PCmd](out, PCmd{ .label = "Open Settings", .hint = "", .code = 44 });
@@ -165,6 +203,14 @@ fn pcmd_match(label: []u8, q: []u8) bool {
 fn palette_filtered(a: *App, out: *list.ArrayList[PCmd]) void {
     let all: list.ArrayList[PCmd] = list.make[PCmd](40);
     palette_commands(&all);
+    // jump to object (Section 3.6): one dynamic entry per placed part
+    let jc: i32 = 0;
+    while (jc < a.*.scene.*.comps.len) {
+        list.push[PCmd](&all, PCmd{
+            .label = _zag_str_concat("Go to: ", a.*.scene.*.comps.data[jc].name_),
+            .hint = "", .code = 1000 + jc });
+        jc = jc + 1;
+    }
     out.*.len = 0;
     let q: []u8 = a.*.palette_text.data[0..a.*.palette_text.len];
     let i: i32 = 0;
@@ -232,23 +278,25 @@ fn draw_palette(a: *App) void {
     let row_h: i32 = 20;
     let ph: i32 = 30 + shown * row_h + 6;
 
-    fill_rect(f, px, py, pw, ph, th_panel());
-    rect_outline(f, px, py, pw, ph, th_outline());
+    draw_shadow(f, px, py, pw, ph, radius_panel());
+    fill_round_rect(f, px, py, pw, ph, radius_panel(), th_panel());
+    round_rect_outline(f, px, py, pw, ph, radius_panel(), th_outline());
     // input row
-    fill_rect(f, px + 1, py + 1, pw - 2, 26, th_panel_alt());
+    draw_text(f, px + 12, py + 9, ">", th_accent());
     if (a.*.palette_text.len > 0) {
-        draw_text(f, px + 10, py + 9, a.*.palette_text.data[0..a.*.palette_text.len], th_text());
+        draw_text(f, px + 24, py + 9, a.*.palette_text.data[0..a.*.palette_text.len], th_text());
     } else {
-        draw_text(f, px + 10, py + 9, "Type a command...", th_text_dim());
+        draw_text(f, px + 24, py + 9, "Type a command...", th_text_dim());
     }
+    hline(f, px + 8, py + 27, pw - 16, th_outline_soft());
 
     let y: i32 = py + 30;
     let idx: i32 = 0;
     while (idx < shown) {
         let c: PCmd = filt.data[idx];
-        let row: Rect = rect(px + 2, y, pw - 4, row_h);
+        let row: Rect = rect(px + 6, y, pw - 12, row_h);
         let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
-        if (idx == a.*.palette_sel || hov) { fill_rect(f, row.x, row.y, row.w, row.h, th_accent()); }
+        if (idx == a.*.palette_sel || hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
         draw_text(f, row.x + 8, y + 6, c.label, th_text());
         if (c.hint.len > 0) {
             draw_text(f, row.x + row.w - text_w(c.hint) - 8, y + 6, c.hint, th_text_dim());
@@ -311,17 +359,26 @@ fn menu_items(m: i32, out: *list.ArrayList[MenuItem]) void {
         list.push[MenuItem](out, MenuItem{ .label = "Delete", .hint = "X", .code = 13 });
         list.push[MenuItem](out, MenuItem{ .label = "Deselect", .hint = "Esc", .code = 14 });
         list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
+        list.push[MenuItem](out, MenuItem{ .label = "Group", .hint = "Ctrl+G", .code = 17 });
+        list.push[MenuItem](out, MenuItem{ .label = "Ungroup", .hint = "Ctrl+Shift+G", .code = 18 });
+        list.push[MenuItem](out, MenuItem{ .label = "Rename", .hint = "F2", .code = 19 });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
         list.push[MenuItem](out, MenuItem{ .label = "Command Palette", .hint = "Ctrl+K", .code = 45 });
     }
     if (m == 2) {
         list.push[MenuItem](out, MenuItem{ .label = "Frame Selected", .hint = "F", .code = 20 });
         list.push[MenuItem](out, MenuItem{ .label = "Frame All", .hint = "Home", .code = 21 });
+        list.push[MenuItem](out, MenuItem{ .label = "Reset View", .hint = "", .code = 28 });
         list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
         list.push[MenuItem](out, MenuItem{ .label = "Top", .hint = "", .code = 22 });
         list.push[MenuItem](out, MenuItem{ .label = "Front", .hint = "", .code = 23 });
         list.push[MenuItem](out, MenuItem{ .label = "Right", .hint = "", .code = 24 });
         list.push[MenuItem](out, MenuItem{ .label = "Perspective", .hint = "", .code = 25 });
         list.push[MenuItem](out, MenuItem{ .label = "Toggle Orthographic", .hint = "", .code = 26 });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
+        list.push[MenuItem](out, MenuItem{ .label = "Section View", .hint = "", .code = 29 });
+        list.push[MenuItem](out, MenuItem{ .label = "Measure Tool", .hint = "M", .code = 46 });
+        list.push[MenuItem](out, MenuItem{ .label = "Object Snapping", .hint = "", .code = 48 });
     }
     if (m == 3) {
         list.push[MenuItem](out, MenuItem{ .label = "Shortcuts", .hint = "", .code = 30 });
@@ -341,12 +398,12 @@ fn draw_menubar(a: *App) void {
     while (m < 4) {
         let t: []u8 = menu_title(m);
         let bw: i32 = text_w(t) + 18;
-        let br: Rect = rect(x, r.y, bw, r.h);
+        let br: Rect = rect(x, r.y + 3, bw, r.h - 5);
         let hov: bool = rect_has(br, inp.*.mx, inp.*.my);
         if (a.*.menu == m) {
-            fill_rect(f, br.x, br.y, br.w, br.h, th_accent());
+            fill_round_rect(f, br.x, br.y, br.w, br.h, radius_control(), th_accent());
         } else if (hov && a.*.modal == modal_none()) {
-            fill_rect(f, br.x, br.y, br.w, br.h, th_panel_alt());
+            fill_round_rect(f, br.x, br.y, br.w, br.h, radius_control(), th_panel_alt());
         }
         draw_text(f, x + 9, r.y + 7, t, th_text());
         if (a.*.modal == modal_none()) {
@@ -363,8 +420,9 @@ fn draw_menubar(a: *App) void {
     // right side: Optimizer button (quiet, count-only badge) + Settings gear.
     let ob: Rect = zone_opt_btn(a);
     let oh: bool = rect_has(ob, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
-    if (a.*.opt_open) { fill_rect(f, ob.x, ob.y, ob.w, ob.h, th_accent()); }
-    else if (oh) { fill_rect(f, ob.x, ob.y, ob.w, ob.h, th_panel_alt()); }
+    let obr: Rect = rect(ob.x, ob.y + 3, ob.w, ob.h - 5);
+    if (a.*.opt_open) { fill_round_rect(f, obr.x, obr.y, obr.w, obr.h, radius_control(), th_accent()); }
+    else if (oh) { fill_round_rect(f, obr.x, obr.y, obr.w, obr.h, radius_control(), th_panel_alt()); }
     draw_text(f, ob.x + 9, r.y + 7, "opt", th_text());
     if (opt_engine_badge(a.*.opt) > 0) {
         let bx: i32 = ob.x + 9 + text_w("opt ");
@@ -377,8 +435,9 @@ fn draw_menubar(a: *App) void {
 
     let gr: Rect = zone_settings_gear(a);
     let gh: bool = rect_has(gr, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
-    if (a.*.settings_open) { fill_rect(f, gr.x, gr.y, gr.w, gr.h, th_accent()); }
-    else if (gh) { fill_rect(f, gr.x, gr.y, gr.w, gr.h, th_panel_alt()); }
+    let grr: Rect = rect(gr.x, gr.y + 3, gr.w, gr.h - 5);
+    if (a.*.settings_open) { fill_round_rect(f, grr.x, grr.y, grr.w, grr.h, radius_control(), th_accent()); }
+    else if (gh) { fill_round_rect(f, grr.x, grr.y, grr.w, grr.h, radius_control(), th_panel_alt()); }
     draw_gear(f, gr.x + gr.w / 2, gr.y + gr.h / 2, th_text());
     if (gh && btn_pressed(inp, 0)) {
         a.*.settings_open = !a.*.settings_open;
@@ -431,8 +490,9 @@ fn draw_menu_dropdown(a: *App) void {
         i = i + 1;
     }
     let dr: Rect = rect(x0, menu_h(), iw, total + 8);
-    fill_rect(f, dr.x, dr.y, dr.w, dr.h, th_panel());
-    rect_outline(f, dr.x, dr.y, dr.w, dr.h, th_outline());
+    draw_shadow(f, dr.x, dr.y, dr.w, dr.h, radius_panel());
+    fill_round_rect(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_panel());
+    round_rect_outline(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_outline());
 
     let y: i32 = dr.y + 4;
     let clicked_any: bool = false;
@@ -440,12 +500,12 @@ fn draw_menu_dropdown(a: *App) void {
     while (i < items.len) {
         let it: MenuItem = items.data[i];
         if (it.code == 0) {
-            hline(f, dr.x + 6, y + 3, dr.w - 12, th_outline());
+            hline(f, dr.x + 8, y + 3, dr.w - 16, th_outline_soft());
             y = y + sep;
         } else {
-            let row: Rect = rect(dr.x + 2, y, dr.w - 4, ih);
+            let row: Rect = rect(dr.x + 4, y, dr.w - 8, ih);
             let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
-            if (hov) { fill_rect(f, row.x, row.y, row.w, row.h, th_accent()); }
+            if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
             draw_text(f, row.x + 8, y + 6, it.label, th_text());
             if (it.hint.len > 0) {
                 draw_text(f, row.x + row.w - text_w(it.hint) - 8, y + 6, it.hint, th_text_dim());
@@ -516,6 +576,9 @@ fn draw_statusbar(a: *App) void {
     } else if (a.*.tool == tool_route()) {
         draw_text(f, x, ty, "route", th_text_dim());
         x = x + text_w("route") + 24;
+    } else if (a.*.tool == tool_measure()) {
+        draw_text(f, x, ty, "measure", th_text_dim());
+        x = x + text_w("measure") + 24;
     } else if (a.*.tool >= tool_place_base()) {
         draw_text(f, x, ty, "place ", th_text_dim());
         let kx: i32 = x + text_w("place ");
@@ -531,6 +594,32 @@ fn draw_statusbar(a: *App) void {
         draw_text(f, x, ty, " selected", th_text_dim());
         x = x + text_w(" selected") + 24;
     }
+
+    // camera + snap + section state (Section 3.2: a working status bar)
+    let camm: []u8 = "persp";
+    if (a.*.cam.ortho) { camm = "ortho"; }
+    draw_text(f, x, ty, camm, th_text_dim());
+    x = x + text_w(camm) + 16;
+    if (a.*.snap_obj) {
+        draw_text(f, x, ty, "snap", th_accent_hot());
+        x = x + text_w("snap") + 16;
+    }
+    if (a.*.sect_on) {
+        draw_text(f, x, ty, "section", th_warning());
+        x = x + text_w("section") + 16;
+    }
+
+    // design warnings count: click to list them (Section 3.4)
+    if (a.*.warn_ids.len > 0) {
+        let wr: Rect = rect(x - 4, r.y + 2, text_w("00 warnings") + 8, r.h - 4);
+        let whov: bool = rect_has(wr, a.*.inp.mx, a.*.inp.my);
+        if (whov || a.*.warn_open) { fill_rect(f, wr.x, wr.y, wr.w, wr.h, th_header()); }
+        let wtx: i32 = x;
+        wtx = wtx + draw_int(f, wtx, ty, a.*.warn_ids.len as i64, th_warning());
+        draw_text(f, wtx, ty, " warnings", th_warning());
+        if (whov && btn_released(&a.*.inp, 0)) { a.*.warn_open = !a.*.warn_open; }
+        x = x + text_w("00 warnings") + 16;
+    } else { a.*.warn_open = false; }
 
     // Optimizer badge: quiet, count-only (Section 20.4). Nothing shows at zero.
     if (opt_engine_badge(a.*.opt) > 0) {
@@ -561,169 +650,569 @@ fn draw_statusbar(a: *App) void {
     draw_text(f, rx, ty, run, th_text_dim());
 }
 
-// ── left: toolbar + inspector ─────────────────────────────────────────────────
+// Clickable warning list (Section 3.4): every design warning selects and
+// frames its component on click, so no warning is a dead end.
+fn draw_warnings_popup(a: *App) void {
+    if (!a.*.warn_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let cap: i32 = inp.*.capture;
+    inp.*.capture = 0;
+    let n: i32 = a.*.warn_ids.len;
+    if (n > 12) { n = 12; }
+    let ph: i32 = n * 18 + 30;
+    let pw: i32 = 300;
+    let pr: Rect = rect(8, a.*.inp.h - status_h() - ph - 4, pw, ph);
+    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
+    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
+    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
+    draw_text(f, pr.x + pad_panel(), pr.y + 7, "DESIGN WARNINGS", th_warning());
+    let y: i32 = pr.y + 24;
+    let i: i32 = 0;
+    while (i < n) {
+        let id: i32 = list.get[i32](a.*.warn_ids, i);
+        let code: i32 = list.get[i32](a.*.warn_codes, i);
+        let row: Rect = rect(pr.x + 4, y, pr.w - 8, 17);
+        let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
+        if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
+        let ci: i32 = scene_comp_index(a.*.scene, id);
+        let nm: []u8 = "?";
+        if (ci >= 0) { nm = a.*.scene.*.comps.data[ci].name_; }
+        draw_text(f, row.x + 6, y + 4, nm, th_text());
+        draw_text(f, row.x + 6 + text_w(nm) + 8, y + 4, warn_text(code), th_warning());
+        if (hov && btn_released(inp, 0)) {
+            sel_set(a, id);
+            app_frame_selected(a);
+            a.*.warn_open = false;
+        }
+        y = y + 18;
+        i = i + 1;
+    }
+    if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my)) { a.*.warn_open = false; }
+    inp.*.capture = cap;
+}
+
+// ── left: library + inspector ─────────────────────────────────────────────────
+
+// Library category tabs (Section 3.7). A category is a lens, not a partition:
+// a part may appear under several tabs.
+fn library_tab_count() i32 { return 8; }
+
+fn library_tab_name(t: i32) []u8 {
+    if (t == 0) { return "All"; }
+    if (t == 1) { return "Base"; }
+    if (t == 2) { return "Emit"; }
+    if (t == 3) { return "Sens"; }
+    if (t == 4) { return "Chmb"; }
+    if (t == 5) { return "Logic"; }
+    if (t == 6) { return "Route"; }
+    return "Debug";
+}
+
+fn library_tab_has(t: i32, ki: i32) bool {
+    if (t == 0) { return true; }
+    if (t == 1) { return ki == 0; }            // Base: GeSn plate
+    if (t == 2) { return ki == 3; }            // Emitters
+    if (t == 3) { return ki == 4; }            // Sensors
+    if (t == 4) { return ki == 1 || ki == 2; } // Chambers + memory tiles
+    if (t == 5) { return ki == 1; }            // Logic: interference chamber
+    return false;                              // Route/Debug hold tool cards
+}
+
+// Beam compatibility line for a component card.
+fn kind_compat(k: Kind) []u8 {
+    if (k == Kind.Emitter) { return "C-band 1530-1565 nm"; }
+    if (k == Kind.Chamber) { return "any WDM channel"; }
+    if (k == Kind.Detector) { return "any channel"; }
+    return "no beam port";
+}
+
+// Small pseudo-3D component icon: consistent style for every kind.
+fn draw_kind_icon(f: *FB, x: i32, y: i32, k: Kind) void {
+    let tint: i64 = kind_tint(k);
+    // soft rounded chip: top face (lighter), front face (tint), side (darker)
+    fill_round_rect(f, x + 3, y, 18, 6, 2, shade(tint, 320));
+    fill_round_rect(f, x, y + 4, 18, 14, 3, tint);
+    fill_rect(f, x + 16, y + 4, 3, 14, shade(tint, 150));
+    round_rect_outline(f, x, y + 4, 18, 14, 3, shade(tint, 60));
+    if (k == Kind.Emitter) { hline(f, x + 18, y + 10, 8, rgb(255, 220, 120)); }
+    if (k == Kind.Detector) { fill_round_rect(f, x + 6, y + 8, 6, 6, 2, rgb(24, 25, 32)); }
+}
+
+// One component card: icon, name, description, port count, beam compatibility.
+// Click arms the place tool; dragging the card into the viewport places with
+// the live ghost (Section 3.7). Returns the next y.
+fn draw_lib_card(a: *App, x: i32, y: i32, w: i32, ki: i32) i32 {
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let k: Kind = kind_at(ki);
+    let card: Rect = rect(x, y, w, 46);
+    let armed: bool = a.*.tool == tool_place_base() + ki || a.*.lib_drag == ki;
+    let hov: bool = hover(inp, card);
+    let hot: i32 = input_hot(inp, ui_key(card), hov);
+    let bgc: i64 = th_panel_alt();
+    if (armed) { bgc = th_accent(); }
+    else if (hot > 0) { bgc = mix(th_header(), th_panel_alt(), hot); }
+    fill_round_rect(f, card.x, card.y, card.w, card.h, radius_panel(), bgc);
+    let cbord: i64 = th_outline();
+    if (armed) { cbord = th_accent_hot(); }
+    round_rect_outline(f, card.x, card.y, card.w, card.h, radius_panel(), cbord);
+    draw_kind_icon(f, card.x + pad_panel(), card.y + 12, k);
+    let tx: i32 = card.x + 36;
+    let tmax: i32 = card.x + card.w - tx - pad_panel() - 10;
+    let tcol: i64 = th_text();
+    if (armed) { tcol = rgb(240, 244, 250); }
+    draw_text_max(f, tx, card.y + 5, kind_short(k), tcol, tmax);
+    draw_text_max(f, tx, card.y + 18, kind_blurb(k), th_text_dim(), tmax + 10);
+    let ports: []u8 = _zag_str_concat(fmt_i(kind_port_count(k) as i64), " ports  ");
+    draw_text_max(f, tx, card.y + 31, _zag_str_concat(ports, kind_compat(k)), th_text_dim(), tmax + 10);
+    draw_text(f, card.x + card.w - 12, card.y + 5, fmt_i((ki + 1) as i64), th_text_dim());
+    ui_tip(inp, card, kind_name(k));
+    if (hov && btn_pressed(inp, 0)) {
+        a.*.tool = tool_place_base() + ki;
+        a.*.lib_drag = ki;    // becomes a drag if the pointer leaves with LMB held
+    }
+    if (a.*.lib_drag == ki && !btn_down(inp, 0) && hov) {
+        a.*.lib_drag = 0 - 1; // released in place: plain click, tool stays armed
+    }
+    return y + 50;
+}
 
 fn draw_toolbar(a: *App) void {
     let f: *FB = &a.*.f;
     let inp: *Input = &a.*.inp;
     let content: Rect = ui_panel(f, zone_left(a), "LIBRARY");
-    let x: i32 = content.x + 6;
-    let w: i32 = content.w - 12;
-    let y: i32 = content.y + 6;
+    fb_clip(f, content.x, content.y, content.x + content.w, content.y + content.h);
+    let x: i32 = content.x + pad_panel();
+    let w: i32 = content.w - pad_panel() * 2;
+    let y: i32 = content.y + pad_panel();
 
-    let half: i32 = (w - 4) / 2;
-    if (ui_button(f, inp, rect(x, y, half, 20), "Select (Q)", a.*.tool == tool_select() && !a.*.moving)) {
+    // tool row
+    let third: i32 = (w - pad_text() * 2) / 3;
+    if (ui_button(f, inp, rect(x, y, third, control_h()), "Select",
+                  a.*.tool == tool_select() && !a.*.moving)) {
         a.*.tool = tool_select();
     }
-    if (ui_button(f, inp, rect(x + half + 4, y, half, 20), "Route (E)", a.*.tool == tool_route())) {
+    if (ui_button(f, inp, rect(x + third + pad_text(), y, third, control_h()), "Route",
+                  a.*.tool == tool_route())) {
         a.*.tool = tool_route();
         a.*.route_c = 0 - 1;
     }
-    y = y + 26;
+    if (ui_button(f, inp, rect(x + (third + pad_text()) * 2, y, third, control_h()), "Measure",
+                  a.*.tool == tool_measure())) {
+        a.*.tool = tool_measure();
+        a.*.measure_n = 0;
+    }
+    ui_tip(inp, rect(x, y, third, control_h()), "Select and move parts (Q)");
+    ui_tip(inp, rect(x + third + pad_text(), y, third, control_h()), "Route a waveguide between ports (E)");
+    ui_tip(inp, rect(x + (third + pad_text()) * 2, y, third, control_h()), "Measure distance and angle (M)");
+    y = y + control_h() + pad_text();
 
+    // search bar (Section 3.7)
+    let _sch: bool = ui_textfield(f, inp, rect(x, y, w, control_h()), &a.*.lib_search, "Search parts...");
+    y = y + control_h() + pad_text();
+
+    // category tabs: two rows of four
+    let tw: i32 = (w - pad_text() * 3) / 4;
+    let trow: i32 = 0;
+    while (trow < 2) {
+        let tcol_i: i32 = 0;
+        while (tcol_i < 4) {
+            let t: i32 = trow * 4 + tcol_i;
+            let tr: Rect = rect(x + tcol_i * (tw + pad_text()), y + trow * (row_h() + 2), tw, row_h());
+            let th_: bool = hover(inp, tr);
+            let active: bool = a.*.lib_tab == t;
+            let tbg: i64 = th_panel_alt();
+            if (active) { tbg = th_accent(); }
+            else if (th_) { tbg = th_header(); }
+            fill_round_rect(f, tr.x, tr.y, tr.w, tr.h, radius_control(), tbg);
+            if (active) { round_rect_outline(f, tr.x, tr.y, tr.w, tr.h, radius_control(), th_accent_hot()); }
+            let tn: []u8 = library_tab_name(t);
+            let tncol: i64 = th_text_dim();
+            if (active) { tncol = rgb(245, 247, 252); }
+            else if (th_) { tncol = th_text(); }
+            draw_text(f, tr.x + (tr.w - text_w(tn)) / 2, tr.y + 4, tn, tncol);
+            if (th_ && btn_released(inp, 0)) { a.*.lib_tab = t; }
+            tcol_i = tcol_i + 1;
+        }
+        trow = trow + 1;
+    }
+    y = y + (row_h() + 2) * 2 + pad_text();
+
+    // component cards, filtered by tab + search
+    let q: []u8 = textedit_text(&a.*.lib_search);
+    let shown: i32 = 0;
     let ki: i32 = 0;
     while (ki < kind_count()) {
-        let k: Kind = kind_at(ki);
-        let card: Rect = rect(x, y, w, 34);
-        let armed: bool = a.*.tool == tool_place_base() + ki;
-        let hov: bool = hover(inp, card);
-        let bgc: i64 = th_panel_alt();
-        if (armed) { bgc = th_accent(); }
-        else if (hov) { bgc = th_header(); }
-        fill_rect(f, card.x, card.y, card.w, card.h, bgc);
-        rect_outline(f, card.x, card.y, card.w, card.h, th_outline());
-        fill_rect(f, card.x + 5, card.y + 6, 10, 22, kind_tint(k));
-        rect_outline(f, card.x + 5, card.y + 6, 10, 22, th_outline());
-        let tcol: i64 = th_text();
-        if (armed) { tcol = rgb(240, 244, 250); }
-        draw_text(f, card.x + 22, card.y + 5, kind_short(k), tcol);
-        draw_text(f, card.x + 22, card.y + 19, kind_blurb(k), th_text_dim());
-        draw_text(f, card.x + card.w - 12, card.y + 5, fmt_i((ki + 1) as i64), th_text_dim());
-        if (hov && btn_pressed(inp, 0)) {
-            a.*.tool = tool_place_base() + ki;
+        if (library_tab_has(a.*.lib_tab, ki)) {
+            let k: Kind = kind_at(ki);
+            if (pcmd_match(kind_name(k), q) || pcmd_match(kind_short(k), q)) {
+                y = draw_lib_card(a, x, y, w, ki);
+                shown = shown + 1;
+            }
         }
-        y = y + 38;
         ki = ki + 1;
     }
-    y = y + 6;
+    // tool cards for the Route / Debug categories
+    if (a.*.lib_tab == 6 && pcmd_match("route waveguide", q)) {
+        if (ui_button(f, inp, rect(x, y, w, control_h()), "Route Waveguide (E)", a.*.tool == tool_route())) {
+            a.*.tool = tool_route();
+            a.*.route_c = 0 - 1;
+        }
+        y = y + control_h() + pad_text();
+        shown = shown + 1;
+    }
+    if (a.*.lib_tab == 7) {
+        if (pcmd_match("measure", q)) {
+            if (ui_button(f, inp, rect(x, y, w, control_h()), "Measure Tool (M)", a.*.tool == tool_measure())) {
+                a.*.tool = tool_measure();
+                a.*.measure_n = 0;
+            }
+            y = y + control_h() + pad_text();
+            shown = shown + 1;
+        }
+        if (pcmd_match("demo design", q)) {
+            if (ui_button(f, inp, rect(x, y, w, control_h()), "Load Demo Design", false)) {
+                app_action_demo(a);
+            }
+            y = y + control_h() + pad_text();
+            shown = shown + 1;
+        }
+    }
+    if (shown == 0) {
+        // clean empty state instead of a dead area (Section 3.2)
+        ui_empty_state(f, rect(content.x, y, content.w, 84), "no parts match", "clear the search or switch tabs");
+        y = y + 88;
+    }
+    y = y + pad_text();
 
-    // ── inspector ──
+    // ── inspector (Section 3.8) ──
     hline(f, content.x, y, content.w, th_outline());
-    y = y + 6;
+    y = y + pad_text() + 2;
     draw_text(f, x, y, "INSPECTOR", th_text_dim());
-    y = y + 15;
+    y = y + row_h();
 
     let pid: i32 = sel_primary(a);
     if (pid >= 0) {
         let ci: i32 = scene_comp_index(a.*.scene, pid);
-        if (ci >= 0) {
-            let c: Comp = a.*.scene.*.comps.data[ci];
-            draw_text(f, x, y, c.name_, th_select());
-            y = y + 14;
-            draw_text(f, x, y, kind_name(c.kind), th_text());
-            y = y + 14;
-            let pos: []u8 = _zag_str_concat("cell ", fmt_i(c.origin.x as i64));
-            let pos2: []u8 = _zag_str_concat(pos, ", ");
-            let pos3: []u8 = _zag_str_concat(pos2, fmt_i(c.origin.y as i64));
-            let pos4: []u8 = _zag_str_concat(pos3, ", ");
-            let pos5: []u8 = _zag_str_concat(pos4, fmt_i(c.origin.z as i64));
-            let pos6: []u8 = _zag_str_concat(pos5, "   rot ");
-            let pos7: []u8 = _zag_str_concat(pos6, fmt_i((c.rot * 90) as i64));
-            draw_text(f, x, y, pos7, th_text_dim());
-            y = y + 14;
-            // exact dimensions (voxels)
-            let ext: Vox = comp_ext(c);
-            let dim: []u8 = _zag_str_concat("size ", fmt_i(ext.x as i64));
-            let dim2: []u8 = _zag_str_concat(_zag_str_concat(dim, "x"), fmt_i(ext.y as i64));
-            let dim3: []u8 = _zag_str_concat(_zag_str_concat(dim2, "x"), fmt_i(ext.z as i64));
-            draw_text(f, x, y, _zag_str_concat(dim3, " vox"), th_text_dim());
-            y = y + 14;
-            // live output beam state (updates as the simulation steps)
-            if (c.kind == Kind.Emitter || c.kind == Kind.Chamber || c.kind == Kind.Detector) {
-                let ot: i32 = sim_history(a.*.sim, c.id, 0);
-                draw_text(f, x, y, "output", th_text_dim());
-                fill_rect(f, x + 46, y, 9, 9, trit_color(ot));
-                rect_outline(f, x + 46, y, 9, 9, trit_rim(ot));
-                draw_text(f, x + 60, y, trit_glyph(ot), th_text());
-                y = y + 14;
-            }
-            // physical-model provenance for this component kind
-            y = draw_provenance(f, x, y, "model", kind_model_param(a.*.scene.*.model, c.kind));
-
-            if (c.kind == Kind.Emitter) {
-                let wl: []u8 = _zag_str_concat("wavelength ", fmt_i(c.wl_nm as i64));
-                let wl2: []u8 = _zag_str_concat(wl, " nm");
-                draw_text(f, x, y, wl2, th_text());
-                fill_rect(f, x + text_w(wl2) + 6, y, 24, 9, wavelength_color(c.wl_nm));
-                y = y + 14;
-                draw_text(f, x, y, "pattern (T to cycle):", th_text_dim());
-                y = y + 13;
-                let pat: []u8 = preset_pattern(c.preset);
-                let pi: i32 = 0;
-                while (pi < pat.len) {
-                    let t: i32 = 0;
-                    if ((pat[pi] as i32) == '+') { t = 1; }
-                    if ((pat[pi] as i32) == '-') { t = 0 - 1; }
-                    fill_rect(f, x + pi * 11, y, 9, 9, trit_color(t));
-                    rect_outline(f, x + pi * 11, y, 9, 9, trit_rim(t));
-                    pi = pi + 1;
-                }
-                y = y + 16;
-            }
-            if (c.kind == Kind.Chamber) {
-                let soh: []u8 = _zag_str_concat("memory tiles ", fmt_i(scene_soh_adjacent(a.*.scene, c.id) as i64));
-                draw_text(f, x, y, soh, th_text());
-                y = y + 14;
-                draw_text(f, x, y, "transfer: interference sum", th_text_dim());
-                y = y + 14;
-            }
-            y = y + 2;
-            let half2: i32 = (w - 4) / 2;
-            if (ui_button(f, inp, rect(x, y, half2, 18), "Move (G)", a.*.moving)) {
-                app_start_move(a);
-            }
-            if (ui_button(f, inp, rect(x + half2 + 4, y, half2, 18), "Delete (X)", false)) {
-                app_delete_selection(a);
-            }
-            y = y + 24;
-        }
+        if (ci >= 0) { y = draw_inspector_comp(a, content, x, y, w, ci); }
     } else if (a.*.sel_guide >= 0) {
         let gi: i32 = scene_guide_index(a.*.scene, a.*.sel_guide);
-        if (gi >= 0) {
-            let g: Guide = a.*.scene.*.guides.data[gi];
-            draw_text(f, x, y, "Waveguide", th_select());
-            y = y + 14;
-            let ln: []u8 = _zag_str_concat("length ", fmt_i(g.length_nm as i64));
-            let ln2: []u8 = _zag_str_concat(ln, " nm");
-            draw_text(f, x, y, ln2, th_text());
-            y = y + 14;
-            let fs: []u8 = _zag_str_concat("delay ", fmt_i(guide_delay_fs_for(a.*.scene, g.length_nm) as i64));
-            let fs2: []u8 = _zag_str_concat(fs, " fs / ");
-            let fs3: []u8 = _zag_str_concat(fs2,
-                fmt_i(guide_delay_symbols_for_model(a.*.scene, a.*.sim.*.clock_ghz, g.length_nm) as i64));
-            let fs4: []u8 = _zag_str_concat(fs3, " symbols");
-            draw_text(f, x, y, fs4, th_text_dim());
-            y = y + 14;
-            draw_text(f, x, y, "state", th_text_dim());
-            fill_rect(f, x + 38, y, 9, 9, trit_color(g.live));
-            rect_outline(f, x + 38, y, 9, 9, trit_rim(g.live));
-            draw_text(f, x + 52, y, trit_glyph(g.live), th_text());
-            y = y + 16;
-            // propagation model provenance (group index drives the delay above)
-            y = draw_provenance(f, x, y, "n_g", a.*.scene.*.model.group_index);
-            if (ui_button(f, inp, rect(x, y, w, 18), "Delete (X)", false)) {
-                app_delete_selection(a);
+        if (gi >= 0) { y = draw_inspector_guide(a, x, y, w, gi); }
+    } else {
+        ui_empty_state(f, rect(content.x, y, content.w, imax(90, content.y + content.h - y - 4)),
+                       "nothing selected", "click a part; shift+click adds");
+    }
+    fb_clip_reset(f);
+}
+
+// One labeled numeric row: label left, stepped field right. Returns +1/-1 on a
+// step click, 2 when a typed value was committed (in out_val), 0 otherwise.
+// Clicking the value opens precise typing through a.insp_edit (Section 3.8).
+fn insp_field(a: *App, x: i32, y: i32, w: i32, label: []u8, val: []u8, unit: []u8,
+              fid: i32, out_val: *i64) i32 {
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    draw_text(f, x, y + 6, label, th_text_dim());
+    let fw: i32 = w - 58;
+    if (fw < 76) { fw = 76; }
+    let fr: Rect = rect(x + w - fw, y, fw, control_h());
+    if (a.*.insp_edit_field == fid) {
+        let _ch: bool = ui_textfield(f, inp, fr, &a.*.insp_edit, "");
+        if (a.*.insp_edit.committed) {
+            a.*.insp_edit_field = 0 - 1;
+            out_val.* = _zag_str_to_i64(textedit_text(&a.*.insp_edit));
+            return 2;
+        }
+        if (!a.*.insp_edit.focus) { a.*.insp_edit_field = 0 - 1; }
+        return 0;
+    }
+    let step: i32 = ui_numfield(f, inp, fr, val, unit, ui_key(fr) + (fid as i64) * 31337);
+    if (step != 0) { return step; }
+    // click the value area (between the steppers) to type an exact number
+    let mid: Rect = rect(fr.x + 14, fr.y, fr.w - 28, fr.h);
+    if (hover(inp, mid) && btn_released(inp, 0)) {
+        a.*.insp_edit_field = fid;
+        textedit_set(&a.*.insp_edit, val);
+        a.*.insp_edit.focus = true;
+    }
+    return 0;
+}
+
+// Apply a single-axis move to the primary selection through the journaled path.
+fn insp_apply_move(a: *App, id: i32, d: Vox) void {
+    if (d.x == 0 && d.y == 0 && d.z == 0) { return; }
+    if (app_is_locked(a, id)) {
+        a.*.insp_err = "part is locked";
+        a.*.insp_err_frame = a.*.frame;
+        return;
+    }
+    let one: list.ArrayList[i32] = list.make[i32](1);
+    list.push[i32](&one, id);
+    if (group_can_move(a.*.scene, &one, d) == 0) {
+        op_move(&a.*.jrn, a.*.scene, id, d);
+        group_move(a.*.scene, &one, d);
+        app_mark_dirty(a);
+        a.*.insp_err = "";
+        input_flash(&a.*.inp, 424242 + (id as i64));
+    } else {
+        a.*.insp_err = "blocked: destination fails placement rules";
+        a.*.insp_err_frame = a.*.frame;
+        a.*.invalid_frame = a.*.frame;
+    }
+    list.free[i32](&one);
+}
+
+fn draw_inspector_comp(a: *App, content: Rect, x: i32, y0: i32, w: i32, ci: i32) i32 {
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let y: i32 = y0;
+    let c: Comp = a.*.scene.*.comps.data[ci];
+    let id: i32 = c.id;
+
+    // identity: name (select color), kind, lock state — full size, never tiny
+    draw_text(f, x, y, c.name_, th_select());
+    if (app_is_locked(a, id)) {
+        draw_text(f, x + text_w(c.name_) + pad_panel(), y, "locked", th_warning());
+    }
+    y = y + row_h();
+    draw_text(f, x, y, kind_name(c.kind), th_text());
+    y = y + row_h();
+
+    // inline validation error (Section 3.8), clears after ~3 s
+    if (a.*.insp_err.len > 0 && a.*.frame - a.*.insp_err_frame < 180) {
+        draw_text(f, x, y, a.*.insp_err, th_danger());
+        y = y + row_h();
+    }
+    // component warning from the design-warning pass (Section 3.4)
+    let wcode: i32 = app_comp_warning(a, id);
+    if (wcode != 0) {
+        draw_text(f, x, y, warn_text(wcode), th_warning());
+        y = y + row_h();
+    }
+
+    // ── transform (numeric fields with steppers, typing, units) ──
+    if (ui_section(f, inp, x, y, w, "Transform", &a.*.insp_open_t, 0 - 1)) {
+        y = y + row_h() + 2;
+        let tv: i64 = 0;
+        let sx: i32 = insp_field(a, x, y, w, "cell x", fmt_i(c.origin.x as i64), "cell", 0, &tv);
+        if (sx == 1 || sx == 0 - 1) { insp_apply_move(a, id, vox(sx, 0, 0)); }
+        if (sx == 2) { insp_apply_move(a, id, vox((tv as i32) - c.origin.x, 0, 0)); }
+        y = y + control_h() + 2;
+        let sy: i32 = insp_field(a, x, y, w, "cell y", fmt_i(c.origin.y as i64), "cell", 1, &tv);
+        if (sy == 1 || sy == 0 - 1) { insp_apply_move(a, id, vox(0, sy, 0)); }
+        if (sy == 2) { insp_apply_move(a, id, vox(0, (tv as i32) - c.origin.y, 0)); }
+        y = y + control_h() + 2;
+        let sz: i32 = insp_field(a, x, y, w, "cell z", fmt_i(c.origin.z as i64), "cell", 2, &tv);
+        if (sz == 1 || sz == 0 - 1) { insp_apply_move(a, id, vox(0, 0, sz)); }
+        if (sz == 2) { insp_apply_move(a, id, vox(0, 0, (tv as i32) - c.origin.z)); }
+        y = y + control_h() + 2;
+        let sr: i32 = insp_field(a, x, y, w, "rot", fmt_i((c.rot * 90) as i64), "deg", 3, &tv);
+        if (sr != 0) {
+            let newrot: i32 = (c.rot + 1) % 4;
+            if (sr == 0 - 1) { newrot = (c.rot + 3) % 4; }
+            if (sr == 2) {
+                let q: i64 = (tv / 90) % 4;
+                if (q < 0) { q = q + 4; }
+                newrot = q as i32;
+            }
+            if (app_is_locked(a, id)) {
+                a.*.insp_err = "part is locked";
+                a.*.insp_err_frame = a.*.frame;
+            } else {
+                let rv: i32 = op_rotate(&a.*.jrn, a.*.scene, id, newrot);
+                if (rv == 0) { app_mark_dirty(a); a.*.insp_err = ""; }
+                else {
+                    a.*.insp_err = _zag_str_concat("cannot rotate: ", place_err_text(rv));
+                    a.*.insp_err_frame = a.*.frame;
+                }
             }
         }
-    } else {
-        draw_text(f, x, y, "nothing selected", th_text_dim());
-        y = y + 18;
-        draw_text(f, x, y, "click a part to inspect it;", th_text_dim());
-        y = y + 13;
-        draw_text(f, x, y, "shift+click adds to the", th_text_dim());
-        y = y + 13;
-        draw_text(f, x, y, "selection", th_text_dim());
+        y = y + control_h() + 2;
+        // exact dimensions; resizable kinds get live width/depth fields
+        if (kind_resizable(c.kind)) {
+            let sw: i32 = insp_field(a, x, y, w, "size w", fmt_i(c.size.x as i64), "vox", 4, &tv);
+            if (sw != 0) {
+                let ns: Vox = c.size;
+                if (sw == 2) { ns.x = tv as i32; } else { ns.x = ns.x + sw; }
+                let rv2: i32 = op_resize(&a.*.jrn, a.*.scene, id, clamp_size(c.kind, ns));
+                if (rv2 == 0) { app_mark_dirty(a); a.*.insp_err = ""; }
+                else {
+                    a.*.insp_err = _zag_str_concat("cannot resize: ", place_err_text(rv2));
+                    a.*.insp_err_frame = a.*.frame;
+                }
+            }
+            y = y + control_h() + 2;
+            let sd: i32 = insp_field(a, x, y, w, "size d", fmt_i(c.size.z as i64), "vox", 6, &tv);
+            if (sd != 0) {
+                let ns2: Vox = c.size;
+                if (sd == 2) { ns2.z = tv as i32; } else { ns2.z = ns2.z + sd; }
+                let rv3: i32 = op_resize(&a.*.jrn, a.*.scene, id, clamp_size(c.kind, ns2));
+                if (rv3 == 0) { app_mark_dirty(a); a.*.insp_err = ""; }
+                else {
+                    a.*.insp_err = _zag_str_concat("cannot resize: ", place_err_text(rv3));
+                    a.*.insp_err_frame = a.*.frame;
+                }
+            }
+            y = y + control_h() + 2;
+        } else {
+            let ext: Vox = comp_ext(c);
+            let dim: []u8 = _zag_str_concat("size ", fmt_i(ext.x as i64));
+            dim = _zag_str_concat(_zag_str_concat(dim, "x"), fmt_i(ext.y as i64));
+            dim = _zag_str_concat(_zag_str_concat(dim, "x"), fmt_i(ext.z as i64));
+            draw_text(f, x, y + 3, _zag_str_concat(dim, " vox"), th_text_dim());
+            y = y + row_h();
+        }
+    } else { y = y + row_h() + 2; }
+
+    // ── engine state: beam output, port states, simulation status ──
+    if (ui_section(f, inp, x, y, w, "Engine", &a.*.insp_open_e, 0 - 1)) {
+        y = y + row_h() + 2;
+        if (c.kind == Kind.Emitter || c.kind == Kind.Chamber || c.kind == Kind.Detector) {
+            let ot: i32 = sim_history(a.*.sim, id, 0);
+            draw_text(f, x, y + 2, "output", th_text_dim());
+            fill_rect(f, x + 46, y, 12, 12, trit_color(ot));
+            rect_outline(f, x + 46, y, 12, 12, trit_rim(ot));
+            draw_text(f, x + 64, y + 2, trit_glyph(ot), th_text());
+            y = y + row_h() + 2;
+        }
+        // port states (Section 3.8): direction, connection, live carrier trit
+        let np: i32 = kind_port_count(c.kind);
+        if (np > 0 && ui_section(f, inp, x, y, w, "Ports", &a.*.insp_open_p, np)) {
+            y = y + row_h() + 2;
+            let pi2: i32 = 0;
+            while (pi2 < np) {
+                let p: Port = kind_port(c.kind, pi2);
+                let dirs: []u8 = "in ";
+                if (p.is_output) { dirs = "out"; }
+                draw_text(f, x + pad_text(), y + 2, p.label, th_text());
+                draw_text(f, x + 46, y + 2, dirs, th_text_dim());
+                // find the guide attached to this port for its live trit
+                let gt: i32 = signal_unknown();
+                let attached: bool = false;
+                let gg: i32 = 0;
+                while (gg < a.*.scene.*.guides.len) {
+                    let g2: Guide = a.*.scene.*.guides.data[gg];
+                    if ((g2.from_c == id && g2.from_p == pi2) || (g2.to_c == id && g2.to_p == pi2)) {
+                        gt = g2.live;
+                        attached = true;
+                    }
+                    gg = gg + 1;
+                }
+                if (attached) {
+                    fill_rect(f, x + 72, y + 1, 10, 10, trit_color(gt));
+                    rect_outline(f, x + 72, y + 1, 10, 10, trit_rim(gt));
+                    draw_text(f, x + 88, y + 2, trit_glyph(gt), th_text());
+                } else {
+                    draw_text(f, x + 72, y + 2, "open", th_warning());
+                }
+                y = y + row_h();
+                pi2 = pi2 + 1;
+            }
+        } else if (np > 0) { y = y + row_h() + 2; }
+        // simulation status (Section 3.8): mode, run state, model completeness
+        let sst: []u8 = "Functional (symbolic)";
+        if (a.*.sim.*.mode == SimMode.Physical) { sst = "Physical"; }
+        let run2: []u8 = "  paused";
+        if (a.*.sim.*.playing) { run2 = "  running"; }
+        draw_text(f, x, y + 2, _zag_str_concat(_zag_str_concat("sim ", sst), run2), th_text_dim());
+        y = y + row_h();
+        if (a.*.sim.*.mode == SimMode.Physical && !model_complete(a.*.scene.*.model)) {
+            draw_text(f, x, y + 2, "model incomplete: unverified", th_warning());
+            y = y + row_h();
+        }
+        if (c.kind == Kind.Chamber) {
+            let soh: []u8 = _zag_str_concat("memory tiles ", fmt_i(scene_soh_adjacent(a.*.scene, id) as i64));
+            draw_text(f, x, y + 2, soh, th_text());
+            y = y + row_h();
+        }
+    } else { y = y + row_h() + 2; }
+
+    // ── model provenance + emitter physics fields ──
+    if (ui_section(f, inp, x, y, w, "Model", &a.*.insp_open_m, 0 - 1)) {
+        y = y + row_h() + 2;
+        y = draw_provenance(f, x, y, "model", kind_model_param(a.*.scene.*.model, c.kind));
+        if (c.kind == Kind.Emitter) {
+            let tv2: i64 = 0;
+            let swl: i32 = insp_field(a, x, y, w, "wl", fmt_i(c.wl_nm as i64), "nm", 7, &tv2);
+            if (swl != 0) {
+                let nwl: i32 = (c.wl_nm as i32) + swl;
+                if (swl == 2) { nwl = tv2 as i32; }
+                if (nwl < 1530) { nwl = 1530; }
+                if (nwl > 1565) { nwl = 1565; }
+                op_set_prop(&a.*.jrn, a.*.scene, id, prop_wl(), nwl);
+                app_mark_dirty(a);
+            }
+            fill_rect(f, x + w - 24, y - row_h() + 2, 20, 9, wavelength_color(c.wl_nm));
+            y = y + control_h() + 2;
+            draw_text(f, x, y, "pattern (T to cycle):", th_text_dim());
+            y = y + 13;
+            let pat: []u8 = preset_pattern(c.preset);
+            let pi3: i32 = 0;
+            while (pi3 < pat.len) {
+                let t2: i32 = 0;
+                if ((pat[pi3] as i32) == '+') { t2 = 1; }
+                if ((pat[pi3] as i32) == '-') { t2 = 0 - 1; }
+                fill_rect(f, x + pi3 * 11, y, 9, 9, trit_color(t2));
+                rect_outline(f, x + pi3 * 11, y, 9, 9, trit_rim(t2));
+                pi3 = pi3 + 1;
+            }
+            y = y + row_h();
+        }
+    } else { y = y + row_h() + 2; }
+
+    y = y + pad_text();
+    // never place live controls beyond the visible panel (they would collide
+    // with the panel underneath in hit-testing)
+    if (y + control_h() <= content.y + content.h - pad_text()) {
+        let half2: i32 = (w - pad_text()) / 2;
+        if (ui_button(f, inp, rect(x, y, half2, control_h()), "Move (G)", a.*.moving)) {
+            app_start_move(a);
+        }
+        if (ui_button(f, inp, rect(x + half2 + pad_text(), y, half2, control_h()), "Delete (X)", false)) {
+            app_delete_selection(a);
+        }
     }
+    return y + control_h() + pad_text();
+}
+
+fn draw_inspector_guide(a: *App, x: i32, y0: i32, w: i32, gi: i32) i32 {
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let y: i32 = y0;
+    let g: Guide = a.*.scene.*.guides.data[gi];
+    draw_text(f, x, y, "Waveguide", th_select());
+    y = y + row_h();
+    // connection kind is stated explicitly (Section 3.4): this is a physically
+    // routed lattice path, simulated by the engine
+    draw_text(f, x, y, "physical: routed lattice path", th_text());
+    y = y + row_h();
+    if (a.*.sim.*.mode == SimMode.Physical && !model_complete(a.*.scene.*.model)) {
+        draw_text(f, x, y, "unverified: model incomplete", th_warning());
+    } else {
+        draw_text(f, x, y, "simulated: deterministic engine", th_text_dim());
+    }
+    y = y + row_h();
+    let ln: []u8 = _zag_str_concat("length ", fmt_i(g.length_nm as i64));
+    draw_text(f, x, y, _zag_str_concat(ln, " nm"), th_text());
+    y = y + row_h();
+    let fs: []u8 = _zag_str_concat("delay ", fmt_i(guide_delay_fs_for(a.*.scene, g.length_nm) as i64));
+    fs = _zag_str_concat(fs, " fs / ");
+    fs = _zag_str_concat(fs,
+        fmt_i(guide_delay_symbols_for_model(a.*.scene, a.*.sim.*.clock_ghz, g.length_nm) as i64));
+    fs = _zag_str_concat(fs, " symbols");
+    draw_text(f, x, y, fs, th_text_dim());
+    y = y + row_h();
+    draw_text(f, x, y + 2, "state", th_text_dim());
+    fill_rect(f, x + 38, y, 12, 12, trit_color(g.live));
+    rect_outline(f, x + 38, y, 12, 12, trit_rim(g.live));
+    draw_text(f, x + 56, y + 2, trit_glyph(g.live), th_text());
+    y = y + row_h() + 2;
+    y = draw_provenance(f, x, y, "n_g", a.*.scene.*.model.group_index);
+    if (ui_button(f, inp, rect(x, y, w, control_h()), "Delete (X)", false)) {
+        app_delete_selection(a);
+    }
+    return y + control_h() + pad_text();
 }
 
 // ── right: outliner ───────────────────────────────────────────────────────────
@@ -733,7 +1222,7 @@ fn outliner_group_row(a: *App, x: i32, y: i32, w: i32, gi: i32, label: []u8, cou
     let inp: *Input = &a.*.inp;
     let r: Rect = rect(x, y, w, 16);
     let hov: bool = hover(inp, r);
-    if (hov) { fill_rect(f, r.x, r.y, r.w, r.h, th_header()); }
+    if (hov) { fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), th_header()); }
     let open: bool = list.get[i32](a.*.expand, gi) == 1;
     let arrow: []u8 = ">";
     if (open) { arrow = "v"; }
@@ -749,6 +1238,117 @@ fn outliner_group_row(a: *App, x: i32, y: i32, w: i32, gi: i32, label: []u8, cou
     return open;
 }
 
+// One outliner component row (Section 3.9): type icon, name (inline-renamable),
+// warning badge, live-signal badge, lock and visibility toggles. Handles click
+// select, shift multi-select, double-click frame, right-click menu, and
+// drag-onto-row grouping. Returns true when the row consumed the pointer.
+fn outliner_comp_row(a: *App, row: Rect, j: i32) void {
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let c: Comp = a.*.scene.*.comps.data[j];
+    let k: Kind = c.kind;
+    let selr: bool = sel_has(a, c.id);
+    let hov: bool = hover(inp, row);
+    if (selr) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
+    else if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_header()); }
+
+    // icon by object type
+    fill_rect(f, row.x + 3, row.y + 4, 7, 7, kind_tint(k));
+    rect_outline(f, row.x + 3, row.y + 4, 7, 7, th_outline());
+
+    // inline rename (Section 3.6): the row becomes a text field
+    if (a.*.rename_id == c.id) {
+        let fr: Rect = rect(row.x + 14, row.y, row.w - 52, row.h);
+        let _ch2: bool = ui_textfield(f, inp, fr, &a.*.rename_edit, "");
+        if (a.*.rename_edit.committed) {
+            op_rename(&a.*.jrn, a.*.scene, c.id, textedit_text(&a.*.rename_edit));
+            app_mark_dirty(a);
+            a.*.rename_id = 0 - 1;
+        } else if (!a.*.rename_edit.focus) {
+            a.*.rename_id = 0 - 1;   // Esc or click-away cancels
+        }
+        return;
+    }
+
+    let tcol: i64 = th_text();
+    if (!c.visible) { tcol = th_text_dim(); }
+    let nmax: i32 = row.w - 15 - 60;
+    draw_text_max(f, row.x + 15, row.y + 3, c.name_, tcol, nmax);
+    let bx: i32 = row.x + 15 + imin(text_w(c.name_), nmax) + 5;
+
+    // group marker
+    if (app_group_of(a, c.id) >= 0) {
+        draw_text(f, bx, row.y + 3, "g", th_accent_hot());
+        bx = bx + 8;
+    }
+    // warning badge (clickable meaning: selecting the row selects the part)
+    if (app_comp_warning(a, c.id) != 0) {
+        draw_text(f, bx, row.y + 3, "!", th_warning());
+        bx = bx + 8;
+    }
+    // live signal badge for active parts
+    if (k == Kind.Emitter || k == Kind.Chamber || k == Kind.Detector) {
+        let lt: i32 = sim_history(a.*.sim, c.id, 0);
+        fill_rect(f, bx, row.y + 4, 7, 7, trit_color(lt));
+        rect_outline(f, bx, row.y + 4, 7, 7, trit_rim(lt));
+    }
+
+    // right side: lock toggle then visibility toggle
+    let lk: []u8 = "-";
+    let lcol: i64 = th_disabled();
+    if (app_is_locked(a, c.id)) { lk = "#"; lcol = th_warning(); }
+    if (ui_mini(f, inp, rect(row.x + row.w - 32, row.y, 14, row.h), lk, lcol)) {
+        app_toggle_lock(a, c.id);
+        return;
+    }
+    let eye: []u8 = "o";
+    if (!c.visible) { eye = "-"; }
+    if (ui_mini(f, inp, rect(row.x + row.w - 16, row.y, 14, row.h), eye, th_text_dim())) {
+        a.*.scene.*.comps.data[j].visible = !c.visible;
+        scene_mark_render(a.*.scene);
+        return;
+    }
+
+    if (hov && inp.*.mx < row.x + row.w - 34) {
+        // right-click context menu on the row
+        if (btn_released(inp, 2)) {
+            if (!sel_has(a, c.id)) { sel_set(a, c.id); }
+            a.*.ctx_open = true;
+            a.*.ctx_comp = c.id;
+            a.*.ctx_x = inp.*.mx;
+            a.*.ctx_y = inp.*.my;
+            return;
+        }
+        if (btn_pressed(inp, 0)) {
+            a.*.out_drag_id = c.id;   // may become a drag-to-group
+            let dbl: bool = app_dblclick(a);
+            if (shift_down(inp)) { sel_toggle(a, c.id); }
+            else {
+                sel_set(a, c.id);
+                let gid: i32 = app_group_of(a, c.id);
+                if (gid >= 0) { sel_add_group(a, gid); }
+            }
+            if (dbl) { app_frame_selected(a); }   // double-click frames
+        }
+        // drop of a dragged row onto this row: group the two (Section 3.9)
+        if (btn_released(inp, 0) && a.*.out_drag_id >= 0 && a.*.out_drag_id != c.id) {
+            let dragged: i32 = a.*.out_drag_id;
+            let tgid: i32 = app_group_of(a, c.id);
+            if (tgid < 0) {
+                tgid = a.*.group_next;
+                a.*.group_next = a.*.group_next + 1;
+                list.push[i32](&a.*.groups, c.id);
+                list.push[i32](&a.*.groups, tgid);
+            }
+            app_group_drop(a, dragged);
+            list.push[i32](&a.*.groups, dragged);
+            list.push[i32](&a.*.groups, tgid);
+            app_log(a, "grouped by drag");
+            a.*.out_drag_id = 0 - 1;
+        }
+    }
+}
+
 fn draw_outliner(a: *App) void {
     let f: *FB = &a.*.f;
     let inp: *Input = &a.*.inp;
@@ -761,9 +1361,24 @@ fn draw_outliner(a: *App) void {
         if (a.*.out_scroll < 0) { a.*.out_scroll = 0; }
     }
 
-    let x: i32 = content.x + 4;
-    let w: i32 = content.w - 8;
-    let y: i32 = content.y + 4 - a.*.out_scroll;
+    let x: i32 = content.x + pad_text();
+    let w: i32 = content.w - pad_text() * 2;
+
+    // search/filter (Section 3.9) — pinned above the scrolling tree
+    let _os: bool = ui_textfield(f, inp, rect(x, content.y + pad_text(), w, control_h()),
+                                 &a.*.out_search, "Filter objects...");
+    let list_top: i32 = content.y + pad_text() + control_h() + pad_text();
+    fb_clip(f, content.x, list_top, content.x + content.w, content.y + content.h);
+    let y: i32 = list_top - a.*.out_scroll;
+    let q: []u8 = textedit_text(&a.*.out_search);
+
+    // empty state: a fresh design has nothing to navigate yet
+    if (a.*.scene.*.comps.len == 0 && a.*.scene.*.guides.len == 0) {
+        fb_clip_reset(f);
+        ui_empty_state(f, rect(content.x, list_top, content.w, content.h - (list_top - content.y)),
+                       "empty design", "place parts from the Library");
+        return;
+    }
 
     // per-kind counts in ONE pass over the scene (was one pass per group)
     let counts: list.ArrayList[i32] = list.make[i32](kind_count());
@@ -778,7 +1393,7 @@ fn draw_outliner(a: *App) void {
 
     // rows scrolled out of the panel advance y but draw nothing — a 100k-part
     // outliner costs what its visible slice costs
-    let y_lo: i32 = content.y - 16;
+    let y_lo: i32 = list_top - 16;
     let y_hi: i32 = content.y + content.h;
 
     let gi: i32 = 0;
@@ -791,26 +1406,9 @@ fn draw_outliner(a: *App) void {
             let j: i32 = 0;
             while (j < a.*.scene.*.comps.len) {
                 let c: Comp = a.*.scene.*.comps.data[j];
-                if (c.kind == k) {
+                if (c.kind == k && pcmd_match(c.name_, q)) {
                     if (y > y_lo && y < y_hi) {
-                        let row: Rect = rect(x + 10, y, w - 10, 15);
-                        let selr: bool = sel_has(a, c.id);
-                        let hov: bool = hover(inp, row);
-                        if (selr) { fill_rect(f, row.x, row.y, row.w, row.h, th_accent()); }
-                        else if (hov) { fill_rect(f, row.x, row.y, row.w, row.h, th_header()); }
-                        fill_rect(f, row.x + 3, row.y + 4, 7, 7, kind_tint(k));
-                        let tcol: i64 = th_text();
-                        if (!c.visible) { tcol = th_text_dim(); }
-                        draw_text(f, row.x + 15, row.y + 3, c.name_, tcol);
-                        let eye: []u8 = "o";
-                        if (!c.visible) { eye = "-"; }
-                        if (ui_mini(f, inp, rect(row.x + row.w - 16, row.y, 14, 15), eye, th_text_dim())) {
-                            a.*.scene.*.comps.data[j].visible = !c.visible;
-                            scene_mark_render(a.*.scene);
-                        } else if (hov && btn_released(inp, 0) && inp.*.mx < row.x + row.w - 18) {
-                            if (shift_down(inp)) { sel_toggle(a, c.id); }
-                            else { sel_set(a, c.id); }
-                        }
+                        outliner_comp_row(a, rect(x + 10, y, w - 10, 15), j);
                     }
                     y = y + 16;
                 }
@@ -820,6 +1418,8 @@ fn draw_outliner(a: *App) void {
         gi = gi + 1;
     }
     list.free[i32](&counts);
+    // a released drag with no drop target just cancels
+    if (!btn_down(inp, 0) && a.*.out_drag_id >= 0) { a.*.out_drag_id = 0 - 1; }
 
     let open_g: bool = outliner_group_row(a, x, y, w, 5, "Waveguides", a.*.scene.*.guides.len);
     y = y + 17;
@@ -831,8 +1431,8 @@ fn draw_outliner(a: *App) void {
                 let row: Rect = rect(x + 10, y, w - 10, 15);
                 let selr: bool = a.*.sel_guide == g.id;
                 let hov: bool = hover(inp, row);
-                if (selr) { fill_rect(f, row.x, row.y, row.w, row.h, th_accent()); }
-                else if (hov) { fill_rect(f, row.x, row.y, row.w, row.h, th_header()); }
+                if (selr) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
+                else if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_header()); }
                 fill_rect(f, row.x + 3, row.y + 4, 7, 7, trit_color(g.live));
                 rect_outline(f, row.x + 3, row.y + 4, 7, 7, trit_rim(g.live));
                 let sci: i32 = scene_comp_index(a.*.scene, g.from_c);
@@ -871,21 +1471,157 @@ fn scope_visible(a: *App) bool {
     return a.*.scene.*.comps.data[ci].kind == Kind.Chamber;
 }
 
-fn draw_lane(a: *App, x: i32, y: i32, w: i32, comp_id: i32, label: []u8, tint: i64) void {
-    let f: *FB = &a.*.f;
-    draw_text(f, x, y + 1, label, th_text());
-    fill_rect(f, x - 12, y + 2, 8, 8, tint);
-    let cells: i32 = (w - 130) / 7;
-    if (cells > 110) { cells = 110; }
-    let cx: i32 = x + 120;
+// ── signal timeline (Section 3.10) ────────────────────────────────────────────
+
+fn tl_in(lst: *list.ArrayList[i32], id: i32) bool {
     let i: i32 = 0;
-    while (i < cells) {
-        let back: i32 = cells - 1 - i;
-        let t: i32 = sim_history(a.*.sim, comp_id, back);
-        fill_rect(f, cx + i * 7, y, 6, 11, trit_color(t));
+    while (i < lst.*.len) {
+        if (list.get[i32](lst.*, i) == id) { return true; }
         i = i + 1;
     }
-    rect_outline(f, cx - 1, y - 1, cells * 7 + 1, 13, th_outline());
+    return false;
+}
+
+fn tl_toggle(lst: *list.ArrayList[i32], id: i32) void {
+    let i: i32 = 0;
+    while (i < lst.*.len) {
+        if (list.get[i32](lst.*, i) == id) {
+            let k: i32 = i;
+            while (k + 1 < lst.*.len) {
+                lst.*.data[k] = lst.*.data[k + 1];
+                k = k + 1;
+            }
+            lst.*.len = lst.*.len - 1;
+            return;
+        }
+        i = i + 1;
+    }
+    list.push[i32](lst, id);
+}
+
+// Vertical level for a trit inside an 14px row: +1 top, 0 mid, -1 bottom.
+fn tl_level_y(y: i32, t: i32) i32 {
+    if (t > 0) { return y + 1; }
+    if (t < 0) { return y + 11; }
+    return y + 6;
+}
+
+// One waveform row: pin + hide toggles, name with propagation delay, then a
+// smooth step-waveform over the visible history window. Hover inspects the
+// exact tick, click on the label highlights the beam path in 3D.
+fn draw_signal_row(a: *App, x: i32, y: i32, w: i32, comp_id: i32, label: []u8, tint: i64, hidden: bool) void {
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+
+    // pin / hide toggles
+    let pinned: bool = tl_in(&a.*.tl_pin, comp_id);
+    let pcol: i64 = th_disabled();
+    if (pinned) { pcol = th_accent_hot(); }
+    if (ui_mini(f, inp, rect(x, y, 12, 14), "^", pcol)) { tl_toggle(&a.*.tl_pin, comp_id); }
+    if (ui_mini(f, inp, rect(x + 13, y, 12, 14), "x", th_disabled())) { tl_toggle(&a.*.tl_hide, comp_id); }
+
+    fill_rect(f, x + 28, y + 3, 8, 8, tint);
+
+    // cross-highlight (Section 3.10): the row whose beam path is selected in 3D
+    let hl: bool = false;
+    if (a.*.sel_guide >= 0) {
+        let hgi: i32 = scene_guide_index(a.*.scene, a.*.sel_guide);
+        if (hgi >= 0 && a.*.scene.*.guides.data[hgi].from_c == comp_id) { hl = true; }
+    }
+    let lrect: Rect = rect(x + 40, y, 96, 14);
+    let lcol: i64 = th_text();
+    if (hidden) { lcol = th_text_dim(); }
+    if (hl) { fill_rect(f, lrect.x - 2, y, 100, 14, th_accent()); }
+    else if (sel_has(a, comp_id)) { fill_rect(f, lrect.x - 2, y, 100, 14, th_header()); }
+    draw_text_max(f, lrect.x, y + 3, label, lcol, 78);
+    // propagation delay of the incoming guide, in symbols (Section 3.10)
+    let din: i32 = 0 - 1;
+    let gg2: i32 = 0;
+    while (gg2 < a.*.scene.*.guides.len) {
+        if (a.*.scene.*.guides.data[gg2].to_c == comp_id) {
+            din = guide_delay_symbols_for_model(a.*.scene, a.*.sim.*.clock_ghz,
+                                                a.*.scene.*.guides.data[gg2].length_nm);
+        }
+        gg2 = gg2 + 1;
+    }
+    if (din >= 0) {
+        let ds: []u8 = _zag_str_concat("+", fmt_i(din as i64));
+        draw_text(f, lrect.x + text_w(label) + 4, y + 3, ds, th_accent_hot());
+    }
+    // clicking the label selects the part and lights its beam path in 3D
+    if (hover(inp, lrect) && btn_released(inp, 0)) {
+        sel_set(a, comp_id);
+        let found_g: i32 = 0 - 1;
+        let gg3: i32 = 0;
+        while (gg3 < a.*.scene.*.guides.len) {
+            if (a.*.scene.*.guides.data[gg3].from_c == comp_id) {
+                found_g = a.*.scene.*.guides.data[gg3].id;
+            }
+            gg3 = gg3 + 1;
+        }
+        if (found_g >= 0) { a.*.sel_guide = found_g; }   // after sel_set: both stay lit
+    }
+
+    // waveform area
+    let wx: i32 = x + 140;
+    let ww: i32 = w - 148;
+    let cells: i32 = ww / a.*.tl_zoom;
+    if (cells > hist_len() - 1) { cells = hist_len() - 1; }
+    if (cells < 2) { return; }
+    fill_rect(f, wx, y, cells * a.*.tl_zoom, 14, rgb(14, 14, 18));
+    // symbol ruler ticks every 10 symbols
+    let live_sym: i64 = a.*.sim.*.symbol - 1 - (a.*.tl_scrub as i64);
+    let i: i32 = 0;
+    let prev_y: i32 = 0 - 1;
+    while (i < cells) {
+        let back: i32 = a.*.tl_scrub + (cells - 1 - i);
+        let t: i32 = sim_history(a.*.sim, comp_id, back);
+        let cxp: i32 = wx + i * a.*.tl_zoom;
+        let sym_i: i64 = a.*.sim.*.symbol - 1 - (back as i64);
+        if (sym_i >= 0 && sym_i % 10 == 0) {
+            vline(f, cxp, y, 14, rgb(30, 30, 36));
+        }
+        if (!signal_is_trit(t)) {
+            // invalid/conflicting state: unmistakable amber block (Section 3.10)
+            fill_rect(f, cxp, y + 2, a.*.tl_zoom, 10, trit_color(t));
+        } else {
+            let ly: i32 = tl_level_y(y, t);
+            let segc: i64 = trit_rim(t);
+            if (hidden) { segc = th_disabled(); }
+            hline(f, cxp, ly, a.*.tl_zoom, segc);
+            if (t != 0) { hline(f, cxp, ly + 1, a.*.tl_zoom, trit_color(t)); }
+            if (prev_y >= 0 && prev_y != ly) {
+                vline(f, cxp, imin(prev_y, ly), iabs(prev_y - ly) + 1, segc);
+            }
+            prev_y = ly;
+        }
+        i = i + 1;
+    }
+    rect_outline(f, wx - 1, y - 1, cells * a.*.tl_zoom + 2, 16, th_outline());
+
+    // hover inspect: exact tick / time / state under the cursor (Section 3.10)
+    let wrect: Rect = rect(wx, y, cells * a.*.tl_zoom, 14);
+    if (rect_has(wrect, inp.*.mx, inp.*.my) && inp.*.capture == 0) {
+        let hi: i32 = (inp.*.mx - wx) / a.*.tl_zoom;
+        let hback: i32 = a.*.tl_scrub + (cells - 1 - hi);
+        let ht: i32 = sim_history(a.*.sim, comp_id, hback);
+        let hsym: i64 = a.*.sim.*.symbol - 1 - (hback as i64);
+        if (hsym >= 0) {
+            vline(f, wx + hi * a.*.tl_zoom, y - 1, 16, th_focus());
+            let hps: i64 = ((hsym as f64) * sim_period_ps(a.*.sim)) as i64;
+            let hs: []u8 = _zag_str_concat("sym ", fmt_i(hsym));
+            hs = _zag_str_concat(hs, "  t ");
+            hs = _zag_str_concat(hs, fmt_i(hps));
+            hs = _zag_str_concat(hs, " ps  state ");
+            hs = _zag_str_concat(hs, trit_glyph(ht));
+            let hw: i32 = text_w(hs) + 10;
+            let hxp: i32 = inp.*.mx + 12;
+            if (hxp + hw > wx + ww) { hxp = inp.*.mx - hw - 8; }
+            blend_rect(f, hxp, y - 4, hw, 15, rgb(6, 8, 12), 220);
+            rect_outline(f, hxp, y - 4, hw, 15, th_outline());
+            draw_text(f, hxp + 5, y, hs, th_text());
+        }
+    }
 }
 
 fn draw_debugger(a: *App) void {
@@ -940,29 +1676,102 @@ fn draw_debugger(a: *App) void {
         draw_text(f, cx, y + 5, "-- (no active parts)", tcol);
     }
 
+    // timeline zoom controls + scrub state (Section 3.10)
+    let zx: i32 = content.x + content.w - 190;
+    draw_text(f, zx, y + 5, "zoom", th_text_dim());
+    if (ui_mini(f, inp, rect(zx + 30, y + 2, 14, 14), "-", th_text())) {
+        if (a.*.tl_zoom > 2) { a.*.tl_zoom = a.*.tl_zoom - 1; }
+    }
+    if (ui_mini(f, inp, rect(zx + 46, y + 2, 14, 14), "+", th_text())) {
+        if (a.*.tl_zoom < 14) { a.*.tl_zoom = a.*.tl_zoom + 1; }
+    }
+    if (a.*.tl_scrub > 0) {
+        let vs: []u8 = _zag_str_concat("-", fmt_i(a.*.tl_scrub as i64));
+        draw_text(f, zx + 66, y + 5, vs, th_warning());
+        if (ui_button(f, inp, rect(zx + 106, y, 50, 18), "Live", true)) { a.*.tl_scrub = 0; }
+    } else if (a.*.tl_hide.len > 0) {
+        let hl2: []u8 = "hidden";
+        if (ui_button(f, inp, rect(zx + 106, y, 60, 18), hl2, a.*.tl_show_hidden)) {
+            a.*.tl_show_hidden = !a.*.tl_show_hidden;
+        }
+    }
+
     y = y + 26;
 
     // lanes use the full panel unless the interference scope is showing
     let has_scope: bool = scope_visible(a) && content.w >= 700;
     let lanes_w: i32 = content.w - 16;
     if (has_scope) { lanes_w = content.w - 332; }
-    let shown: i32 = 0;
-    let max_lanes: i32 = (content.h - 60 - 14 * a.*.log.len) / 15;
-    let i: i32 = 0;
-    while (i < a.*.scene.*.comps.len) {
-        let c: Comp = a.*.scene.*.comps.data[i];
-        let is_sig: bool = c.kind == Kind.Emitter || c.kind == Kind.Chamber || c.kind == Kind.Detector;
-        if (is_sig && shown < max_lanes) {
-            let tint: i64 = kind_tint(c.kind);
-            if (c.kind == Kind.Emitter) { tint = wavelength_color(c.wl_nm); }
-            draw_lane(a, x + 14, y, lanes_w, c.id, c.name_, tint);
-            y = y + 15;
-            shown = shown + 1;
+    let lanes_top: i32 = y;
+
+    // scrub + zoom input over the whole lanes region (drag left = back in time)
+    let lanes_h: i32 = content.h - (y - content.y) - 14 * a.*.log.len - 8;
+    let lanes_rect: Rect = rect(x + 154, lanes_top, lanes_w - 154, lanes_h);
+    if (rect_has(lanes_rect, inp.*.mx, inp.*.my) && inp.*.capture == 0) {
+        if (inp.*.wheel != 0 && ctrl_down(inp)) {
+            a.*.tl_zoom = clampi(a.*.tl_zoom + inp.*.wheel, 2, 14);
+        } else if (inp.*.wheel != 0) {
+            a.*.tl_scroll = imax(0, a.*.tl_scroll - inp.*.wheel);
         }
-        i = i + 1;
+        if (btn_pressed(inp, 0) && shift_down(inp)) {
+            a.*.tl_drag = 1;
+            inp.*.capture = 3;
+        }
     }
+    if (a.*.tl_drag == 1) {
+        inp.*.capture = 3;
+        if (!btn_down(inp, 0)) {
+            a.*.tl_drag = 0;
+            inp.*.capture = 0;
+        } else {
+            // dragging scrubs: cursor distance from the right edge is symbols back
+            let backpx: i32 = (lanes_rect.x + lanes_rect.w) - inp.*.mx;
+            let ns: i32 = backpx / a.*.tl_zoom;
+            a.*.tl_scrub = clampi(ns, 0, hist_len() - 2);
+        }
+    }
+
+    // row order: pinned first, then the rest; hidden rows skipped unless shown
+    let order: list.ArrayList[i32] = list.make[i32](16);
+    let pass: i32 = 0;
+    while (pass < 2) {
+        let i0: i32 = 0;
+        while (i0 < a.*.scene.*.comps.len) {
+            let c0: Comp = a.*.scene.*.comps.data[i0];
+            let is_sig0: bool = c0.kind == Kind.Emitter || c0.kind == Kind.Chamber || c0.kind == Kind.Detector;
+            if (is_sig0) {
+                let pinned0: bool = tl_in(&a.*.tl_pin, c0.id);
+                let hidden0: bool = tl_in(&a.*.tl_hide, c0.id);
+                let want: bool = false;
+                if (pass == 0 && pinned0) { want = true; }
+                if (pass == 1 && !pinned0) { want = true; }
+                if (want && (!hidden0 || a.*.tl_show_hidden)) { list.push[i32](&order, i0); }
+            }
+            i0 = i0 + 1;
+        }
+        pass = pass + 1;
+    }
+
+    let shown: i32 = 0;
+    let max_lanes: i32 = (content.h - 60 - 14 * a.*.log.len) / 17;
+    if (a.*.tl_scroll > imax(0, order.len - max_lanes)) {
+        a.*.tl_scroll = imax(0, order.len - max_lanes);
+    }
+    let oi: i32 = a.*.tl_scroll;
+    while (oi < order.len && shown < max_lanes) {
+        let ci4: i32 = list.get[i32](order, oi);
+        let c: Comp = a.*.scene.*.comps.data[ci4];
+        let tint: i64 = kind_tint(c.kind);
+        if (c.kind == Kind.Emitter) { tint = wavelength_color(c.wl_nm); }
+        draw_signal_row(a, x + 6, y, lanes_w, c.id, c.name_, tint, tl_in(&a.*.tl_hide, c.id));
+        y = y + 17;
+        shown = shown + 1;
+        oi = oi + 1;
+    }
+    list.free[i32](&order);
     if (shown == 0) {
-        draw_text(f, x + 14, y + 2, "place emitters, chambers and sensors to see signal lanes", th_text_dim());
+        ui_empty_state(f, rect(content.x, y, lanes_w, imax(70, lanes_h)),
+                       "no signal lanes", "place emitters, chambers and sensors");
         y = y + 15;
     }
 
@@ -1042,6 +1851,184 @@ fn draw_scope(a: *App, content: Rect) void {
     draw_text(f, sx + sw - 22, sy + 4, trit_glyph(out_t), th_text());
 }
 
+// ── measure tool (Section 3.4) ────────────────────────────────────────────────
+
+// Degree arctangent on [0,1] (max error ~0.3 deg) and full-quadrant atan2.
+fn atan_deg01(t: f64) f64 {
+    return t * (45.0 + 15.6 * (1.0 - t));
+}
+
+fn atan2_deg(y: f64, x: f64) f64 {
+    let ax: f64 = fabs(x);
+    let ay: f64 = fabs(y);
+    if (ax == 0.0 && ay == 0.0) { return 0.0; }
+    let ang: f64 = 0.0;
+    if (ax >= ay) { ang = atan_deg01(ay / ax); }
+    else { ang = 90.0 - atan_deg01(ax / ay); }
+    if (x < 0.0) { ang = 180.0 - ang; }
+    if (y < 0.0) { ang = 0.0 - ang; }
+    return ang;
+}
+
+fn draw_measure_marker(a: *App, vp: Rect, p: Vox, col: i64) void {
+    let f: *FB = &a.*.f;
+    let c: Vec3 = vox_center(p);
+    line3z(f, a.*.cam, vp, v3(c.x - 0.4, c.y, c.z), v3(c.x + 0.4, c.y, c.z), col, false, true);
+    line3z(f, a.*.cam, vp, v3(c.x, c.y, c.z - 0.4), v3(c.x, c.y, c.z + 0.4), col, false, true);
+    line3z(f, a.*.cam, vp, v3(c.x, c.y - 0.4, c.z), v3(c.x, c.y + 0.4, c.z), col, false, true);
+}
+
+// Exact deltas, straight-line distance (cells and nm from the lattice pitch),
+// layer height, and in-plane angle between the two picked points.
+fn draw_measure(a: *App, vp: Rect) void {
+    let f: *FB = &a.*.f;
+    if (a.*.measure_n == 0) {
+        draw_text(f, vp.x + pad_panel(), vp.y + vp.h - 30,
+                  "measure: click the first point", th_accent_hot());
+        return;
+    }
+    let pa: Vox = a.*.measure_a;
+    let pb: Vox = a.*.hover_cell;
+    if (a.*.measure_n == 2) { pb = a.*.measure_b; }
+    else if (!a.*.hover_ok) { pb = pa; }
+    draw_measure_marker(a, vp, pa, th_accent_hot());
+    draw_measure_marker(a, vp, pb, th_ok());
+    line3z(f, a.*.cam, vp, vox_center(pa), vox_center(pb), rgb(235, 240, 248), false, true);
+
+    let dx: i32 = pb.x - pa.x;
+    let dy: i32 = pb.y - pa.y;
+    let dz: i32 = pb.z - pa.z;
+    let dist_cells: f64 = sqrt((dx * dx + dy * dy + dz * dz) as f64);
+    let dist_nm: i64 = (dist_cells * pitch_nm()) as i64;
+    let s1: []u8 = _zag_str_concat("d ", fmt_i(dx as i64));
+    s1 = _zag_str_concat(s1, ", ");
+    s1 = _zag_str_concat(s1, fmt_i(dy as i64));
+    s1 = _zag_str_concat(s1, ", ");
+    s1 = _zag_str_concat(s1, fmt_i(dz as i64));
+    s1 = _zag_str_concat(s1, " cells   ");
+    s1 = _zag_str_concat(s1, fmt_f1(dist_cells));
+    s1 = _zag_str_concat(s1, " cells = ");
+    s1 = _zag_str_concat(s1, fmt_i(dist_nm));
+    s1 = _zag_str_concat(s1, " nm");
+    let s2: []u8 = _zag_str_concat("layer dy ", fmt_i(dy as i64));
+    s2 = _zag_str_concat(s2, "   angle ");
+    s2 = _zag_str_concat(s2, fmt_f1(atan2_deg(dz as f64, dx as f64)));
+    s2 = _zag_str_concat(s2, " deg (plane)");
+    let bw: i32 = imax(text_w(s1), text_w(s2)) + pad_panel() * 2;
+    let bx: i32 = vp.x + pad_panel();
+    let by: i32 = vp.y + vp.h - 52;
+    blend_rect(f, bx, by, bw, 36, rgb(6, 8, 12), 200);
+    rect_outline(f, bx, by, bw, 36, th_outline());
+    draw_text(f, bx + pad_panel(), by + 7, s1, th_text());
+    draw_text(f, bx + pad_panel(), by + 21, s2, th_text_dim());
+}
+
+// ── right-click context menu (Section 3.6) ────────────────────────────────────
+
+fn ctx_items(a: *App, out: *list.ArrayList[MenuItem]) void {
+    out.*.len = 0;
+    if (a.*.ctx_comp >= 0) {
+        let ci: i32 = scene_comp_index(a.*.scene, a.*.ctx_comp);
+        let vis_label: []u8 = "Hide";
+        if (ci >= 0 && !a.*.scene.*.comps.data[ci].visible) { vis_label = "Show"; }
+        let lock_label: []u8 = "Lock";
+        if (app_is_locked(a, a.*.ctx_comp)) { lock_label = "Unlock"; }
+        list.push[MenuItem](out, MenuItem{ .label = "Rename", .hint = "F2", .code = 19 });
+        list.push[MenuItem](out, MenuItem{ .label = "Duplicate", .hint = "Shift+D", .code = 12 });
+        list.push[MenuItem](out, MenuItem{ .label = "Copy", .hint = "Ctrl+C", .code = 15 });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
+        list.push[MenuItem](out, MenuItem{ .label = "Frame", .hint = "F", .code = 20 });
+        list.push[MenuItem](out, MenuItem{ .label = vis_label, .hint = "", .code = 70 });
+        list.push[MenuItem](out, MenuItem{ .label = lock_label, .hint = "", .code = 71 });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
+        list.push[MenuItem](out, MenuItem{ .label = "Group", .hint = "Ctrl+G", .code = 17 });
+        list.push[MenuItem](out, MenuItem{ .label = "Ungroup", .hint = "", .code = 18 });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
+        list.push[MenuItem](out, MenuItem{ .label = "Delete", .hint = "X", .code = 13 });
+    } else {
+        list.push[MenuItem](out, MenuItem{ .label = "Paste", .hint = "Ctrl+V", .code = 16 });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
+        list.push[MenuItem](out, MenuItem{ .label = "Frame All", .hint = "Home", .code = 21 });
+        list.push[MenuItem](out, MenuItem{ .label = "Reset View", .hint = "", .code = 28 });
+    }
+}
+
+fn ctx_exec(a: *App, code: i32) void {
+    if (code == 70) {
+        let ci: i32 = scene_comp_index(a.*.scene, a.*.ctx_comp);
+        if (ci >= 0) {
+            a.*.scene.*.comps.data[ci].visible = !a.*.scene.*.comps.data[ci].visible;
+            scene_mark_render(a.*.scene);
+        }
+        return;
+    }
+    if (code == 71) {
+        app_toggle_lock(a, a.*.ctx_comp);
+        return;
+    }
+    app_action(a, code);
+}
+
+fn draw_ctx_menu(a: *App) void {
+    if (!a.*.ctx_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let cap: i32 = inp.*.capture;
+    inp.*.capture = 0;
+
+    let items: list.ArrayList[MenuItem] = list.make[MenuItem](14);
+    ctx_items(a, &items);
+    let iw: i32 = 180;
+    let ih: i32 = 21;
+    let sep: i32 = 7;
+    let total: i32 = 0;
+    let i: i32 = 0;
+    while (i < items.len) {
+        if (items.data[i].code == 0) { total = total + sep; } else { total = total + ih; }
+        i = i + 1;
+    }
+    let mx0: i32 = a.*.ctx_x;
+    let my0: i32 = a.*.ctx_y;
+    if (mx0 + iw > inp.*.w - 4) { mx0 = inp.*.w - 4 - iw; }
+    if (my0 + total + 8 > inp.*.h - 4) { my0 = inp.*.h - 4 - total - 8; }
+    let dr: Rect = rect(mx0, my0, iw, total + 8);
+    draw_shadow(f, dr.x, dr.y, dr.w, dr.h, radius_panel());
+    fill_round_rect(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_panel());
+    round_rect_outline(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_outline());
+
+    let y: i32 = dr.y + 4;
+    let clicked: bool = false;
+    i = 0;
+    while (i < items.len) {
+        let it: MenuItem = items.data[i];
+        if (it.code == 0) {
+            hline(f, dr.x + 8, y + 3, dr.w - 16, th_outline_soft());
+            y = y + sep;
+        } else {
+            let row: Rect = rect(dr.x + 4, y, dr.w - 8, ih);
+            let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
+            if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
+            draw_text(f, row.x + pad_panel(), y + 6, it.label, th_text());
+            if (it.hint.len > 0) {
+                draw_text(f, row.x + row.w - text_w(it.hint) - pad_panel(), y + 6, it.hint, th_text_dim());
+            }
+            if (hov && btn_released(inp, 0)) {
+                a.*.ctx_open = false;
+                ctx_exec(a, it.code);
+                clicked = true;
+            }
+            y = y + ih;
+        }
+        i = i + 1;
+    }
+    if (!clicked && (btn_pressed(inp, 0) || btn_pressed(inp, 2)) &&
+        !rect_has(dr, inp.*.mx, inp.*.my)) {
+        a.*.ctx_open = false;
+    }
+    list.free[MenuItem](&items);
+    inp.*.capture = cap;
+}
+
 // ── center: 3D viewport composition ───────────────────────────────────────────
 
 fn draw_viewport(a: *App) void {
@@ -1060,16 +2047,44 @@ fn draw_viewport(a: *App) void {
     if (tiles_cache_ready(cache)) {
         tiles_blit(f, vp, cache);
     } else {
-        vp_draw_static(f, a.*.cam, vp, s, a.*.sim);
-        tiles_store_from_fb(f, vp, cache);
+        vp_draw_static(f, a.*.cam, vp, s, a.*.sim, a.*.sect_on, a.*.sect_y);
+        // Storing the slabs is only worth it if the camera will hold still and
+        // reuse them. During an active orbit/pan every frame re-rasterizes
+        // anyway, so skip the copy — the overlay still z-tests the fresh depth
+        // in the framebuffer — and cache once when motion stops.
+        if (!a.*.cam_drag) { tiles_store_from_fb(f, vp, cache); }
     }
 
     // ── dynamic overlay (every frame, z-tested against the cached depth) ─────
-    vp_draw_live(f, a.*.cam, vp, s, a.*.sim, a.*.sel_guide);
+    vp_draw_live(f, a.*.cam, vp, s, a.*.sim, a.*.sel_guide, a.*.sect_on, a.*.sect_y);
 
-    // place ghost
+    // simulation tick pulses active beams for a few frames (Section 3.11):
+    // a brief brightness lift on the carrier centerline, color only, and off
+    // entirely in reduced motion
+    let page: i64 = a.*.frame - a.*.pulse_frame;
+    if (!a.*.inp.reduced_motion && page >= 0 && page < 5) {
+        let pt: f64 = 1.0 - (page as f64) / 5.0;
+        let pg: i32 = 0;
+        while (pg < s.*.guides.len) {
+            let pgd: Guide = s.*.guides.data[pg];
+            if (pgd.live != 0 && !sect_hides_guide(a.*.sect_on, a.*.sect_y, pgd)) {
+                let pcol: i64 = lerp_color(trit_rim(pgd.live), rgb(255, 255, 255), pt * 0.5);
+                let pi4: i32 = 1;
+                while (pi4 < pgd.path.len) {
+                    line3(f, a.*.cam, vp, vox_center(list.get[Vox](pgd.path, pi4 - 1)),
+                          vox_center(list.get[Vox](pgd.path, pi4)), pcol, false);
+                    pi4 = pi4 + 1;
+                }
+            }
+            pg = pg + 1;
+        }
+    }
+
+    // place ghost (armed tool or library card drag)
     if (a.*.ghost_ok >= 0 && !a.*.moving) {
-        let k: Kind = app_current_kind(a);
+        let k: Kind = kind_at(0);
+        if (a.*.lib_drag >= 0) { k = kind_at(a.*.lib_drag); }
+        else { k = app_current_kind(a); }
         let e: Vox = rot_ext(kind_fp(k), a.*.ghost_rot);
         let mn: Vec3 = v3(a.*.ghost_origin.x as f64, a.*.ghost_origin.y as f64, a.*.ghost_origin.z as f64);
         let mx: Vec3 = v3(mn.x + (e.x as f64), mn.y + (e.y as f64), mn.z + (e.z as f64));
@@ -1077,7 +2092,62 @@ fn draw_viewport(a: *App) void {
         if (a.*.ghost_ok != 0) { gcol = th_danger(); }
         vp_box(f, a.*.cam, vp, mn, mx, gcol, 80, false);
         vp_box_wire(f, a.*.cam, vp, mn, mx, gcol);
+        let gcx: f64 = (mn.x + mx.x) * 0.5;
+        let gcz: f64 = (mn.z + mx.z) * 0.5;
+        // depth cue: drop line from the ghost base to the ground grid
+        if (mn.y > 0.0) {
+            line3z(f, a.*.cam, vp, v3(gcx, mn.y, gcz), v3(gcx, 0.0, gcz), th_text_dim(), false, true);
+        }
+        // snap targets shown BEFORE placement (Section 3.4): the snapped lattice
+        // cell outline plus alignment guides that gently pulse (Section 3.11)
+        let pulse: i64 = th_ok();
+        if (!a.*.inp.reduced_motion) {
+            let ph: f64 = sin((a.*.frame as f64) * 0.25) * 0.5 + 0.5;
+            pulse = lerp_color(th_ok(), rgb(180, 255, 205), ph);
+        }
+        if (a.*.snap_ax != 0 - 1000000) {
+            line3z(f, a.*.cam, vp, v3(mn.x, mn.y, gcz - 14.0), v3(mn.x, mn.y, gcz + 14.0), pulse, false, false);
+        }
+        if (a.*.snap_az != 0 - 1000000) {
+            line3z(f, a.*.cam, vp, v3(gcx - 14.0, mn.y, mn.z), v3(gcx + 14.0, mn.y, mn.z), pulse, false, false);
+        }
+        // invalid placement: the reason follows the ghost (never hidden)
+        if (a.*.ghost_ok > 0) {
+            let gp: P3 = vp_proj(a.*.cam, vp, v3(gcx, mx.y + 0.6, gcz));
+            if (gp.ok) {
+                let msg: []u8 = place_err_text(a.*.ghost_ok);
+                let mw: i32 = text_w(msg) + 10;
+                let mx0: i32 = (gp.x as i32) - mw / 2;
+                blend_rect(f, mx0, (gp.y as i32) - 8, mw, 15, rgb(30, 10, 10), 210);
+                draw_text(f, mx0 + 5, (gp.y as i32) - 4, msg, th_danger());
+            }
+        }
     }
+
+    // route tool: live preview from the armed output port to the cursor
+    if (a.*.tool == tool_route() && a.*.route_c >= 0) {
+        let rci: i32 = scene_comp_index(s, a.*.route_c);
+        if (rci >= 0) {
+            let ratt: Vox = comp_port_attach(s.*.comps.data[rci], a.*.route_p);
+            let rfrom: Vec3 = vox_center(ratt);
+            let rto: Vec3 = rfrom;
+            let rcol: i64 = th_accent_hot();
+            if (a.*.hover_pc >= 0) {
+                let hci: i32 = scene_comp_index(s, a.*.hover_pc);
+                if (hci >= 0) {
+                    rto = vox_center(comp_port_attach(s.*.comps.data[hci], a.*.hover_pp));
+                    rcol = th_ok();
+                }
+            } else {
+                let rch: CellHit = vp_cell_at(a.*.cam, vp, a.*.inp.mx, a.*.inp.my, 1);
+                if (rch.ok) { rto = vox_center(rch.cell); }
+            }
+            line3z(f, a.*.cam, vp, rfrom, rto, rcol, false, true);
+        }
+    }
+
+    // measure tool overlay (Section 3.4)
+    if (a.*.tool == tool_measure()) { draw_measure(a, vp); }
 
     // move ghost: outline every selected comp at its target offset
     if (a.*.moving) {
@@ -1144,7 +2214,16 @@ fn draw_viewport(a: *App) void {
     }
 
     // selection outlines: a dim ghost through occluding geometry, then a bright
-    // outline where the part is actually visible.
+    // outline where the part is actually visible. The bright pass fades in over
+    // ~6 frames after a selection change (Section 3.11) — color only, never
+    // position, and reduced motion renders at full strength immediately.
+    let sel_col: i64 = th_select();
+    if (!a.*.inp.reduced_motion) {
+        let sage: i64 = a.*.frame - a.*.sel_frame;
+        if (sage < 6 && sage >= 0) {
+            sel_col = lerp_color(rgb(120, 82, 26), th_select(), (sage as f64) / 6.0);
+        }
+    }
     let si: i32 = 0;
     while (si < a.*.sel.len) {
         let ci2: i32 = scene_comp_index(s, list.get[i32](a.*.sel, si));
@@ -1156,7 +2235,14 @@ fn draw_viewport(a: *App) void {
             let smn: Vec3 = v3(smn0.x - se, smn0.y - se, smn0.z - se);
             let smx: Vec3 = v3(smx0.x + se, smx0.y + se, smx0.z + se);
             vp_box_wire_ghost(f, a.*.cam, vp, smn, smx, rgb(150, 96, 30));
-            vp_box_wire(f, a.*.cam, vp, smn, smx, th_select());
+            vp_box_wire(f, a.*.cam, vp, smn, smx, sel_col);
+            // a locked part shows a small padlock glyph at its top corner
+            if (app_is_locked(a, c5.id)) {
+                let lp: P3 = vp_proj(a.*.cam, vp, v3(smx.x, smx.y, smn.z));
+                if (lp.ok) {
+                    draw_text(f, lp.x as i32, (lp.y as i32) - 10, "#", th_warning());
+                }
+            }
         }
         si = si + 1;
     }
@@ -1179,6 +2265,35 @@ fn draw_viewport(a: *App) void {
     }
 
     draw_frame_timing_overlay(a, vp);
+
+    // section view badge (Section 3.5)
+    if (a.*.sect_on) {
+        let sb: []u8 = _zag_str_concat("SECTION  y <= ", fmt_i(a.*.sect_y as i64));
+        let sbw: i32 = text_w(sb) + pad_panel() * 2;
+        let sbx: i32 = vp.x + (vp.w - sbw) / 2;
+        blend_rect(f, sbx, vp.y + 8, sbw, 18, rgb(6, 8, 12), 190);
+        rect_outline(f, sbx, vp.y + 8, sbw, 18, th_warning());
+        draw_text(f, sbx + pad_panel(), vp.y + 13, sb, th_warning());
+    }
+
+    // invalid-action flash (Section 3.11): a brief red border pulse plus the
+    // reason. Subtle, color-only; reduced motion shows it at a steady level.
+    let iage: i64 = a.*.frame - a.*.invalid_frame;
+    if (iage >= 0 && iage < 14) {
+        let lvl: i32 = ((14 - iage) * 14) as i32;
+        if (a.*.inp.reduced_motion) { lvl = 120; }
+        blend_rect(f, vp.x, vp.y, vp.w, 3, th_danger(), lvl);
+        blend_rect(f, vp.x, vp.y + vp.h - 3, vp.w, 3, th_danger(), lvl);
+        blend_rect(f, vp.x, vp.y + 3, 3, vp.h - 6, th_danger(), lvl);
+        blend_rect(f, vp.x + vp.w - 3, vp.y + 3, 3, vp.h - 6, th_danger(), lvl);
+        if (a.*.invalid_text.len > 0) {
+            let iw2: i32 = text_w(a.*.invalid_text) + pad_panel() * 2;
+            let ix: i32 = vp.x + (vp.w - iw2) / 2;
+            let iy: i32 = vp.y + vp.h - 24;
+            blend_rect(f, ix, iy, iw2, 17, rgb(30, 10, 10), 210);
+            draw_text(f, ix + pad_panel(), iy + 5, a.*.invalid_text, th_danger());
+        }
+    }
 
     fb_clip_reset(f);
     rect_outline(f, vp.x, vp.y, vp.w, vp.h, th_outline());
@@ -1264,8 +2379,8 @@ fn draw_frame_timing_overlay(a: *App, vp: Rect) void {
     let y: i32 = vp.y + 8;
     let w: i32 = 176;
     let h: i32 = 34;
-    blend_rect(f, x, y, w, h, rgb(6, 8, 12), 176);
-    rect_outline(f, x, y, w, h, th_outline());
+    blend_round_rect(f, x, y, w, h, radius_control(), rgb(6, 8, 12), 176);
+    round_rect_outline(f, x, y, w, h, radius_control(), th_outline_soft());
     draw_text(f, x + 6, y + 7, "frame ", th_text_dim());
     let tx: i32 = x + 6 + text_w("frame ");
     let tx2: i32 = tx + draw_int(f, tx, y + 7, a.*.frame, th_text());
@@ -1286,12 +2401,15 @@ fn draw_frame_timing_overlay(a: *App, vp: Rect) void {
 fn modal_frame(a: *App, w: i32, h: i32, title: []u8) Rect {
     let f: *FB = &a.*.f;
     // dim everything behind
-    blend_rect(f, 0, 0, a.*.inp.w, a.*.inp.h, rgb(8, 8, 10), 140);
+    blend_rect(f, 0, 0, a.*.inp.w, a.*.inp.h, rgb(8, 8, 10), 150);
     let r: Rect = rect((a.*.inp.w - w) / 2, (a.*.inp.h - h) / 2, w, h);
-    fill_rect(f, r.x, r.y, r.w, r.h, th_panel());
-    rect_outline(f, r.x, r.y, r.w, r.h, th_outline());
-    fill_rect(f, r.x + 1, r.y + 1, r.w - 2, 22, th_header());
-    draw_text(f, r.x + 9, r.y + 7, title, th_text());
+    draw_shadow(f, r.x, r.y, r.w, r.h, radius_panel());
+    fill_round_rect(f, r.x, r.y, r.w, r.h, radius_panel(), th_panel());
+    round_rect_outline(f, r.x, r.y, r.w, r.h, radius_panel(), th_outline());
+    fill_round_rect(f, r.x + 1, r.y + 1, r.w - 2, 23, radius_panel() - 1, th_header());
+    fill_rect(f, r.x + 1, r.y + 12, r.w - 2, 12, th_header());
+    hline(f, r.x + 1, r.y + 24, r.w - 2, th_outline_soft());
+    draw_text(f, r.x + pad_panel(), r.y + 8, title, th_text());
     return r;
 }
 
@@ -1409,10 +2527,11 @@ fn draw_settings_panel(a: *App) void {
     let pw: i32 = 236;
     let px: i32 = gr.x + gr.w - pw;
     if (px < 4) { px = 4; }
-    let pr: Rect = rect(px, menu_h(), pw, 128);
-    fill_rect(f, pr.x, pr.y, pr.w, pr.h, th_panel());
-    rect_outline(f, pr.x, pr.y, pr.w, pr.h, th_outline());
-    draw_text(f, pr.x + 10, pr.y + 8, "Settings", th_text());
+    let pr: Rect = rect(px, menu_h(), pw, 176);
+    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
+    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
+    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
+    draw_text(f, pr.x + pad_panel(), pr.y + 8, "Settings", th_text());
 
     let y: i32 = pr.y + 26;
     draw_text(f, pr.x + 10, y + 5, "Optimizer", th_text_dim());
@@ -1440,6 +2559,22 @@ fn draw_settings_panel(a: *App) void {
     if (a.*.ui_scale == 3) { s_lbl = "3x"; }
     if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), s_lbl, a.*.ui_scale > 1)) {
         a.*.ui_scale = (a.*.ui_scale % 3) + 1;
+    }
+    y = y + 24;
+    // reduced motion (Section 3.11): every ease/pulse becomes instant
+    draw_text(f, pr.x + 10, y + 5, "Reduced motion", th_text_dim());
+    let rm_lbl: []u8 = "Off";
+    if (a.*.inp.reduced_motion) { rm_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), rm_lbl, a.*.inp.reduced_motion)) {
+        a.*.inp.reduced_motion = !a.*.inp.reduced_motion;
+    }
+    y = y + 24;
+    // object-alignment snapping (Section 3.4)
+    draw_text(f, pr.x + 10, y + 5, "Object snapping", th_text_dim());
+    let sn_lbl: []u8 = "Off";
+    if (a.*.snap_obj) { sn_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), sn_lbl, a.*.snap_obj)) {
+        a.*.snap_obj = !a.*.snap_obj;
     }
 
     if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my) &&
@@ -1503,9 +2638,10 @@ fn draw_opt_panel(a: *App) void {
     if (a.*.opt.*.has_pending && a.*.opt_details) { ph = 156; }
     if (!a.*.opt.*.has_pending) { ph = 56; }
     let pr: Rect = rect(px, menu_h(), pw, ph);
-    fill_rect(f, pr.x, pr.y, pr.w, pr.h, th_panel());
-    rect_outline(f, pr.x, pr.y, pr.w, pr.h, th_outline());
-    draw_text(f, pr.x + 10, pr.y + 8, "Optimizer", th_text());
+    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
+    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
+    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
+    draw_text(f, pr.x + pad_panel(), pr.y + 8, "Optimizer", th_text());
 
     if (!a.*.opt.*.has_pending) {
         draw_text(f, pr.x + 10, pr.y + 32, "No optimizations found.", th_text_dim());
@@ -1560,22 +2696,238 @@ fn draw_opt_panel(a: *App) void {
     inp.*.capture = cap;
 }
 
+// ── panel state hashes (Section 3.12) ─────────────────────────────────────────
+// Everything a panel renders from is folded into an i64; an unchanged hash
+// plus an idle pointer means the cached surface stands in for the frame.
+
+fn hash_textedit(h0: i64, te: *TextEdit) i64 {
+    let h: i64 = ps_hash(h0, te.*.buf.len as i64);
+    if (te.*.focus) { h = ps_hash(h, 77); }
+    let i: i32 = 0;
+    while (i < te.*.buf.len) {
+        h = ps_hash(h, te.*.buf.data[i] as i64);
+        i = i + 1;
+    }
+    return h;
+}
+
+fn hash_sel(a: *App, h0: i64) i64 {
+    let h: i64 = ps_hash(h0, a.*.sel.len as i64);
+    let i: i32 = 0;
+    while (i < a.*.sel.len) {
+        h = ps_hash(h, list.get[i32](a.*.sel, i) as i64);
+        i = i + 1;
+    }
+    return ps_hash(h, a.*.sel_guide as i64);
+}
+
+// Live output trits of every active part: the data behind outliner badges and
+// timeline rows. A sim step that changes nothing visible changes no hash.
+fn hash_signals(a: *App, h0: i64) i64 {
+    let h: i64 = h0;
+    let i: i32 = 0;
+    while (i < a.*.scene.*.comps.len) {
+        let c: Comp = a.*.scene.*.comps.data[i];
+        if (c.kind == Kind.Emitter || c.kind == Kind.Chamber || c.kind == Kind.Detector) {
+            h = ps_hash(h, sim_history(a.*.sim, c.id, 0) as i64);
+        }
+        i = i + 1;
+    }
+    return h;
+}
+
+fn hash_left(a: *App) i64 {
+    let h: i64 = 1469598103934665603;
+    h = ps_hash(h, a.*.scene.*.render_rev);
+    h = ps_hash(h, a.*.scene.*.comps.len as i64);
+    h = ps_hash(h, a.*.scene.*.guides.len as i64);
+    h = ps_hash(h, a.*.tool as i64);
+    h = ps_hash(h, a.*.lib_tab as i64);
+    h = ps_hash(h, a.*.lib_drag as i64);
+    h = hash_textedit(h, &a.*.lib_search);
+    h = hash_sel(a, h);
+    h = ps_hash(h, sel_output_trit(a) as i64);
+    h = ps_hash(h, a.*.insp_open_t as i64 + a.*.insp_open_e as i64 * 2 +
+                   a.*.insp_open_m as i64 * 4 + a.*.insp_open_p as i64 * 8);
+    h = ps_hash(h, a.*.insp_edit_field as i64);
+    h = hash_textedit(h, &a.*.insp_edit);
+    let err_live: i64 = 0;
+    if (a.*.insp_err.len > 0 && a.*.frame - a.*.insp_err_frame < 180) { err_live = 1; }
+    h = ps_hash(h, err_live);
+    h = ps_hash(h, a.*.warn_rev);
+    if (a.*.moving) { h = ps_hash(h, 3); }
+    h = ps_hash(h, a.*.locked.len as i64);
+    h = ps_hash(h, a.*.sim.*.playing as i64);
+    // live trits render in the inspector only while something is selected, so
+    // an unselected panel ignores signal steps entirely (Section 3.12)
+    if (sel_primary(a) >= 0 || a.*.sel_guide >= 0) {
+        h = hash_signals(a, h);
+        let sgi: i32 = scene_guide_index(a.*.scene, a.*.sel_guide);
+        if (sgi >= 0) { h = ps_hash(h, a.*.scene.*.guides.data[sgi].live as i64); }
+    }
+    return h;
+}
+
+fn hash_right(a: *App) i64 {
+    let h: i64 = 1099511628211;
+    h = ps_hash(h, a.*.scene.*.render_rev);
+    h = ps_hash(h, a.*.scene.*.comps.len as i64);
+    h = ps_hash(h, a.*.scene.*.guides.len as i64);
+    h = ps_hash(h, a.*.out_scroll as i64);
+    h = hash_textedit(h, &a.*.out_search);
+    h = ps_hash(h, a.*.rename_id as i64);
+    h = hash_textedit(h, &a.*.rename_edit);
+    h = hash_sel(a, h);
+    h = ps_hash(h, a.*.locked.len as i64);
+    h = ps_hash(h, a.*.groups.len as i64);
+    h = ps_hash(h, a.*.warn_rev);
+    let i: i32 = 0;
+    while (i < a.*.expand.len) {
+        h = ps_hash(h, list.get[i32](a.*.expand, i) as i64);
+        i = i + 1;
+    }
+    h = hash_signals(a, h);
+    // waveguide rows carry their live trit color
+    let gi: i32 = 0;
+    while (gi < a.*.scene.*.guides.len) {
+        h = ps_hash(h, a.*.scene.*.guides.data[gi].live as i64);
+        gi = gi + 1;
+    }
+    return h;
+}
+
+fn hash_bottom(a: *App) i64 {
+    let h: i64 = 14695981039346656;
+    h = ps_hash(h, a.*.sim.*.symbol);
+    h = ps_hash(h, a.*.sim.*.playing as i64);
+    h = ps_hash(h, (a.*.sim.*.speed * 1000.0) as i64);
+    h = ps_hash(h, a.*.scene.*.render_rev);
+    h = ps_hash(h, a.*.scene.*.comps.len as i64);
+    h = ps_hash(h, a.*.tl_zoom as i64);
+    h = ps_hash(h, a.*.tl_scrub as i64);
+    h = ps_hash(h, a.*.tl_scroll as i64);
+    h = ps_hash(h, a.*.tl_pin.len as i64);
+    h = ps_hash(h, a.*.tl_hide.len as i64);
+    if (a.*.tl_show_hidden) { h = ps_hash(h, 5); }
+    h = ps_hash(h, a.*.log_rev);
+    h = hash_sel(a, h);
+    h = hash_signals(a, h);
+    // the interference scope animates its carrier phase per frame
+    if (scope_visible(a) && zone_bottom(a).w >= 700 && !a.*.inp.reduced_motion) {
+        h = ps_hash(h, a.*.frame);
+    }
+    return h;
+}
+
+fn mouse_in(a: *App, r: Rect) bool {
+    return rect_has(r, a.*.inp.mx, a.*.inp.my) || rect_has(r, a.*.pmx, a.*.pmy);
+}
+
+// ── dirty-region presentation (perf) ─────────────────────────────────────────
+// Union `r` into this frame's present rectangle.
+fn present_add(a: *App, x0: i32, y0: i32, x1: i32, y1: i32) void {
+    if (x1 <= x0 || y1 <= y0) { return; }
+    if (a.*.present_none) {
+        a.*.present_x0 = x0;
+        a.*.present_y0 = y0;
+        a.*.present_x1 = x1;
+        a.*.present_y1 = y1;
+        a.*.present_none = false;
+    } else {
+        if (x0 < a.*.present_x0) { a.*.present_x0 = x0; }
+        if (y0 < a.*.present_y0) { a.*.present_y0 = y0; }
+        if (x1 > a.*.present_x1) { a.*.present_x1 = x1; }
+        if (y1 > a.*.present_y1) { a.*.present_y1 = y1; }
+    }
+}
+
+fn present_add_rect(a: *App, r: Rect) void {
+    present_add(a, r.x, r.y, r.x + r.w, r.y + r.h);
+}
+
+// Decide which screen region actually changed this frame so the X11 loop can
+// upload only that instead of the whole framebuffer. Overlays force a full
+// upload; a fully static frame uploads nothing.
+fn app_compute_present(a: *App) void {
+    a.*.present_none = true;
+    a.*.present_full = false;
+
+    // Overlays cover/dim large areas: upload the whole frame.
+    if (a.*.menu >= 0 || a.*.modal != modal_none() || a.*.palette_open ||
+        a.*.opt_open || a.*.settings_open || a.*.ctx_open || a.*.warn_open ||
+        a.*.title_dirty || a.*.frame < 3) {
+        a.*.present_full = true;
+        a.*.present_none = false;
+        return;
+    }
+
+    // Panels that re-ran their widget code this frame changed on screen.
+    if (a.*.ps_left.draws != a.*.pl_draws_prev) { present_add_rect(a, zone_left(a)); }
+    if (a.*.ps_right.draws != a.*.pr_draws_prev) { present_add_rect(a, zone_right(a)); }
+    if (a.*.ps_bottom.draws != a.*.pb_draws_prev) { present_add_rect(a, zone_bottom(a)); }
+
+    // The viewport redraws its dynamic overlay every frame; include it whenever
+    // anything there could have moved. A dead-still pointer over a paused scene
+    // with no animation leaves it untouched (and we skip the upload).
+    let mouse_moved: bool = a.*.inp.mx != a.*.pmx || a.*.inp.my != a.*.pmy;
+    // sim symbol and scene revision change the viewport without a pointer move
+    // (Step button, paste, undo/redo, agent edits, optimizer auto-apply).
+    let sim_changed: bool = a.*.sim.*.symbol != a.*.present_sym_prev;
+    let rev_changed: bool = a.*.scene.*.render_rev != a.*.present_rev_prev;
+    let vp_dirty: bool = a.*.tile_cache.cam_moved || a.*.cam_drag || a.*.moving ||
+        a.*.box_sel || a.*.sim.*.playing || a.*.pulse_frame == a.*.frame ||
+        a.*.tool != tool_select() || a.*.ghost_ok >= 0 || mouse_moved ||
+        a.*.inp.anim_live || sim_changed || rev_changed ||
+        (a.*.frame - a.*.sel_frame) < 8 ||
+        (a.*.frame - a.*.invalid_frame) < 15;
+    if (vp_dirty) { present_add_rect(a, zone_center(a)); }
+
+    // Menu and status strips are thin; refresh them alongside any other change
+    // (the status bar tracks the cursor cell, counts, and sim state).
+    if (!a.*.present_none) {
+        present_add_rect(a, zone_menu(a));
+        present_add_rect(a, zone_status(a));
+    }
+
+    // A live tooltip is small but can sit anywhere; union its box.
+    if (a.*.inp.tip_dwell >= 30 && a.*.inp.tip_text.len > 0) {
+        present_add(a, a.*.inp.tip_x - 2, a.*.inp.tip_y - 28,
+                    a.*.inp.tip_x + text_w(a.*.inp.tip_text) + 16, a.*.inp.tip_y + 20);
+    }
+
+    a.*.pl_draws_prev = a.*.ps_left.draws;
+    a.*.pr_draws_prev = a.*.ps_right.draws;
+    a.*.pb_draws_prev = a.*.ps_bottom.draws;
+    a.*.present_sym_prev = a.*.sim.*.symbol;
+    a.*.present_rev_prev = a.*.scene.*.render_rev;
+}
+
 fn app_frame(a: *App, dt: f64) void {
     let t0: i64 = _zag_clock_monotonic_ms();
 
+    a.*.inp.frame = a.*.frame;
+    a.*.inp.anim_live = false;
+    a.*.inp.text_focus = false;
+    a.*.inp.tip_text = "";
     a.*.inp.capture = 0;
-    // an open modal, menu, command palette, or optimizer/settings panel owns the
-    // pointer: panels underneath go inert
+    // an open modal, menu, command palette, context menu, or optimizer/settings
+    // panel owns the pointer: panels underneath go inert
     if (a.*.modal != modal_none() || a.*.menu >= 0 || a.*.palette_open ||
-        a.*.opt_open || a.*.settings_open) { a.*.inp.capture = 4; }
+        a.*.opt_open || a.*.settings_open || a.*.ctx_open) { a.*.inp.capture = 4; }
     if (a.*.inp.capture == 0) { app_splitters(a); }
-    if (a.*.palette_open) { app_palette_keys(a); } else { app_keys(a); }
-    if (a.*.inp.capture != 4) { app_viewport_input(a); }
+    // a focused text field owns the keyboard (fields consume keys as they draw)
+    let typing: bool = a.*.lib_search.focus || a.*.out_search.focus ||
+        a.*.rename_edit.focus || a.*.insp_edit.focus;
+    if (a.*.palette_open) { app_palette_keys(a); }
+    else if (!typing) { app_keys(a); }
+    if (a.*.inp.capture != 4 && !typing) { app_viewport_input(a); }
+    app_warnings_rebuild(a);
 
     // Incremental sim patch: small edits keep symbol time and in-flight state;
     // clear/load or large dirty sets fall back to a full recompile inside.
     if (a.*.scene.*.topo_dirty) { sim_recompile_region(a.*.sim, a.*.scene); }
-    let _stepped: i32 = sim_update(a.*.sim, a.*.scene, dt);
+    let stepped: i32 = sim_update(a.*.sim, a.*.scene, dt);
+    if (stepped > 0) { a.*.pulse_frame = a.*.frame; }   // beam pulse (Section 3.11)
 
     // Optimizer background pass (Section 20.5). Kept off the interaction path: it
     // runs at most once per ~second and only while the user is idle (no drag,
@@ -1594,9 +2946,43 @@ fn app_frame(a: *App, dt: f64) void {
     fb_resize(&a.*.f, a.*.inp.w, a.*.inp.h);
 
     draw_viewport(a);
-    draw_toolbar(a);
-    draw_outliner(a);
-    draw_debugger(a);
+
+    // ── retained panel surfaces (Section 3.12) ───────────────────────────────
+    // A panel re-runs its widget code only when its state hash changed, the
+    // pointer is over it (or just left), an ease is mid-flight, or a pointer
+    // grab is active; otherwise its cached pixels blit back in one command.
+    let force: bool = a.*.anim_live_prev || a.*.inp.capture == 3 || a.*.inp.capture == 1;
+    // During an active camera drag the panels neither change nor get re-uploaded
+    // (dirty-region present sends only the viewport, which never overwrites the
+    // panel regions), so their framebuffer pixels persist and the cached blit is
+    // pure waste — skip it for real orbit headroom.
+    let keep_cached: bool = a.*.cam_drag && a.*.frame > 3;
+    let lr: Rect = zone_left(a);
+    let lh: i64 = hash_left(a);
+    if (force || mouse_in(a, lr) || ps_stale(&a.*.ps_left, lr, lh)) {
+        draw_toolbar(a);
+        ps_capture(&a.*.f, lr, &a.*.ps_left, lh);
+    } else if (!keep_cached) {
+        ps_blit(&a.*.f, &a.*.ps_left);
+    }
+    let rr: Rect = zone_right(a);
+    let rh: i64 = hash_right(a);
+    if (force || mouse_in(a, rr) || ps_stale(&a.*.ps_right, rr, rh)) {
+        draw_outliner(a);
+        ps_capture(&a.*.f, rr, &a.*.ps_right, rh);
+    } else if (!keep_cached) {
+        ps_blit(&a.*.f, &a.*.ps_right);
+    }
+    let br: Rect = zone_bottom(a);
+    let bh: i64 = hash_bottom(a);
+    if (force || mouse_in(a, br) || ps_stale(&a.*.ps_bottom, br, bh)) {
+        draw_debugger(a);
+        ps_capture(&a.*.f, br, &a.*.ps_bottom, bh);
+    } else if (!keep_cached) {
+        ps_blit(&a.*.f, &a.*.ps_bottom);
+    }
+    a.*.anim_live_prev = a.*.inp.anim_live;
+
     draw_statusbar(a);
     draw_menubar(a);
     draw_menu_dropdown(a);
@@ -1604,6 +2990,11 @@ fn app_frame(a: *App, dt: f64) void {
     draw_opt_panel(a);
     draw_modal(a);
     draw_palette(a);
+    draw_ctx_menu(a);
+    draw_warnings_popup(a);
+    ui_tip_flush(&a.*.f, &a.*.inp);
+
+    app_compute_present(a);
 
     a.*.pmx = a.*.inp.mx;
     a.*.pmy = a.*.inp.my;

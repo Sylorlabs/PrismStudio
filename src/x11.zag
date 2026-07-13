@@ -216,6 +216,9 @@ struct X11 {
     band: list.ArrayList[u8],
     evt: list.ArrayList[u8],
     pollb: list.ArrayList[i64],
+    // a resize or expose since the last present means the next upload must be
+    // the whole frame (dirty-region present cannot rely on stale window pixels)
+    needs_full: bool,
 }
 
 fn x_rid(x: *X11) i64 {
@@ -431,6 +434,7 @@ fn x11_connect(w: i32, h: i32, title: []u8) *X11 {
         .band = list.make[u8](4096),
         .evt = list.make[u8](32),
         .pollb = list.make[i64](1),
+        .needs_full = true,
     });
     x.*.evt.len = 32;
 
@@ -917,6 +921,7 @@ fn x_handle_event(x: *X11) void {
             x.*.synth_resize_w = w; x.*.synth_resize_h = h;
         }
         if (w > 100 && h > 100) {
+            if (w != x.*.win_w || h != x.*.win_h) { x.*.needs_full = true; }
             x.*.win_w = w;
             x.*.win_h = h;
         }
@@ -933,7 +938,8 @@ fn x_handle_event(x: *X11) void {
         if (atom == x.*.wm_delete) { x.*.should_close = true; }
         return;
     }
-    // Expose(12), MappingNotify(34), ... : nothing to do — we redraw every frame
+    if (kind == 12) { x.*.needs_full = true; return; }   // Expose: repaint the window
+    // MappingNotify(34), ... : nothing to do.
 }
 
 fn x_update_mods(x: *X11, state: i32) void {

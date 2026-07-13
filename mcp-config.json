@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "triton": {
-      "command": "/home/micah/Desktop/Sylorlabs/triton/zagpa",
+      "command": "/home/micah/Desktop/Sylorlabs/PrismStudio/zagpa",
       "args": ["--mcp"],
-      "env": { "TRITON_SESSION": "/home/micah/Desktop/Sylorlabs/triton/.triton/live.zpa", "TRITON_CAPS": "all", "TRITON_ACTOR": "configured-mcp" },
-      "cwd": "/home/micah/Desktop/Sylorlabs/triton"
+      "env": { "TRITON_SESSION": "/home/micah/Desktop/Sylorlabs/PrismStudio/.triton/live.zpa", "TRITON_CAPS": "all", "TRITON_ACTOR": "configured-mcp" },
+      "cwd": "/home/micah/Desktop/Sylorlabs/PrismStudio"
     }
   }
 }

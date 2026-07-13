@@ -1,0 +1,39 @@
+@import("../src/ui.zag")
+@import("../src/ternary.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn abs_i(v: i32) i32 {
+    if (v < 0) { return 0 - v; }
+    return v;
+}
+
+fn luma(c: i64) i32 {
+    return (col_r(c) * 54 + col_g(c) * 183 + col_b(c) * 19) >> 8;
+}
+
+fn contrast_delta(a: i64, b: i64) i32 {
+    return abs_i(luma(a) - luma(b));
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    check("spacing tokens are monotonic grid", space_2() == 2 && space_4() == 4 &&
+        space_8() == 8 && space_12() == 12 && space_16() == 16 && space_24() == 24, &failures);
+    check("typography roles are defined", type_tiny_h() > 0 && type_body_h() >= type_tiny_h() &&
+        type_section_h() >= type_body_h() && type_viewport_h() > 0 && type_debug_h() > 0, &failures);
+    check("shape and elevation tokens are defined", radius_control() >= 0 && elevation_panel() >= 0, &failures);
+    check("state colors are distinct", th_select() != th_focus() && th_focus() != th_disabled() &&
+        th_disabled() != th_warning() && th_warning() != th_danger() && th_danger() != th_ok(), &failures);
+    check("beam colors are separate from UI colors", trit_color(-1) != th_danger() &&
+        trit_color(0) != th_disabled() && trit_color(1) != th_ok(), &failures);
+    check("primary text contrasts with panels", contrast_delta(th_text(), th_panel()) >= 120 &&
+        contrast_delta(th_text(), th_bg()) >= 120 && contrast_delta(th_text(), th_header()) >= 100, &failures);
+    check("secondary text contrasts with panels", contrast_delta(th_text_dim(), th_panel()) >= 80 &&
+        contrast_delta(th_text_dim(), th_bg()) >= 90, &failures);
+    if (failures == 0) { _zag_println("UI TOKENS: ALL PASS"); return 0; }
+    _zag_println("UI TOKENS: FAILURES"); return 1;
+}

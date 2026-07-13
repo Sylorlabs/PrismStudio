@@ -42,6 +42,11 @@ fn gates_0(f: i32) i32 {
 }
 
 fn gates_1(f: i32) i32 {
+    if (!run_suite("layout", "rm -f probe/layout_test.new && ../zag/zag-poc/znc probe/layout_test.zag -o probe/layout_test.new && mv -f probe/layout_test.new probe/layout_test && ./probe/layout_test")) { f = f + 1; }
+    if (!run_suite("ui-layers", "rm -f probe/ui_layers_test.new && ../zag/zag-poc/znc probe/ui_layers_test.zag -o probe/ui_layers_test.new && mv -f probe/ui_layers_test.new probe/ui_layers_test && ./probe/ui_layers_test")) { f = f + 1; }
+    if (!run_suite("ui-perf", "rm -f probe/ui_perf_test.new && ../zag/zag-poc/znc probe/ui_perf_test.zag -o probe/ui_perf_test.new && mv -f probe/ui_perf_test.new probe/ui_perf_test && ./probe/ui_perf_test")) { f = f + 1; }
+    if (!run_suite("ui-interactions", "rm -f probe/ui_interactions_test.new && ../zag/zag-poc/znc probe/ui_interactions_test.zag -o probe/ui_interactions_test.new && mv -f probe/ui_interactions_test.new probe/ui_interactions_test && ./probe/ui_interactions_test")) { f = f + 1; }
+    if (!run_suite("timeline", "rm -f probe/timeline_test.new && ../zag/zag-poc/znc probe/timeline_test.zag -o probe/timeline_test.new && mv -f probe/timeline_test.new probe/timeline_test && ./probe/timeline_test")) { f = f + 1; }
     if (!run_suite("gizmo", "rm -f probe/gizmo_test.new && ../zag/zag-poc/znc probe/gizmo_test.zag -o probe/gizmo_test.new && mv -f probe/gizmo_test.new probe/gizmo_test && ./probe/gizmo_test")) { f = f + 1; }
     if (!run_suite("outline", "rm -f probe/outline_test.new && ../zag/zag-poc/znc probe/outline_test.zag -o probe/outline_test.new && mv -f probe/outline_test.new probe/outline_test && ./probe/outline_test")) { f = f + 1; }
     if (!run_suite("dpi", "rm -f probe/dpi_test.new && ../zag/zag-poc/znc probe/dpi_test.zag -o probe/dpi_test.new && mv -f probe/dpi_test.new probe/dpi_test && ./probe/dpi_test")) { f = f + 1; }

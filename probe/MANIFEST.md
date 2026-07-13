@@ -6,7 +6,7 @@ probes, and from generated artifacts (Master plan §4.2). Generated binaries are
 never tracked in git (`.gitignore`); only `.zag` sources and this manifest live
 in `probe/`. The `probe-manifest-audit` gate fails if any probe is unclassified.
 
-## Production tests — gated by `tools/verify.zag` (71)
+## Production tests — gated by `tools/verify.zag` (76)
 
 - `agent.zag`
 - `ast.zag`
@@ -70,8 +70,13 @@ in `probe/`. The `probe-manifest-audit` gate fails if any probe is unclassified.
 - `simulation_property_test.zag`
 - `soak_test.zag`
 - `stepping_test.zag`
+- `timeline_test.zag`
 - `timing_test.zag`
 - `ui.zag`
+- `layout_test.zag`
+- `ui_interactions_test.zag`
+- `ui_layers_test.zag`
+- `ui_perf_test.zag`
 - `ui_prefs_test.zag`
 - `ui_tokens_test.zag`
 - `units_test.zag`
@@ -94,8 +99,9 @@ in `probe/`. The `probe-manifest-audit` gate fails if any probe is unclassified.
 - `perf_test.zag`
 - `scale_test.zag`
 
-## Compiler probes — exercise a `znc` language feature, not Triton (1)
+## Compiler probes — exercise a `znc` language feature, not Triton (2)
 
+- `_repro_znc1.zag`
 - `break_test.zag`
 
 ## Obsolete — early debug/exploration scratch; kept for history, not run and not production (24)

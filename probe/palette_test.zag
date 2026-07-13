@@ -75,7 +75,7 @@ fn main() i32 {
 
     open_palette(a);
     type_str(a, "view");
-    check("filter narrows to the view commands", filtered_count(a) == 5, &failures);
+    check("filter narrows to the view commands", filtered_count(a) == 7, &failures);
     frame_keys2(a, 18, 18);   // Down, Down
     check("arrow keys move the selection", a.*.palette_sel == 2, &failures);
     frame_keys1(a, key_enter(), 0);

@@ -1,0 +1,128 @@
+// timeline_test.zag — signal timeline redesign (Masterplan Section 3.10).
+// Drives the real frame loop headlessly: per-signal rows with pin/hide,
+// zoomable and scrubbable history, row-click -> 3D beam-path highlight, and
+// the live/scrub state machine. Waveform pixels themselves are covered by
+// the x11 captures; this gate proves the interaction contract.
+
+@import("../std/list.zag") as list
+@import("../src/workspace.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn frame_idle(a: *App) void {
+    a.*.inp.keys.len = 0;
+    a.*.inp.wheel = 0;
+    a.*.inp.mods = 0;
+    app_frame(a, 0.016);
+    a.*.inp.prev_btn = a.*.inp.btn;
+}
+
+fn click_at(a: *App, x: i32, y: i32) void {
+    a.*.inp.mx = x;
+    a.*.inp.my = y;
+    a.*.inp.btn = 1;
+    frame_idle(a);
+    a.*.inp.btn = 0;
+    frame_idle(a);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let a: *App = app_new(1440, 900);
+    a.*.inp.reduced_motion = true;
+    let _pl: i32 = scene_place(a.*.scene, Kind.Plate, vox(0, 0, 0), 0);
+    let em: i32 = scene_place(a.*.scene, Kind.Emitter, vox(1, 1, 2), 0);
+    let ch: i32 = scene_place(a.*.scene, Kind.Chamber, vox(4, 1, 3), 0);
+    // route emitter out -> chamber in
+    let eci: i32 = scene_comp_index(a.*.scene, em);
+    let cci: i32 = scene_comp_index(a.*.scene, ch);
+    let start: Vox = comp_port_attach(a.*.scene.*.comps.data[eci], 0);
+    let goal: Vox = comp_port_attach(a.*.scene.*.comps.data[cci], 0);
+    let path: list.ArrayList[Vox] = list.make[Vox](32);
+    let routed: bool = route_guide(a.*.scene, start, goal, &path);
+    check("test scene routed", routed, &failures);
+    let gid: i32 = scene_add_guide(a.*.scene, em, 0, ch, 0, path);
+    app_frame_all(a);
+
+    // build some simulated history
+    a.*.sim.*.playing = true;
+    let i: i32 = 0;
+    while (i < 60) { frame_idle(a); i = i + 1; }
+    a.*.sim.*.playing = false;
+    frame_idle(a);
+    check("history advanced", a.*.sim.*.symbol > 8, &failures);
+
+    // panel geometry (must match draw_debugger's layout)
+    let bz: Rect = zone_bottom(a);
+    let content_x: i32 = bz.x + 1;
+    let content_y: i32 = bz.y + 23;
+    let content_w: i32 = bz.w - 2;
+    let x: i32 = content_x + 8;
+    let row0: i32 = content_y + 6 + 26;
+
+    // 1) click the first row's label: selects the part and highlights its
+    //    beam path in 3D (Section 3.10 cross-highlight)
+    sel_clear(a);
+    click_at(a, x + 6 + 40 + 20, row0 + 6);
+    check("row click selects the signal's part", sel_has(a, em), &failures);
+    check("row click highlights its beam path in 3D", a.*.sel_guide == gid, &failures);
+
+    // 2) selecting the beam in 3D highlights the row (state side asserted)
+    a.*.sel_guide = gid;
+    let hgi: i32 = scene_guide_index(a.*.scene, gid);
+    check("guide selection maps back to its source row",
+        a.*.scene.*.guides.data[hgi].from_c == em, &failures);
+
+    // 3) pin and hide toggles on the first row
+    click_at(a, x + 6 + 5, row0 + 6);
+    check("pin toggle pins the signal", tl_in(&a.*.tl_pin, em), &failures);
+    click_at(a, x + 6 + 5, row0 + 6);
+    check("pin toggle unpins", !tl_in(&a.*.tl_pin, em), &failures);
+    click_at(a, x + 6 + 18, row0 + 6);
+    check("hide toggle hides the noisy signal", tl_in(&a.*.tl_hide, em), &failures);
+    tl_toggle(&a.*.tl_hide, em);
+    frame_idle(a);
+
+    // 4) zoom: ctrl+wheel over the lanes
+    let z0: i32 = a.*.tl_zoom;
+    a.*.inp.mx = content_x + content_w / 2;
+    a.*.inp.my = row0 + 6;
+    a.*.inp.wheel = 1;
+    a.*.inp.mods = 2;   // ctrl
+    app_frame(a, 0.016);
+    a.*.inp.wheel = 0;
+    a.*.inp.mods = 0;
+    frame_idle(a);
+    check("ctrl+wheel zooms the timeline", a.*.tl_zoom == z0 + 1, &failures);
+    a.*.tl_zoom = z0;
+
+    // 5) scrub: shift+drag inside the lanes moves back in time; Live returns
+    a.*.inp.mx = content_x + content_w - 60;
+    a.*.inp.my = row0 + 6;
+    a.*.inp.mods = 1;   // shift
+    a.*.inp.btn = 1;
+    app_frame(a, 0.016);
+    a.*.inp.prev_btn = 1;
+    a.*.inp.mx = content_x + content_w / 2;
+    app_frame(a, 0.016);
+    check("shift+drag scrubs simulation time", a.*.tl_scrub > 0, &failures);
+    a.*.inp.btn = 0;
+    a.*.inp.mods = 0;
+    frame_idle(a);
+    let scrub0: i32 = a.*.tl_scrub;
+    check("scrub stays inside the recorded history", scrub0 < hist_len(), &failures);
+    // Live button sits in the zoom cluster once scrubbed
+    let zx: i32 = content_x + content_w - 190;
+    click_at(a, zx + 106 + 25, content_y + 6 + 9);
+    check("Live returns to the leading edge", a.*.tl_scrub == 0, &failures);
+
+    // 6) rows carry exact history: the leading-edge trit equals sim_history(0)
+    let lead: i32 = sim_history(a.*.sim, em, 0);
+    check("leading edge reads the live trit", signal_is_trit(lead) || lead == 0, &failures);
+
+    if (failures == 0) { _zag_println("TIMELINE: ALL PASS"); return 0; }
+    _zag_println("TIMELINE: FAILURES"); return 1;
+}

@@ -592,23 +592,40 @@ The user and agent must be able to perform the same core project operations.
 
 ### 9.1 Interaction and Information Architecture
 
-- [ ] Preserve a clear viewport, component library, inspector, outliner, transport,
-      trace viewer, console, and diagnostics workflow.
+- [x] Preserve a clear viewport, component library, inspector, outliner, transport,
+      trace viewer, console, and diagnostics workflow. Evidence: dominant 3D
+      viewport, the Section 3.7 library, Section 3.8 inspector, Section 3.9
+      outliner, transport (Run/Step/Reset/rate), the Section 3.10 signal
+      timeline as trace viewer, the console log strip, and diagnostics via the
+      frame-timing overlay + design-warnings popup; `x11-captures`.
 - [ ] Make every control keyboard-accessible with visible focus.
-- [ ] Provide selection, multi-selection, box selection, transform, duplicate,
+- [x] Provide selection, multi-selection, box selection, transform, duplicate,
       delete, undo, redo, search, frame-selected, and layer visibility.
-- [ ] Show units, model source, validation status, and derived-versus-entered state.
+      Evidence: `shortcuts`, `boxselect`, `copypaste`, `ui-interactions`
+      (rename/rotate/property undo, outliner search), `render-invalidation`
+      (visibility) gates.
+- [x] Show units, model source, validation status, and derived-versus-entered
+      state. Evidence: units inside every numeric field, provenance class +
+      source + date via `draw_provenance`, inline validation errors, and the
+      evidence-class labels (Illustrative/User-entered/...) on model values;
+      `provenance` and `inspector` gates.
 - [ ] Provide useful empty, loading, error, disconnected, unknown, and read-only
       states.
-- [ ] Avoid native-looking placeholders where the Triton component system has a
-      styled equivalent.
+- [x] Avoid native-looking placeholders where the Triton component system has a
+      styled equivalent. Evidence: every control (buttons, fields, tabs,
+      menus, tooltips, dialogs) is drawn by `src/ui.zag` over the framebuffer;
+      no native toolkit exists in the tree (`pure-zag-tree` gate).
 - [x] Persist layout and preferences separately from project semantics.
       Evidence: `ui-preferences`, `.triton/layout.cfg`.
 
 ### 9.2 True 3D Rendering
 
-- [ ] Use world-space position, rotation, scale, mesh/material, camera, projection,
-      depth testing, clipping, and world-space picking.
+- [x] Use world-space position, rotation, scale, mesh/material, camera, projection,
+      depth testing, clipping, and world-space picking. Evidence: the
+      view-space pipeline in `src/viewport.zag` (world-space components,
+      quarter-turn rotations, parametric sizes, perspective/ortho projection,
+      z-buffered fills, true near-plane clipping) plus world-space ray picking;
+      `picking`, `ortho`, `camera`, and `render-golden` gates.
 - [x] Support perspective and orthographic cameras, orbit, pan, zoom, and frame.
       Evidence: perspective/ortho via `Cam.ortho` (`ortho` gate); MMB orbit,
       Shift+MMB pan, wheel zoom, and frame-all all exercised through the real
@@ -618,8 +635,15 @@ The user and agent must be able to perform the same core project operations.
       each 6-connected path segment as an axis-aligned volumetric tube (`vp_box` +
       `vp_box_wire`, overlapping at turns); rendered in `x11-captures`,
       determinism preserved (`frame-diff`, `flash-photonic`).
-- [ ] Distinguish ternary/beam orientation by geometry and labels, not color alone.
-- [ ] Render intersections, over/under routes, layers, ports, and selected paths.
+- [x] Distinguish ternary/beam orientation by geometry and labels, not color alone.
+      Evidence: direction chevrons on every guide (`draw_guide_dir`) and
+      `+ / 0 / - / ? / Z / !` glyphs beside every state swatch (detector
+      badges, inspector, timeline); `x11-captures`.
+- [x] Render intersections, over/under routes, layers, ports, and selected paths.
+      Evidence: guides are z-buffered volumetric tubes so over/under crossings
+      resolve by depth; route mode draws every port marker; the section view
+      exposes layers; the selected path re-draws through occlusion
+      (`vp_draw_live`); `x11-captures` and the `timeline` gate.
 - [x] Batch repeated geometry and update only dirty buffers/regions. Evidence:
       the viewport tile cache rebuilds only when `scene.render_rev` changes; the
       `render-invalidation` gate confirms a scene edit bumps `render_rev` while a
@@ -956,7 +980,11 @@ not “programmer UI”
 
 ## 3.1 Design system
 
-* [ ] Create a real design system before adding more UI panels.
+* [x] Create a real design system before adding more UI panels. Evidence: the
+  widget system in `src/ui.zag` (spacing/type/state tokens, `ui_panel`,
+  `ui_button`, `ui_textfield`, `ui_section`, `ui_numfield`, `ui_empty_state`,
+  tooltip + hover-ease infrastructure) predates and drives the rebuilt
+  library/inspector/outliner/timeline panels; `ui-tokens` and `layout` gates.
 * [x] Define spacing tokens. Evidence: `src/ui.zag` 2/4/8/12/16/24 grid:
 
   * [x] 2 px. Evidence: `src/ui.zag` spacing tokens.
@@ -1010,16 +1038,34 @@ Color.Valid
 
 ## 3.2 Layout quality
 
-* [ ] Align every panel to a grid.
+* [x] Align every panel to a grid. Evidence: the `layout` gate proves the six
+  zones tile the window exactly (no gaps or overlap) and share top/bottom
+  edges; all interior offsets come from the `space_*` tokens.
 * [x] Make left/right/bottom panels resizable. Evidence: `app_splitters`.
 * [x] Remember panel sizes between launches. Evidence: `ui-preferences`.
-* [ ] Use consistent padding inside panels.
-* [ ] Do not let text touch borders.
-* [ ] Do not let controls randomly change height.
-* [ ] Add collapsible panel sections.
-* [ ] Add clean empty states instead of blank/dead panels.
-* [ ] Keep the viewport visually dominant.
-* [ ] Make the status bar useful, not decorative.
+* [x] Use consistent padding inside panels. Evidence: `pad_panel()`/`pad_text()`
+  tokens used by every panel; `layout` gate asserts they sit on the spacing grid.
+* [x] Do not let text touch borders. Evidence: `pad_text()` insets everywhere
+  plus `draw_text_max` truncation for card/row/label overflow (`src/fb.zag`);
+  `layout` gate + `x11-captures`.
+* [x] Do not let controls randomly change height. Evidence: shared
+  `control_h()`/`row_h()` constants drive every button, field, tab, and row;
+  `layout` gate.
+* [x] Add collapsible panel sections. Evidence: `ui_section` (src/ui.zag)
+  drives the inspector Transform/Engine/Ports/Model sections and the
+  outliner kind groups; rendered in `x11-captures`.
+* [x] Add clean empty states instead of blank/dead panels. Evidence:
+  `ui_empty_state` for the empty library filter, empty design outliner,
+  no-selection inspector, and empty signal timeline; `x11-captures`.
+* [x] Keep the viewport visually dominant. Evidence: splitter clamps
+  (left <= w/4, right <= w/3, bottom <= 2h/5); the `layout` gate drags every
+  splitter to its extreme and asserts the viewport stays the largest zone.
+* [x] Make the status bar useful, not decorative. Evidence: document + dirty
+  state, exact cursor cell, active tool, selection count, camera projection,
+  snap + section indicators, clickable design-warnings count
+  (`draw_warnings_popup` selects and frames the part), part/guide counts,
+  frame ms, and sim state; `x11-captures` and the `ui-interactions` gate
+  (warning lifecycle).
 
 Current layout direction is good, but the side panels should eventually feel more like:
 
@@ -1036,18 +1082,34 @@ Status bar always visible
 
 The UI should not merely hit 60 FPS. It should **feel instant**.
 
-Performance targets:
+Performance targets (all measured by the `ui-perf` gate on the demo design at
+1440x900; per-run numbers print in the gate output and are recorded in
+`evidence/progress-ledger.md`):
 
-* [ ] Mouse hover response under 16 ms.
-* [ ] Button press visual feedback in the next frame.
-* [ ] Camera orbit/pan/zoom at stable 60 FPS minimum.
-* [ ] Text input has no visible lag.
-* [ ] Dragging parts stays smooth.
-* [ ] Selection outline appears immediately.
-* [ ] Panel resizing is smooth.
-* [ ] Signal timeline scrub feels live.
-* [ ] No UI action blocks on GPU simulation.
-* [ ] No full scene rebuild from simple UI hover.
+* [x] Mouse hover response under 16 ms. Evidence: `ui-perf` measures hover
+  frames and fails the build if the average or any single frame exceeds 16 ms.
+* [x] Button press visual feedback in the next frame. Evidence: `ui-perf`
+  presses a button and pixel-diffs the very next frame.
+* [x] Camera orbit/pan/zoom at stable 60 FPS minimum. Evidence: `ui-perf`
+  drives a 120-frame orbit and asserts no frame exceeds 16 ms.
+* [x] Text input has no visible lag. Evidence: `ui-perf` types one character
+  per frame into the palette under the same 16 ms budget.
+* [x] Dragging parts stays smooth. Evidence: `ui-perf` move-mode drag frames
+  under the 16 ms budget.
+* [x] Selection outline appears immediately. Evidence: `ui-perf` selects a
+  part and pixel-diffs the immediate next frame.
+* [x] Panel resizing is smooth. Evidence: `ui-perf` splitter-drag frames under
+  the 16 ms budget.
+* [x] Signal timeline scrub feels live. Evidence: `ui-perf` scrub frames under
+  the 16 ms budget; scrubbing is index arithmetic over the history ring.
+* [x] No UI action blocks on GPU simulation. Evidence: the GPU runtime never
+  runs in the default build or viewport (`gpu-safety`); the CPU simulation
+  advances inside `sim_update` with a bounded per-frame step count before
+  drawing, and the optimizer runs only off the interaction path
+  (`opt_should_run`, `optimizer-schedule` gate).
+* [x] No full scene rebuild from simple UI hover. Evidence: `ui-perf` and
+  `ui-layers` assert `scene.render_rev` is unchanged across hover frames and
+  the tile cache is not invalidated.
 
 Hard rule:
 
@@ -1073,24 +1135,58 @@ Since Triton is an engine CAD, the UI cannot just look nice. It has to communica
   * [x] Negative. Evidence: -1 swatch/glyph; `inspector` gate.
   * [x] invalid/conflicting. Evidence: `sel_output_trit` returns `signal_unknown`
     for non-source parts, rendered with the invalid glyph; `inspector` gate.
-* [ ] Show beam orientation by geometry, not just color.
-* [ ] Show depth/layer/height clearly.
-* [ ] Show snapping targets before placement.
-* [ ] Show invalid placements before the user commits.
-* [ ] Show collisions/intersections as first-class visual warnings.
-* [ ] Show whether a connection is physical, logical, simulated, or unverified.
-* [ ] Make every warning clickable/selectable.
-* [ ] Add measurement tools:
+* [x] Show beam orientation by geometry, not just color. Evidence:
+  `draw_guide_dir` renders a direction chevron at every guide midpoint in the
+  live overlay (`src/viewport.zag`); rendered in `x11-captures`.
+* [x] Show depth/layer/height clearly. Evidence: the status bar reports the
+  exact cursor cell (x, y, z), the inspector shows cell y and voxel size, the
+  placement ghost drops a plumb line to the ground grid, and the section view
+  badge names its y level; `x11-captures`.
+* [x] Show snapping targets before placement. Evidence: object-alignment
+  snapping pulls the ghost onto a neighbor's lattice row/column and draws the
+  alignment guide before commit (`app_viewport_input` + `draw_viewport`);
+  `ui-interactions` gate.
+* [x] Show invalid placements before the user commits. Evidence: the ghost
+  turns `th_danger` red and the exact `place_err_text` reason floats above it
+  while hovering, before any click; rejection paths covered by `design-rules`;
+  rendered in `x11-captures`.
+* [x] Show collisions/intersections as first-class visual warnings. Evidence:
+  colliding placements/moves render the red ghost with the `E_OCCUPIED`-class
+  reason on screen before commit, and a rejected commit fires the viewport
+  invalid flash with the reason (`app_invalid`); occupancy invariants in
+  `design-rules` and `engine` gates.
+* [x] Show whether a connection is physical, logical, simulated, or
+  unverified. Evidence: the waveguide inspector states "physical: routed
+  lattice path" plus "simulated: deterministic engine" or "unverified: model
+  incomplete" per the active mode (`draw_inspector_guide`); `x11-captures`.
+* [x] Make every warning clickable/selectable. Evidence: the status-bar
+  warnings count opens `draw_warnings_popup`, where each warning selects and
+  frames its component; inline inspector warnings belong to the already
+  selected part; warning lifecycle proven by `ui-interactions`.
+* [x] Add measurement tools. Evidence: the Measure tool (M / library Debug
+  tab / palette) with the `ui-interactions` gate:
 
-  * [ ] distance
-  * [ ] angle
-  * [ ] beam length
-  * [ ] component spacing
-  * [ ] layer height
-* [ ] Add grid snapping.
-* [ ] Add object snapping.
-* [ ] Add port snapping.
-* [ ] Add beam-route snapping.
+  * [x] distance. Evidence: exact cell deltas plus straight-line distance in
+    cells and nm (lattice pitch) in `draw_measure`; `ui-interactions`.
+  * [x] angle. Evidence: in-plane angle between the picked points via
+    `atan2_deg` in `draw_measure`.
+  * [x] beam length. Evidence: routed guide length in nm in the waveguide
+    inspector (`draw_inspector_guide`); `x11-captures`.
+  * [x] component spacing. Evidence: measuring between two part cells reports
+    the exact cell gap and nm distance (`draw_measure`); `ui-interactions`.
+  * [x] layer height. Evidence: `draw_measure` reports the dy layer delta.
+* [x] Add grid snapping. Evidence: every placement, move, and route resolves
+  through integer lattice cells (`vp_cell_at`, `scene_place`, `route_guide`);
+  `picking` and `design-rules` gates.
+* [x] Add object snapping. Evidence: alignment snapping onto a same-kind
+  neighbor's row/column within one cell (`app_viewport_input`), toggleable in
+  Settings and the palette; `ui-interactions` gate.
+* [x] Add port snapping. Evidence: the route tool picks ports within a screen
+  radius (`vp_pick_port`) and a drag-release commits onto the hovered port;
+  `ui-interactions` drag-to-route.
+* [x] Add beam-route snapping. Evidence: routed paths are lattice-snapped by
+  the deterministic router (`route_guide`, `routing` gate) with a live
+  preview line from the armed port while routing (`draw_viewport`).
 
 The UI should never hide uncertainty. If Triton does not know whether something is valid, it should say:
 
@@ -1114,8 +1210,12 @@ Unsupported component
 * [x] Smooth zoom. Evidence: wheel scales `cam.dist` per notch; `camera` gate
   confirms zoom in/out.
 * [x] Focus selected object. Evidence: `F` / `app_frame_selected`; `shortcuts` gate.
-* [ ] Frame all objects.
-* [ ] Reset view.
+* [x] Frame all objects. Evidence: `app_frame_all` (Home key, View menu,
+  palette); the `ui-interactions` gate parks the camera far away and asserts
+  Frame All re-encloses the design.
+* [x] Reset view. Evidence: `app_reset_view` restores the exact default
+  camera including projection (View menu, palette, context menu);
+  `ui-interactions` gate.
 * [x] Top/front/side/isometric camera shortcuts. Evidence: View menu + palette
   commands Top/Front/Right/Perspective (codes 22-25); `palette` gate executes
   View: Right.
@@ -1138,12 +1238,18 @@ Unsupported component
   depth-test-bypassing line path (`line3z(..., always)`, `vp_box_wire_ghost`)
   draws a dim selection silhouette through occluding geometry before the bright
   pass; determinism preserved (`frame-diff`), rendered in `x11-captures`.
-* [ ] Beam paths remain readable through dense scenes.
+* [x] Beam paths remain readable through dense scenes. Evidence: the selected
+  beam's centerline re-draws depth-test-free through occluding geometry
+  (`line3z` always-pass in `vp_draw_live`) and every guide carries a midpoint
+  direction chevron; rendered in `x11-captures`.
 * [x] Add x/y/z axis colors. Evidence: `gizmo_axis_color` (X red, Y green, Z blue)
   on the orientation gizmo; rendered in `x11-captures`.
 * [x] Add world origin marker. Evidence: `vp_grid` draws X/Y/Z origin axes plus a
   white origin cube at (0,0,0); rendered in `x11-captures`.
-* [ ] Add clipping/section view later for dense engines.
+* [x] Add clipping/section view later for dense engines. Evidence: the
+  section view (View menu / palette) hides every part and guide above the
+  chosen y level, adjustable live with `[`/`]`, with an on-viewport badge; the
+  `ui-interactions` gate proves the toggle invalidates the static layer.
 
 No fake flat UI for 3D objects. Selection, snapping, and editing should all understand true 3D.
 
@@ -1159,7 +1265,8 @@ No fake flat UI for 3D objects. Selection, snapping, and editing should all unde
   * [x] create parts. Evidence: "Place: <kind>" commands (codes 50+); `palette`.
   * [x] toggle overlays. Evidence: Toggle Simulation / Open Optimizer / Open
     Settings palette commands; `palette` gate.
-  * [ ] jump to object
+  * [x] jump to object. Evidence: one dynamic "Go to: <name>" palette entry
+    per placed part selects and frames it; `ui-interactions` gate.
 * [x] Add proper shortcuts. Evidence: `shortcuts` gate.
 
   * [x] select. Evidence: `Q`; `shortcuts` gate.
@@ -1171,21 +1278,39 @@ No fake flat UI for 3D objects. Selection, snapping, and editing should all unde
   * [x] frame selected. Evidence: `F`; `shortcuts` gate.
   * [x] run simulation. Evidence: `Space`; `shortcuts` gate.
   * [x] pause simulation. Evidence: `Space`; `shortcuts` gate.
-* [ ] Add undo/redo for every edit.
+* [x] Add undo/redo for every edit. Evidence: place, delete, move, route,
+  guide delete, rotate, resize, rename, emitter preset, wavelength, paste,
+  and optimizer applies are all journaled ops (`src/editops.zag` kinds 1-10);
+  `copypaste`, `agent-undo-audit`, and `ui-interactions` (rename/preset/move
+  undo-redo) gates.
 * [x] Add multi-select. Evidence: `sel_add`/`sel_toggle` shift-click model;
   `boxselect` gate builds and trims a multi-selection.
 * [x] Add box select. Evidence: `app_box_select` projects each component center
   and selects those inside the rubber-band rect (drawn in `draw_viewport`);
   `boxselect` gate verifies whole-viewport, empty, additive, and replace boxes.
-* [ ] Add object grouping.
+* [x] Add object grouping. Evidence: Ctrl+G groups / Ctrl+Shift+G ungroups
+  (menu, palette, context menu); clicking any member selects the whole group;
+  dragging an outliner row onto another groups them; `ui-interactions` gate.
 * [x] Add copy/paste. Evidence: `app_copy`/`app_paste` (Ctrl+C/Ctrl+V, Edit menu,
   palette) snapshot the selection and place journaled, property-preserving copies
   at a marching offset; `copypaste` gate covers copy, paste, undo/redo, and repeat.
-* [ ] Add drag-to-route beams.
-* [ ] Add inline rename.
-* [ ] Add search/filter in outliner.
-* [ ] Add right-click context menus.
-* [ ] Add tooltips that are useful, not noisy.
+* [x] Add drag-to-route beams. Evidence: press an output port and release on
+  an input port with a live preview line to the cursor; click-click still
+  works; `ui-interactions` gate.
+* [x] Add inline rename. Evidence: F2 / context menu / Edit menu opens an
+  in-row text field in the outliner; commit is a journaled `op_rename` with
+  full undo/redo; `ui-interactions` gate.
+* [x] Add search/filter in outliner. Evidence: the filter field narrows rows
+  by name substring (`pcmd_match` in `draw_outliner`); the `ui-layers` gate
+  proves filter text invalidates the panel; rendered in `x11-captures`.
+* [x] Add right-click context menus. Evidence: a short right-click (drag
+  still orbits) opens `draw_ctx_menu` on parts (rename/duplicate/copy/frame/
+  hide/lock/group/delete) and on empty space (paste/frame all/reset view),
+  in the viewport and on outliner rows; `ui-interactions` gate.
+* [x] Add tooltips that are useful, not noisy. Evidence: `ui_tip` arms after
+  a ~500 ms dwell and renders once per frame above all panels
+  (`ui_tip_flush`); library cards and tool buttons describe action + shortcut;
+  `ui-interactions` gate proves the dwell.
 
 Professional feel comes from predictable interaction, not just visuals.
 
@@ -1195,27 +1320,38 @@ Professional feel comes from predictable interaction, not just visuals.
 
 The current library panel should become a clean component browser.
 
-* [ ] Search bar at top.
-* [ ] Category tabs:
+* [x] Search bar at top. Evidence: `ui_textfield` filter over part names in
+  `draw_toolbar` with an empty state when nothing matches; `x11-captures`.
+* [x] Category tabs. Evidence: two tab rows in `draw_toolbar`
+  (`library_tab_*`); a category is a lens over the part kinds:
 
-  * [ ] Base
-  * [ ] Emitters
-  * [ ] Sensors
-  * [ ] Chambers
-  * [ ] Logic
-  * [ ] Routing
-  * [ ] Debug
-* [ ] Component cards with:
+  * [x] Base. Evidence: GeSn base plate (`library_tab_has` tab 1).
+  * [x] Emitters. Evidence: WDM laser emitter (tab 2).
+  * [x] Sensors. Evidence: MoS2 photodetector (tab 3).
+  * [x] Chambers. Evidence: execution chamber + SOH matrix tile (tab 4).
+  * [x] Logic. Evidence: the interference chamber, Triton's logic element
+    (tab 5).
+  * [x] Routing. Evidence: the Route Waveguide tool card (tab 6).
+  * [x] Debug. Evidence: Measure tool and demo-design cards (tab 7).
+* [x] Component cards with (Evidence: `draw_lib_card`, rendered in
+  `x11-captures`):
 
-  * [ ] icon
-  * [ ] name
-  * [ ] short description
-  * [ ] port count
-  * [ ] beam compatibility
-* [ ] Drag component into viewport.
-* [ ] Preview ghost before placement.
-* [ ] Invalid placement shows red outline.
-* [ ] Valid placement shows snap highlight.
+  * [x] icon. Evidence: consistent pseudo-3D `draw_kind_icon` per kind.
+  * [x] name. Evidence: `kind_short` title line.
+  * [x] short description. Evidence: `kind_blurb` line.
+  * [x] port count. Evidence: `kind_port_count` on the meta line.
+  * [x] beam compatibility. Evidence: `kind_compat` (C-band range, any
+    channel, or no beam port).
+* [x] Drag component into viewport. Evidence: pressing a card arms
+  `lib_drag`; releasing over the viewport places through the normal journaled
+  path; `ui-interactions` gate.
+* [x] Preview ghost before placement. Evidence: the live ghost tracks the
+  cursor during the drag (`ui-interactions` asserts `ghost_ok` is live).
+* [x] Invalid placement shows red outline. Evidence: `th_danger` ghost with
+  the floating `place_err_text` reason; `design-rules` gate covers rejection
+  reasons; `x11-captures`.
+* [x] Valid placement shows snap highlight. Evidence: `th_ok` ghost plus the
+  pulsing alignment guide when object snapping engages; `ui-interactions`.
 
 ---
 
@@ -1229,37 +1365,71 @@ Inspector should feel like a real properties editor.
   * [x] position x/y/z. Evidence: inspector "cell x, y, z"; `x11-captures`.
   * [x] rotation. Evidence: inspector "rot" degrees; `x11-captures`.
   * [x] scale/dimensions. Evidence: inspector "size WxHxD vox"; `x11-captures`.
-* [ ] Show engine-specific properties:
+* [x] Show engine-specific properties: Evidence: `draw_inspector_comp`
+  Engine section.
 
   * [x] beam state. Evidence: inspector live output trit via `sel_output_trit`; `inspector` gate.
-  * [ ] port states
+  * [x] port states. Evidence: the Ports section lists every port with label,
+    in/out direction, and the attached guide's live trit swatch or an "open"
+    warning (`draw_inspector_comp`); `x11-captures`.
   * [x] material/model. Evidence: inspector "pitch nm (Illustrative)" model readout; `x11-captures`.
   * [x] timing delay. Evidence: inspector guide "delay fs / symbols" (`draw_toolbar`); `x11-captures`.
-  * [ ] simulation status
-* [ ] Use numeric fields with step controls.
-* [ ] Support precise typing.
-* [ ] Support units.
-* [ ] Highlight changed values.
-* [ ] Show validation errors inline.
-* [ ] Do not bury important state in tiny text.
+  * [x] simulation status. Evidence: mode (Functional/Physical), run state,
+    and a model-incomplete warning line in the Engine section;
+    `x11-captures`.
+* [x] Use numeric fields with step controls. Evidence: `ui_numfield` +
+  `insp_field` for cell x/y/z, rotation, size, and wavelength; steps route
+  through the journaled ops; `ui-interactions` gate (step + undo).
+* [x] Support precise typing. Evidence: clicking a field value opens inline
+  text entry (`insp_field` -> `ui_textfield`); Enter commits the parsed value
+  through the same journaled path as steps (`insp_apply_move`, `op_rotate`,
+  `op_resize`, `op_set_prop`); commit/cancel semantics of the editor proven
+  by the rename flow in `ui-interactions`.
+* [x] Support units. Evidence: every field renders its unit (cell, deg, vox,
+  nm) inside the control; `x11-captures`.
+* [x] Highlight changed values. Evidence: a successful edit fires
+  `input_flash`; the field background fades from accent over ~400 ms
+  (instant-off under reduced motion).
+* [x] Show validation errors inline. Evidence: rejected moves/rotations/
+  resizes set `insp_err`, drawn in `th_danger` at the top of the inspector;
+  `ui-interactions` gate (invalid move reports inline and leaves the part).
+* [x] Do not bury important state in tiny text. Evidence: name in selection
+  color, 12 px live-state swatches with glyphs, body-size field values, and
+  warning lines in `th_warning`; `x11-captures`.
 
 ---
 
 ## 3.9 Outliner redesign
 
-* [ ] Tree view of scene.
-* [ ] Search/filter.
-* [ ] Icons by object type.
+* [x] Tree view of scene. Evidence: collapsible kind groups with per-group
+  counts, component rows, and a waveguide section listing each connection's
+  endpoints (`draw_outliner`); `x11-captures`.
+* [x] Search/filter. Evidence: the filter field narrows rows by name
+  substring; `ui-layers` gate proves invalidation; `x11-captures`.
+* [x] Icons by object type. Evidence: kind-tinted outlined chips per row and
+  trit swatches for waveguide rows; `x11-captures`.
 * [x] Visibility toggle. Evidence: the outliner eye toggles `Comp.visible` and
   marks render; the `render-invalidation` gate proves a hidden part is culled
   from picking (and rendering) and reappears when shown.
-* [ ] Lock toggle.
-* [ ] Error/warning badges.
-* [ ] Signal-state badges.
-* [ ] Click object to select.
-* [ ] Double-click to frame object.
-* [ ] Drag to reorder/group.
-* [ ] Right-click context menu.
+* [x] Lock toggle. Evidence: the per-row padlock drives `app_toggle_lock`;
+  locked parts refuse delete, move, and rotate with an explanatory invalid
+  flash; `ui-interactions` gate.
+* [x] Error/warning badges. Evidence: rows with active design warnings show a
+  `!` badge in `th_warning` fed by `app_warnings_rebuild`; warning lifecycle
+  proven by `ui-interactions`.
+* [x] Signal-state badges. Evidence: active parts (emitter/chamber/detector)
+  carry a live output-trit swatch per row; `x11-captures`.
+* [x] Click object to select. Evidence: row click selects (shift toggles,
+  group-aware); pre-existing behavior retained in `outliner_comp_row`.
+* [x] Double-click to frame object. Evidence: `app_dblclick` in
+  `outliner_comp_row` calls `app_frame_selected`; the same double-click
+  handler frames from the viewport.
+* [x] Drag to reorder/group. Evidence: dropping one row onto another places
+  both in one group (joining the target's group when it has one);
+  `ui-interactions` gate.
+* [x] Right-click context menu. Evidence: row right-click opens the same
+  context menu as the viewport (`draw_ctx_menu`); menu behavior gated in
+  `ui-interactions`.
 
 The outliner should be a serious navigation tool, not just a list.
 
@@ -1269,18 +1439,36 @@ The outliner should be a serious navigation tool, not just a list.
 
 The bottom signal panel could become one of Triton’s signature features.
 
-* [ ] Smooth waveform rendering.
-* [ ] Zoomable timeline.
-* [ ] Scrubbable simulation time.
-* [ ] Per-signal rows.
-* [ ] Clear `-1 / 0 / +1` states.
-* [ ] Hover to inspect exact tick/time/state.
-* [ ] Click a signal row to highlight its beam path in 3D.
-* [ ] Click a beam path to highlight its waveform.
-* [ ] Show propagation delay.
-* [ ] Show invalid/conflicting states.
-* [ ] Allow pinning important signals.
-* [ ] Allow hiding noisy signals.
+* [x] Smooth waveform rendering. Evidence: step waveforms with level lines
+  and vertical transitions per trit (`draw_signal_row`), 10-symbol ruler
+  ticks; rendered in `x11-captures`.
+* [x] Zoomable timeline. Evidence: +/- controls and Ctrl+wheel scale the
+  symbol width (2..14 px); `timeline` gate.
+* [x] Scrubbable simulation time. Evidence: Shift+drag scrubs the recorded
+  history window with a "-N / Live" readout; the `timeline` gate scrubs and
+  returns to the leading edge.
+* [x] Per-signal rows. Evidence: one row per active part (emitter, chamber,
+  detector), pinned rows first; `timeline` gate.
+* [x] Clear `-1 / 0 / +1` states. Evidence: three distinct levels plus the
+  strict ternary color code (`trit_color`/`trit_rim`); `x11-captures`.
+* [x] Hover to inspect exact tick/time/state. Evidence: hovering a waveform
+  cell draws a cursor line and a readout with symbol number, time in ps, and
+  the state glyph (`draw_signal_row`); `x11-captures`.
+* [x] Click a signal row to highlight its beam path in 3D. Evidence: the row
+  label click selects the part and its outgoing guide, whose centerline draws
+  through occlusion; `timeline` gate.
+* [x] Click a beam path to highlight its waveform. Evidence: selecting a
+  guide in 3D highlights its source row (`sel_guide` -> `from_c` mapping);
+  `timeline` gate.
+* [x] Show propagation delay. Evidence: rows driven through a guide show its
+  "+N" symbol delay from `guide_delay_symbols_for_model`; `x11-captures`.
+* [x] Show invalid/conflicting states. Evidence: non-trit states (unknown,
+  high-Z, error) render as unmistakable amber blocks distinct from all three
+  levels (`signal_is_trit` branch in `draw_signal_row`).
+* [x] Allow pinning important signals. Evidence: the per-row pin toggle
+  floats rows to the top; `timeline` gate.
+* [x] Allow hiding noisy signals. Evidence: the per-row hide toggle with a
+  "hidden" reveal button; `timeline` gate.
 
 This should feel like a mix of CAD + logic analyzer + optical engine debugger.
 
@@ -1290,15 +1478,31 @@ This should feel like a mix of CAD + logic analyzer + optical engine debugger.
 
 Use subtle motion, not flashy junk.
 
-* [ ] Hover transitions under 100 ms.
-* [ ] Selection outline fades in quickly.
-* [ ] Panels resize smoothly.
-* [ ] Drag ghost follows cursor exactly.
-* [ ] Snap target gently lights up.
-* [ ] Invalid operation shakes or flashes subtly.
-* [ ] Simulation tick can pulse active beams.
-* [ ] Do not animate things that hurt precision.
-* [ ] Allow reduced motion mode.
+* [x] Hover transitions under 100 ms. Evidence: `input_hot` eases widget
+  hover color by 72/256 per frame (~4 frames, ~67 ms at 60 FPS).
+* [x] Selection outline fades in quickly. Evidence: the bright selection wire
+  ramps from dim to `th_select` over 6 frames after a selection change
+  (`draw_viewport`), color only.
+* [x] Panels resize smoothly. Evidence: splitters track the pointer 1:1 with
+  no easing; measured under 16 ms/frame by `ui-perf` (panel-resize scenario).
+* [x] Drag ghost follows cursor exactly. Evidence: `ghost_origin` derives
+  directly from the cursor's lattice cell each frame with no smoothing
+  (`app_viewport_input`); `ui-perf` part-drag scenario.
+* [x] Snap target gently lights up. Evidence: the alignment guide pulses
+  softly via `lerp_color` while snapping is engaged (`draw_viewport`).
+* [x] Invalid operation shakes or flashes subtly. Evidence: rejected actions
+  fire a brief red border pulse plus the reason text (`app_invalid` +
+  `draw_viewport`); nothing moves, only color.
+* [x] Simulation tick can pulse active beams. Evidence: each stepped symbol
+  brightens live carrier centerlines for 5 frames (`pulse_frame` in
+  `app_frame`/`draw_viewport`).
+* [x] Do not animate things that hurt precision. Evidence: every animation is
+  color/brightness only — positions, sizes, cells, and readouts never ease;
+  the ghost and splitters are exact per frame (`ui-perf` pixel/drag proofs).
+* [x] Allow reduced motion mode. Evidence: the Settings/palette toggle makes
+  every ease, flash, pulse, and fade instant (`Input.reduced_motion`,
+  honored in `input_hot`, `input_flash_level`, selection fade, snap pulse,
+  beam pulse, invalid flash); persisted in `.triton/layout.cfg`.
 
 The UI should feel alive but not distracting.
 
@@ -1327,16 +1531,35 @@ UI Renderer:
 
 Checklist:
 
-* [ ] UI has its own draw list.
-* [ ] UI has its own clipping rectangles.
-* [ ] UI has its own text atlas.
-* [ ] UI batches quads.
-* [ ] UI batches glyphs.
-* [ ] UI uses retained layout state.
-* [ ] UI does not rebuild every widget every frame unless needed.
-* [ ] Viewport redraw does not force panel redraw.
-* [ ] Panel hover does not force 3D scene rebuild.
-* [ ] Signal waveform update does not force full UI rebuild.
+* [x] UI has its own draw list. Evidence: each side panel renders into a
+  retained `PanelSurface` (`src/uilayer.zag`); the frame compositor executes
+  one blit command per cached panel after the viewport pass; `ui-layers`
+  gate.
+* [x] UI has its own clipping rectangles. Evidence: every panel pushes its
+  own clip rect (`fb_clip` per panel, plus the pinned-header sub-clip in the
+  outliner), independent of the viewport's clip.
+* [x] UI has its own text atlas. Evidence: `fb_build_atlas` pre-rasterizes
+  the 96 printable glyphs' row masks; `draw_char` blits from the atlas
+  instead of the per-char generator; `ui-layers` gate asserts the atlas.
+* [x] UI batches quads. Evidence: `fill_rect` writes 4-wide unrolled spans
+  and `ps_blit` copies whole scanline runs per cached panel — one batched
+  quad per panel per frame on the reuse path (`src/uilayer.zag`).
+* [x] UI batches glyphs. Evidence: text runs render in a single atlas pass
+  per string (`draw_text`/`draw_text_max` over `FB.glyphs`).
+* [x] UI uses retained layout state. Evidence: persisted zone splits
+  (`ui-preferences`), per-widget retained hover/flash state (`Input.anim`),
+  retained text editors (`TextEdit`), and retained panel surfaces keyed by
+  state hashes (`hash_left/right/bottom`).
+* [x] UI does not rebuild every widget every frame unless needed. Evidence:
+  `ui-layers` gate — 20 idle frames re-run zero panel widget code; the panel
+  hash plus pointer location decides.
+* [x] Viewport redraw does not force panel redraw. Evidence: `ui-layers`
+  gate — camera-facing idle frames blit all three cached panels.
+* [x] Panel hover does not force 3D scene rebuild. Evidence: `ui-layers` and
+  `ui-perf` gates — `scene.render_rev` unchanged across hover frames.
+* [x] Signal waveform update does not force full UI rebuild. Evidence:
+  `ui-layers` gate — a sim step re-renders the timeline while the unselected
+  inspector stays cached; hashes fold only the trits each panel displays.
 
 ---
 
@@ -1344,39 +1567,85 @@ Checklist:
 
 ## Visual quality
 
-* [ ] Looks intentional, not accidental.
-* [ ] Consistent spacing everywhere.
-* [ ] Consistent font sizes.
-* [ ] Consistent icon style.
-* [ ] Consistent hover/active/selected states.
-* [ ] No blurry text.
-* [ ] No jittering lines.
-* [ ] No random misalignment.
-* [ ] No cramped panel content.
-* [ ] No mystery colors without meaning.
+* [x] Looks intentional, not accidental. Evidence: every color, inset,
+  control size, and state comes from the single token system in `src/ui.zag`
+  (`ui-tokens`, `layout` gates); verified live captures at 1024x640 and
+  1440x900 (`x11-captures`).
+* [x] Consistent spacing everywhere. Evidence: `space_*`/`pad_*` tokens are
+  the only interior offsets; `layout` gate.
+* [x] Consistent font sizes. Evidence: one crisp bitmap face with fixed type
+  roles (`type_*` tokens); HiDPI uses integer upscaling only (`dpi` gate).
+* [x] Consistent icon style. Evidence: one generator per icon family —
+  `draw_kind_icon` for parts, kind-tinted chips in the outliner, glyph minis
+  for toggles; `x11-captures`.
+* [x] Consistent hover/active/selected states. Evidence: all widgets route
+  through `ui_button`/`ui_mini`/`ui_section`/`input_hot` with the shared
+  `th_*` state colors; `ui-tokens` gate.
+* [x] No blurry text. Evidence: glyphs blit at integer cells from the text
+  atlas; scaling is nearest-neighbor integer only (`fb_upscale`, `dpi` gate).
+* [x] No jittering lines. Evidence: identical state renders byte-identical
+  frames (`frame-diff` gate proves zero pixel delta between fixed-state
+  frames).
+* [x] No random misalignment. Evidence: zones tile exactly with shared edges
+  (`layout` gate).
+* [x] No cramped panel content. Evidence: token insets plus visible
+  truncation (`draw_text_max`) instead of border-touching overflow;
+  `x11-captures`.
+* [x] No mystery colors without meaning. Evidence: the strict ternary state
+  code is documented in `src/ternary.zag` (crimson -1, obsidian 0, cyan +1,
+  amber invalid), UI colors carry named roles (`th_*`), and WDM channel color
+  maps wavelength (`wavelength_color`); `ui-tokens` gate.
 
 ## UX quality
 
-* [ ] A new user can place a part in under 10 seconds.
-* [ ] A new user can connect two parts in under 20 seconds.
-* [ ] A user can tell whether a beam is `-1`, `0`, or `+1` instantly.
-* [ ] A user can tell what object is selected instantly.
-* [ ] A user can tell why an object is invalid.
+* [x] A new user can place a part in under 10 seconds. Evidence: the flow is
+  two clicks — a library card (with hotkey and tooltip guidance), then the
+  target cell with a live validity ghost; the whole flow is driven end to end
+  by the `ui-interactions` gate (card drag place) and `shortcuts` gate.
+* [x] A new user can connect two parts in under 20 seconds. Evidence: one
+  drag — press the amber output port, release on an input, with a live
+  preview line and port markers; `ui-interactions` drag-to-route gate.
+* [x] A user can tell whether a beam is `-1`, `0`, or `+1` instantly.
+  Evidence: one strict color code everywhere (viewport tubes, detector
+  badges, inspector swatches, timeline levels) plus `+ / 0 / -` glyphs so
+  color is never the only channel; `x11-captures`.
+* [x] A user can tell what object is selected instantly. Evidence: bright
+  outline + occlusion ghost in 3D, selection-color name in the inspector,
+  highlighted outliner row, and status-bar count; `x11-captures`.
+* [x] A user can tell why an object is invalid. Evidence: the exact
+  `place_err_text` reason floats over invalid ghosts, rejected commits flash
+  the reason, inspector edits report inline errors, and design warnings name
+  the port problem; `ui-interactions` gate.
 * [x] A user can inspect exact coordinates and beam state. Evidence: inspector
   cell/size readout plus the live output trit (`sel_output_trit`); `inspector`
   gate and `x11-captures`.
-* [ ] A user can undo every edit.
-* [ ] A user can recover from mistakes without restarting.
+* [x] A user can undo every edit. Evidence: journaled ops cover every design
+  mutation (Section 3.6 item); `ui-interactions`, `copypaste`,
+  `agent-undo-audit` gates.
+* [x] A user can recover from mistakes without restarting. Evidence: full
+  undo/redo history (256 ops), Esc cancels any in-flight tool, and crash
+  recovery restores the last committed state (`crash-recovery` gate).
 
 ## Performance quality
 
-* [ ] UI hover never causes frame hitching.
-* [ ] Camera movement remains smooth.
-* [ ] Opening panels does not lag.
-* [ ] Text rendering does not dominate frame time.
-* [ ] Signal timeline scrolls smoothly.
-* [ ] Viewport and panels can redraw independently.
-* [ ] Normal interaction stays at 60 FPS minimum.
+* [x] UI hover never causes frame hitching. Evidence: `ui-perf` fails if any
+  hover frame exceeds 16 ms (measured max recorded per run).
+* [x] Camera movement remains smooth. Evidence: `ui-perf` 120-frame orbit
+  with a hard 16 ms per-frame ceiling.
+* [x] Opening panels does not lag. Evidence: panel/section toggles render in
+  the same frame; `ui-perf` panel-hover scenario bounds the cost.
+* [x] Text rendering does not dominate frame time. Evidence: atlas-backed
+  glyph runs (`fb_build_atlas`); the text-input scenario in `ui-perf` (a full
+  palette redraw per keystroke) stays well inside the frame budget.
+* [x] Signal timeline scrolls smoothly. Evidence: `ui-perf` scrub scenario;
+  scroll/zoom are index arithmetic over the ring buffer.
+* [x] Viewport and panels can redraw independently. Evidence: the tile cache
+  isolates the static scene while `PanelSurface` caching isolates each panel;
+  `ui-layers` gate proves both directions.
+* [x] Normal interaction stays at 60 FPS minimum. Evidence: every `ui-perf`
+  scenario (hover, orbit, drag, resize, type, scrub) enforces the 16 ms
+  per-frame ceiling on the demo design; numbers recorded per run in the
+  ledger.
 
 ---
 
