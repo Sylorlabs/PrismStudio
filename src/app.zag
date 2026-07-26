@@ -769,7 +769,10 @@ fn zone_settings_gear(a: *App) Rect {
 
 fn zone_opt_btn(a: *App) Rect {
     let g: Rect = zone_settings_gear(a);
-    return rect(g.x - 66, g.y, 62, g.h);
+    // Width derived from label: text_w("Optimizer") = 9*6 = 54, plus pad_text()*2+2 = 10 → 64px.
+    // The 4px gap to the settings gear is explicit rather than baked into the offset.
+    let bw: i32 = 64;
+    return rect(g.x - (bw + 4), g.y, bw, g.h);
 }
 
 fn zone_status(a: *App) Rect {
