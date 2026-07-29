@@ -1,6 +1,6 @@
 # Upstream znc compiler work
 
-Triton is written entirely in Zag and compiled by `znc` (the self-hosted native
+PrismStudio is written entirely in Zag and compiled by `znc` (the self-hosted native
 compiler in `../zag/zag-poc`). Building it surfaced real gaps and bugs in `znc`
 itself. Per the project rule — **fix Zag capability gaps in the compiler, never
 work around them in the app** — each was fixed upstream. Every change below
@@ -27,7 +27,7 @@ Replaced with a real allocator:
   leaking it; `new(T)` and slice-result allocations route through the header'd
   allocator so `delete()` can reclaim them.
 - New `_zag_str_free(slice)` extern frees a heap string's data buffer (used by
-  triton for `Comp.name_` and transient `_zag_str_concat` results).
+  PrismStudio for `Comp.name_` and transient `_zag_str_concat` results).
 - Fixed a latent bug: `_zag_getenv` was missing from the runtime allocation
   dependency closure.
 
@@ -64,7 +64,7 @@ Mesa, no LLVM, no C — driving the kernel's `amdgpu` DRM device through the
   (thousands of workgroups) are intermittently unreliable with this minimal
   submission (stale reads / fence timeouts) because it doesn't replicate the
   cache-management and sync a real driver emits. GPU compute is therefore
-  experimental and opt-in (`TRITON_GPU_DISPATCH=1`), never on the render path,
+  experimental and opt-in (`PRISMSTUDIO_GPU_DISPATCH=1`), never on the render path,
   and the interactive app stays on the (fast, un-hangable) CPU rasterizer.
 
 The ioctl encodings were built from the `_IOC(dir,type,nr,size)` components

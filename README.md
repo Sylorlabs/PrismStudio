@@ -79,10 +79,57 @@ No C compiler, libc, Xlib, Mesa, LLVM, or Python service is used by PrismStudio.
 ./verify.sh safe       # all safe suites with JSON result records
 ./verify.sh release    # requires a real X11 session
 ./run.sh               # native X11 workbench
+./zagpa --gpu-virtual-display /tmp/prism-vgpu.bmp --width 320 --height 240
+./zagpa --gpu-cert-status  # read-only exact tuple, refusal reason, next action
+                       # compiler-ISA virtual GPU frame; never opens DRM
+./zagpa --gpu-backend-status virtual  # explicit choice; zero DRM probes
+./zagpa --gpu-backend-status cpu      # explicit CPU-only choice
+./zagpa --gpu-backend-status auto     # safe default; read-only hardware probe
+./zagpa --gpu-virtual-shadow /tmp/prism-shadow.bmp --width 320 --height 240
+                       # full Prism frame through VM, equality required
 ./zagctl repl          # native line protocol
 ./zagctl mcp           # native MCP server
 ./zagctl flash import ../flash/examples/photonic_massive.fir
 ```
+
+The Zag certification runner defaults to read-only preflight and persists its
+exact device/HW-IP/discovery/ring/firmware/compiler/runtime tuple plus the
+kernel-log baseline. Each explicit run advances at most one resumable physical
+fill and retains tuple, output, kernel-log, fence, timing, and anomaly evidence:
+
+```bash
+../zag/zag-poc/znc tools/gpu_certify.zag -o /tmp/prism-gpu-certify
+/tmp/prism-gpu-certify
+PRISM_GPU_SHARED_DISPLAY_OVERRIDE=I_ACCEPT_DISPLAY_RESET_OR_SYSTEM_HANG \
+  /tmp/prism-gpu-certify --count 100 \
+  --state evidence/gpu-fill-campaign.state \
+  --report evidence/gpu-fill-campaign.report
+```
+
+`--run-one` is the conservative default explicit step. `--count N` accepts
+1..10,000, but still creates a fresh bounded context for each sequential attempt,
+checks logs and output, checkpoints every completion, and stops on the first
+anomaly.
+
+The host-contained alternative executes the same compiler bundles through Zag's
+strict virtual GFX10.1 device and never opens DRM:
+
+```bash
+../zag/zag-poc/znc tools/gpu_virtual_certify.zag -o /tmp/prism-vgpu-certify
+/tmp/prism-vgpu-certify --backend virtual \
+  --report evidence/gpu-virtual-certification.report
+```
+
+It requires one million actual VM submissions, 10,000 fills/transfers, a full
+logical-day state-machine soak, and raster differentials. The report always says
+`physical_silicon_claim=0`; virtual evidence cannot enable physical auto mode.
+Virtualization is an option, not a language mandate. `PRISM_GPU_BACKEND` and
+`--gpu-backend-status` accept `auto`, `cpu`, `virtual`, or `physical`. Explicit
+`cpu` and `virtual` make zero DRM probes. `auto` is the default and may inspect
+hardware read-only, but selects physical execution only for an exact certified,
+reset-isolated tuple; otherwise it selects the available virtual backend, then
+CPU. Explicit physical selection is retained, with its isolation or exact
+acknowledgement requirement and separate dispatch gate unchanged.
 
 `./verify.sh safe` is the everyday source of truth. It exercises the safe build,
 engine, persistence, routing, simulation, optimizer, automation, physical-model,
@@ -90,18 +137,33 @@ and claim-audit suites; native X11 tests and captures run when `DISPLAY` is
 available. GPU memory, submission, and compute checks are separate explicit
 research modes, not a hidden prerequisite for the safe result.
 
+Physical dispatch defaults to reset-isolated hardware, but Zag preserves an
+informed user's choice. A bounded manual run on shared display hardware requires
+both the dispatch opt-in and an exact acknowledgement:
+
+```bash
+PRISMSTUDIO_GPU_DISPATCH=1 \
+PRISM_GPU_SHARED_DISPLAY_OVERRIDE=I_ACCEPT_DISPLAY_RESET_OR_SYSTEM_HANG \
+./build.sh
+```
+
+The override never counts as isolation, certification, automatic promotion, or
+permission for destructive testing. Omitting it preserves the safe default.
+
 ## Automation with deliberate authority
 
 Native agents default to `read,inspect,simulate`. Mutation, save, export, local
-execution, and admin operations require an explicit `TRITON_CAPS` grant. The
-generated local MCP configuration grants `all` deliberately and identifies its
-actor; deployments should narrow that value. Requests and denials are appended
-to `.triton/audit.log` (or `TRITON_AUDIT`).
+execution, and admin operations require an explicit `PRISMSTUDIO_CAPS` grant. The
+generated local MCP configuration (`mcp-config.json`, gitignored and rebuilt by
+`./zagpa --mcp-install`) mirrors `PRISMSTUDIO_CAPS` from the install environment
+and falls back to `read,inspect,simulate`; widening to `all` is a deliberate
+`PRISMSTUDIO_CAPS=all ./zagpa --mcp-install "$(pwd)"`, never a silent default.
+Requests and denials are appended to `.prismstudio/audit.log` (or `PRISMSTUDIO_AUDIT`).
 
 Project mutations use `request <idempotency-key> <expected-revision> <command>`.
 `zagctl` creates this envelope automatically using the current revision; set
-`TRITON_IDEMPOTENCY` to a stable caller key when retrying. MCP clients use the
-advertised `triton_mutate` tool or a specialized mutation tool whose schema
+`PRISMSTUDIO_IDEMPOTENCY` to a stable caller key when retrying. MCP clients use the
+advertised `prismstudio_mutate` tool or a specialized mutation tool whose schema
 requires `idempotency_key` and `expected_revision`. Successful results include
 the revision, idempotency key, affected ID, and undo token. Unkeyed mutations
 are rejected.
@@ -110,8 +172,8 @@ Authorized automation can inspect the live interface with `ui list`, capture it
 with `ui screenshot <path.bmp>`, and activate an advertised control with the
 revision-checked `ui activate <element-id>` mutation. The widget-generated
 catalog reports stable IDs, semantic roles, enabled/active/focused state, and
-exact live click bounds. MCP exposes the same contract as `triton_ui_list`,
-`triton_ui_screenshot`, and `triton_ui_activate`.
+exact live click bounds. MCP exposes the same contract as `prismstudio_ui_list`,
+`prismstudio_ui_screenshot`, and `prismstudio_ui_activate`.
 
 ## Physical model and provenance
 

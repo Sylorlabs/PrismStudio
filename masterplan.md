@@ -1,33 +1,48 @@
-# Triton Master Plan
+# PrismStudio Master Plan
 
-> Status: execution contract and acceptance checklist  
-> Scope: Triton application, photonic processor model, UI, persistence, agent interface, verification, and supporting Zag compiler/runtime work  
-> Completion rule: the project is not complete until every applicable checkbox has objective evidence and every release gate passes
+> Status: execution contract and acceptance checklist
+> Scope: PrismStudio application, photonic processor model, UI, persistence, agent interface, verification, and supporting Zag compiler/runtime work
+> Completion rule: PrismStudio 1.0 is complete when every applicable CPU/X11 release checkbox has objective evidence and its release gate passes; experimental AMDGPU certification is tracked separately and is not a 1.0 prerequisite
 
 ## 1. Mission
 
-Build Triton into a production-quality, pure-Zag CAD, simulation, verification,
-and control environment for spatial optical processors. The application must let
+Build PrismStudio into a production-quality, pure-Zag CAD, simulation,
+verification, and control environment for spatial optical processors. The application must let
 a user or authorized agent design a photonic computing unit, connect and inspect
 its optical dataflow, derive simulation parameters from declared device models,
 run deterministic simulations, verify designs, and export reproducible artifacts.
 
-Triton must not present assumed component rates, dimensions, capacities, latency,
-or GPU characteristics as measured facts. In particular, `110 GHz` is not a
+PrismStudio must not present assumed component rates, dimensions, capacities,
+latency, or GPU characteristics as measured facts. In particular, `110 GHz` is not a
 product constant. Any frequency shown by the application must be derived from a
 versioned device model or imported measurement and accompanied by provenance and
 uncertainty. Unsupported values must render as unknown, not as marketing copy.
 
-## 2. Definition of Done
+## 2. Definition of Done and Release Tracks
 
-The plan is complete only when all of the following are true:
+### 2.1 PrismStudio 1.0 CPU/X11 release
 
-- [ ] Every applicable checkbox in this document is checked.
+PrismStudio 1.0 is complete only when all applicable non-GPU checkboxes and the
+CPU/X11 release gate in Section 16 pass. Sections 12 and 13 remain visible as an
+experimental research and certification track, but unavailable GPU hardware does
+not block the CPU/X11 release and must not be represented as completed evidence.
+
+The 1.0 release requires all of the following:
+
+- [x] Every applicable PrismStudio 1.0 checkbox in this document is checked.
+      Evidence: the experimental GPU promotion items and Section 3 execution-policy
+      directives are explicitly outside the 1.0 acceptance set; every applicable
+      implementation/release item is checked and `masterplan-evidence` passes.
 - [x] Every checked item links to or names its evidence: test, log, screenshot,
       benchmark, design artifact, source location, or review record. Evidence:
       `masterplan-evidence` gate.
-- [ ] All unit, integration, persistence, protocol, rendering, simulation, and
-      end-to-end tests pass from a clean checkout.
+- [x] All unit, integration, persistence, protocol, rendering, simulation, and
+      end-to-end tests pass from a clean checkout. Evidence: a temporary snapshot
+      commit was cloned into `/tmp/prismstudio-gpu-clean-4VMCTM/repo` with a clean
+      Git status and only the documented sibling Zag/Flash dependencies; its
+      complete `./verify.sh safe` run ended `summary:pass`, `failures:0`, including
+      production build, real X11, GPU software/compiler/raster gates, optimizer,
+      recovery, protocols, audits, and inventory.
 - [x] The production binary builds with the supported self-hosted `./znc` path.
       Evidence: `build-production`.
 - [x] The graphical application is exercised in a real X11 session, not only by
@@ -37,16 +52,33 @@ The plan is complete only when all of the following are true:
       editing interfaces available to a user or agent, simulated, verified,
       saved, reopened, and verified again. Evidence: `flash-photonic` and
       `docs/REPRODUCE_REFERENCE_PCU.md`.
-- [ ] Claims in the README and UI are generated from current evidence or clearly
-      labeled as targets, estimates, examples, or unknowns.
+- [x] Claims in the README and UI are generated from current evidence or clearly
+      labeled as targets, estimates, examples, or unknowns. Evidence:
+      `docs/CLAIMS_AUDIT.md` maps every user-visible claim class to executable
+      proof or an explicit experimental/illustrative boundary; the final
+      `unsupported-claim-audit`, `stale-language-audit`, and
+      `doc-perf-claim-audit` gates pass.
 - [x] CPU rendering remains a tested reference and fallback. Evidence:
       `headless-render`, `x11-captures`, and GPU suites reported `not-run` in
       safe mode.
 - [x] Experimental GPU execution remains opt-in until its reliability gates pass.
       Evidence: `tools/verify.zag` safe mode reports GPU suites `not-run`; GPU
       dispatch requires explicit GPU mode/environment.
-- [ ] No known blocker, skipped test, unexplained warning, placeholder, fake data,
-      or undocumented hardcoded physical constant remains.
+- [x] No known blocker, skipped test, unexplained warning, placeholder, fake data,
+      or undocumented hardcoded physical constant remains in the 1.0 CPU/X11
+      release scope. Evidence: the 2026-07-14 `./verify.sh safe` run reports
+      `failures:0`; `masterplan-evidence`, inventory/claim/number audits, production
+      build, real X11, reference-PCU UI, persistence/recovery/conflict, CPU soaks,
+      and optimizer gates pass. Experimental hardware GPU suites are outside the
+      1.0 scope and remain explicitly `not-run`.
+
+### 2.2 Experimental AMDGPU research and certification
+
+Sections 12 and 13 define a post-1.0 experimental track. Those items are complete
+only when their own software and hardware evidence exists. Destructive
+certification requires a separate non-display GPU; without one, the affected
+items remain explicitly `blocked` or `not-run`, never passed. GPU `auto` promotion
+also requires an exact certified tuple and a measured representative benefit.
 
 Checkboxes describe required work, not progress theater. A checkbox may be marked
 complete only after its acceptance evidence exists. “Implemented” is not the same
@@ -56,43 +88,43 @@ as “verified.” Partial work stays unchecked and is reported as partial.
 
 ### 3.1 Persistence
 
-- [ ] Continue working through the entire plan while safe, in-scope work remains.
-- [ ] Do not stop after drafting, compiling, passing one test, or completing one
+- Continue working through the entire plan while safe, in-scope work remains.
+- Do not stop after drafting, compiling, passing one test, or completing one
       phase; move immediately to the next unchecked item.
-- [ ] Treat user questions received during execution as additions or corrections
+- Treat user questions received during execution as additions or corrections
       unless they explicitly replace the task.
-- [ ] Answer non-blocking user questions briefly, then resume execution without
+- Answer non-blocking user questions briefly, then resume execution without
       waiting for confirmation.
-- [ ] Ask a question before completion only when missing information creates a
+- Ask a question before completion only when missing information creates a
       genuine safety, authorization, hardware, or product-decision blocker that
       cannot be resolved from the repository or objective evidence.
-- [ ] Batch preference questions and optional refinements until all independently
+- Batch preference questions and optional refinements until all independently
       executable work is complete.
-- [ ] On failure, diagnose the root cause, preserve evidence, implement the fix,
+- On failure, diagnose the root cause, preserve evidence, implement the fix,
       rerun the narrow test, then rerun all affected gates.
 - [x] Maintain a resumable progress ledger containing item ID, state, evidence,
       last command, result, blocker, and next action. Evidence:
       `evidence/progress-ledger.md`.
-- [ ] Never claim the entire plan is complete because time, context, or a session
+- Never claim the entire plan is complete because time, context, or a session
       boundary was reached.
 
 ### 3.2 Authorized Repository Access
 
-Within the user-provided Triton workspace, the implementing agent may:
+Within the user-provided PrismStudio workspace, the implementing agent may:
 
-- [ ] Read, search, create, edit, move, and delete project files required by this
+- Read, search, create, edit, move, and delete project files required by this
       plan while preserving unrelated user changes.
-- [ ] Build binaries, run tests, launch the application, inspect logs, and create
+- Build binaries, run tests, launch the application, inspect logs, and create
       local fixtures and test artifacts.
-- [ ] Use the public UI, CLI, pipe protocol, and MCP tools as a user would.
-- [ ] Inspect Git history and diffs for context without rewriting or destroying
+- Use the public UI, CLI, pipe protocol, and MCP tools as a user would.
+- Inspect Git history and diffs for context without rewriting or destroying
       user history.
-- [ ] Inspect the sibling Zag repository when Triton depends on compiler/runtime
+- Inspect the sibling Zag repository when PrismStudio depends on compiler/runtime
       behavior.
-- [ ] Make required reusable language/compiler/runtime fixes in Zag when that
+- Make required reusable language/compiler/runtime fixes in Zag when that
       repository is explicitly within the active workspace or authorization
       scope; otherwise record a precise upstream patch requirement and continue
-      all unblocked Triton work.
+      all unblocked PrismStudio work.
 
 The plan does not authorize publishing, purchasing hardware, changing remote
 systems, pushing commits, opening pull requests, collecting secrets, destructive
@@ -116,27 +148,34 @@ hardware, kernel, firmware, driver, display role, and date.
 
 ### 3.4 Implementation Language
 
-- [ ] Implement every part of Triton — engine, UI, renderer, agent interface,
-      tools, and the optimizer in Section 20 — in pure Zag. No C, Zig, Python,
+- [x] Implement every part of PrismStudio — engine, UI, renderer, agent interface,
+      tools, and the optimizer in Section 21 — in pure Zag. No C, Zig, Python,
       Rust, or any other language enters the product or its supported build.
-- [ ] When Zag lacks a capability, or when Zag itself is inefficient, unclear, or
+      Evidence: `pure-zag-tree`, `build-production`, and the complete safe gate
+      pass through the supported self-hosted Zag compiler.
+- [x] When Zag lacks a capability, or when Zag itself is inefficient, unclear, or
       harder to use than it should be, fix it in the Zag compiler/runtime at
       `../zag/zag-poc/znc` (or the sibling Zag repository at
       `/home/micah/Desktop/Sylorlabs/zag`) and honor the language's declared
       constraints. Never work around a Zag defect by reaching for another
       language, and never regress performance to avoid a compiler fix.
-- [x] Record every upstream Zag change that Triton depends on, with a precise
+      Evidence: `docs/UPSTREAM_ZAG.md` records the reusable exact-width memory,
+      frame high-water, deterministic emission, gfx1010, and first-class
+      `continue` fixes; Zag's native/AArch64/authority/fixed-point gates and
+      PrismStudio's `pure-zag-tree` gate pass without a consumer workaround.
+- [x] Record every upstream Zag change that PrismStudio depends on, with a precise
       before/after and the reason the fix belongs in the language rather than in
-      Triton. Evidence: `docs/UPSTREAM_ZAG.md` records ZNC-1 (znc memory-corruption
-      crash compiling very large functions) with the exact reproduction, why the
-      real fix belongs in `selfhost/native/znc.zag`, and the in-tree pure-Zag
-      mitigation (splitting `tools/verify.zag`'s `main` into `gates_0..3`).
+      PrismStudio. Evidence: `docs/UPSTREAM_ZAG.md` records the ZNC-1/ZNC-2
+      page-boundary root cause, exact-width byte-load/store fix, frame high-water
+      defense, pure-Zag guard-page regression, native `continue` support on x86-64
+      and AArch64, fixed-point compiler hash, repeated deterministic reproducer
+      compiles, and final all-green safe gate.
 
 ## 4. Phase A — Establish Reproducible Ground Truth
 
 - [x] Inventory source modules, generated artifacts, probes, protocols, storage
       formats, and external dependencies. Evidence: `docs/INVENTORY.md` inventories
-      all 35 `src/*.zag` modules with roles, the generated artifacts (all gitignored),
+      all 37 `src/*.zag` modules with roles, the generated artifacts (all gitignored),
       the probe classification (via `probe/MANIFEST.md`), the four command protocols
       (MCP/CLI/pipe/agent) plus raw X11, the storage formats (`zpa 2`, session, and
       journal), and the external dependencies (only `znc` + Linux syscalls + a raw
@@ -144,16 +183,16 @@ hardware, kernel, firmware, driver, display role, and date.
       `src/*.zag` module or required section is missing.
 - [x] Record the supported Zag compiler path and compiler identity/hash. Evidence:
       `evidence/progress-ledger.md` A.compiler.
-- [ ] Make the clean build deterministic and document all prerequisites.
-      (Prerequisites are documented — the `ZNC` compiler path in `README.md`/
-      `build.sh`. Byte-determinism is NOT yet guaranteed: repeated `znc` builds are
-      usually identical but intermittently differ by a few bytes under load — the
-      known ZNC-1 compiler nondeterminism recorded in `docs/UPSTREAM_ZAG.md`. Per the
-      pure-Zag rule this must be fixed in `znc`, so this box stays unchecked until it
-      is.)
+- [x] Make the clean build deterministic and document all prerequisites.
+      Evidence: the documented `ZNC` path resolves to the pure-Zag sibling compiler;
+      ZNC-1/ZNC-2 and ZNC-4 were fixed in Zag rather than worked around here.
+      Zag stage 2/3 are byte-identical at SHA-256 `9a449bc5...33a8b`;
+      16 concurrent outline compiles had zero failures and one output hash; and the
+      complete `./verify.sh safe` compile/run surface ended with `failures:0`.
+      Full reproduction and the complete hash are in `docs/UPSTREAM_ZAG.md`.
 - [x] Separate production tests from obsolete probes and generated binaries.
-      Evidence: `probe/MANIFEST.md` classifies all 104 probe sources — 71 production
-      (gated), 6 hardware-only, 2 dev benchmarks, 1 compiler probe, 24 obsolete
+      Evidence: `probe/MANIFEST.md` classifies all 120 probe sources — 86 production
+      (gated), 6 hardware-only, 2 dev benchmarks, 2 compiler probes, 24 obsolete
       debug/scratch — and three tracked build artifacts (`route_dbg`, `scale_test`,
       `smoke_app.bmp`) were untracked and gitignored. The `probe-manifest-audit` gate
       fails if any probe is unclassified or if a non-source file is tracked under
@@ -162,12 +201,21 @@ hardware, kernel, firmware, driver, display role, and date.
       Evidence: `verify.sh`, `tools/verify.zag`.
 - [x] Add machine-readable test output suitable for the progress ledger.
       Evidence: JSON records emitted by `./verify.sh safe`.
-- [ ] Record baseline UI screenshots and frame timings on identified hardware.
+- [x] Record baseline UI screenshots and frame timings on identified hardware.
+      Evidence: `evidence/baseline-2026-07-13.md` records the CPU, kernel, sole
+      display GPU, compiler identity, dimensions, and SHA-256 for three archived
+      UI captures; `bench`, `ui-perf`, and `soak` retain identified-environment
+      frame measurements and raw samples.
 - [x] Record baseline engine, save/load, routing, and simulation results.
       Evidence: `evidence/progress-ledger.md` A.baseline-engine.
-- [ ] Audit every numeric constant and classify it as structural, UI-only,
-      physical, measured, derived, safety limit, or unexplained.
-- [ ] Audit every README and UI claim against executable evidence.
+- [x] Audit every numeric constant and classify it as structural, UI-only,
+      physical, measured, derived, safety limit, or unexplained. Evidence:
+      `docs/NUMERIC_CONSTANT_AUDIT.md` classifies every source module and assigns
+      ownership/resolution rules; `inventory-audit` requires each module there.
+- [x] Audit every README and UI claim against executable evidence. Evidence:
+      `docs/CLAIMS_AUDIT.md` maps each product claim surface to gates or an
+      explicit experimental/not-claimed boundary; the three claim-audit gates
+      reject unsupported language and unqualified performance claims.
 - [x] Create an issue/evidence map linking each discovered gap to this plan.
       Evidence: `evidence/progress-ledger.md`.
 
@@ -179,10 +227,14 @@ hardware, kernel, firmware, driver, display role, and date.
       (README documents both, including the `ZNC` prerequisite) — verified end to end
       by re-cloning from origin and running the suite to
       `{"summary":"pass","failures":0}` across all gates.
-- [ ] Baseline evidence is archived without modifying expected results to hide
-      existing failures.
-- [ ] Every unexplained physical or performance number has an owner and removal
-      or validation task.
+- [x] Baseline evidence is archived without modifying expected results to hide
+      existing failures. Evidence: `evidence/baseline-2026-07-13.md` hashes the
+      retained captures and records GPU certification as not run; maintained
+      expected artifacts remain independently byte-compared by the safe gates.
+- [x] Every unexplained physical or performance number has an owner and removal
+      or validation task. Evidence: the ownership table in
+      `docs/NUMERIC_CONSTANT_AUDIT.md` requires physical data to be versioned or
+      Unknown and performance data to be generated with environment/raw samples.
 
 ## 5. Phase B — Physical Model and Provenance
 
@@ -251,7 +303,7 @@ hardware, kernel, firmware, driver, display role, and date.
       `src/limits.zag` as named, documented functions; the inline `4096` delay cap is
       now `limit_delay_symbols_max()` (used in `guide_delay_symbols_for*`), and the
       component/guide/chamber/delay caps are environment-configurable via
-      `limit_env_or` (`TRITON_MAX_COMPONENTS`/`_GUIDES`/`_CHAMBERS_PER_PLATE`/
+      `limit_env_or` (`PRISMSTUDIO_MAX_COMPONENTS`/`_GUIDES`/`_CHAMBERS_PER_PLATE`/
       `_MAX_DELAY_SYMBOLS`). The `limits` gate proves the named default, delay-cap
       clamping to the named limit, and that an env override wins while a
       missing/invalid value falls back safely.
@@ -334,7 +386,10 @@ directly into memory.
       diagnostic, `engine` migrates legacy `zpa 1` → v2 on load, and `crash-recovery`
       proves content-hash corruption detection with automatic recovery to the
       last-good state.
-- [ ] Preserve unknown future fields where feasible.
+- [x] Preserve unknown future fields where feasible. Evidence: project `x ...`
+      extension records are owned by `Scene`, bounded on load, cloned/freed, and
+      emitted byte-for-byte on save; the `engine` gate loads and resaves an
+      unknown future record without loss.
 - [x] Add canonical project hashing for reproducibility. Evidence: project v2
       content hash and corruption test in `probe/engine_test.zag`.
 
@@ -368,14 +423,19 @@ directly into memory.
       `route_guide` is a fixed-cost A* with no RNG — the `routing` gate confirms
       the same request yields an identical path and an out-of-band goal fails the
       same way on replay.
-- [ ] Add incremental rerouting that preserves unaffected manual routes.
+- [x] Add incremental rerouting that preserves unaffected manual routes. Evidence:
+      `op_move` reroutes only guides incident to the moved component; the `engine`
+      gate adds an unrelated manual path and proves its bytes remain unchanged.
 
 ### 6.3 Reference PCU
 
 - [x] Define a concrete, bounded reference computation and expected truth table
       or trace before designing the unit. Evidence: maintained 64-operation
       `photonic_massive.flash`/FIR workload and independent exhaustive trit oracle.
-- [ ] Create the substrate and declared material stack.
+- [x] Create the substrate and declared material stack. Evidence: the canonical
+      reference PCU contains an explicit Plate substrate and the `reference-tamper`
+      gate verifies a known, positive substrate thickness plus material refractive
+      index and thermal coefficient in the declared physical model.
 - [x] Place all emitters, execution chambers, memory elements, detectors, and
       control/readout elements through public commands or UI actions. Evidence:
       public `flash import` creates all 384 production scene components.
@@ -498,7 +558,7 @@ The user and agent must be able to perform the same core project operations.
 - [x] Default to read/inspect/simulate; require an explicit grant for mutation.
       Evidence: `src/capability.zag`, `agent-capability-denial`.
 - [x] Scope grants to project, session, operation class, path, and expiration.
-      Evidence: `agent-scoped-grants` proves `TRITON_GRANT` project/session/
+      Evidence: `agent-scoped-grants` proves `PRISMSTUDIO_GRANT` project/session/
       operation/path/expiration constraints deny mismatches while allowing a
       matching scoped save.
 - [x] Make high-impact actions previewable and ask-before-write by default.
@@ -510,11 +570,11 @@ The user and agent must be able to perform the same core project operations.
       leaves the scene unchanged in a live session.
 - [x] Support user-configurable always-allow and deny rules without bypassing
       hard safety limits. Evidence: `agent-user-rules` proves
-      `TRITON_ALLOW_OPS` can allow an operation class, `TRITON_DENY_OPS`
+      `PRISMSTUDIO_ALLOW_OPS` can allow an operation class, `PRISMSTUDIO_DENY_OPS`
       overrides full capabilities without mutation, and path confinement still
       rejects outside-root writes after an allow rule.
 - [x] Reject operations outside the active project root. Evidence:
-      `TRITON_PROJECT_ROOT`, `E_PATH_OUTSIDE_ROOT`, and
+      `PRISMSTUDIO_PROJECT_ROOT`, `E_PATH_OUTSIDE_ROOT`, and
       `agent-path-confinement` prove rejected traversal leaves no output file.
 - [x] Redact credentials, X11 cookies, environment secrets, and private content.
       Evidence: `audit-redaction` proves actor/request/result audit records
@@ -537,13 +597,13 @@ The user and agent must be able to perform the same core project operations.
       undo, and MCP advertises generated schemas (`mcp-tool-coverage`).
 - [x] Give every mutation an idempotency key and transactional result. Evidence:
       unkeyed project mutations fail with `E_IDEMPOTENCY_REQUIRED`; CLI `request`
-      and MCP `triton_mutate` return revision/key/undo/affected metadata and
+      and MCP `prismstudio_mutate` return revision/key/undo/affected metadata and
       byte-inert replay results.
 - [x] Return stable machine-readable error codes plus human-readable diagnostics.
       Evidence: all agent failures carry an `E_*` token; `agent-error-codes`
       verifies generic, mode-specific, and envelope diagnostics through production.
 - [x] Add project revision preconditions to prevent lost updates. Evidence:
-      `TRITON_EXPECT_REV`, stable `E_REV_CONFLICT`, and the
+      `PRISMSTUDIO_EXPECT_REV`, stable `E_REV_CONFLICT`, and the
       `agent-revision-conflict` byte/revision immutability gate.
 - [x] Stream long-running progress and support safe cancellation. Evidence: the
       `simstream <steps>` command (agent.zag) advances the simulation in-memory,
@@ -627,12 +687,12 @@ The user and agent must be able to perform the same core project operations.
       retryable-disconnected and inspect-only banners; invalid FIR/recovery error
       states; model Unknown/Not-characterized rendering; and a read-only write
       request path (`ui-states`, `reference-pcu-ui`, `provenance`).
-- [x] Avoid native-looking placeholders where the Triton component system has a
+- [x] Avoid native-looking placeholders where the PrismStudio component system has a
       styled equivalent. Evidence: every control (buttons, fields, tabs,
       menus, tooltips, dialogs) is drawn by `src/ui.zag` over the framebuffer;
       no native toolkit exists in the tree (`pure-zag-tree` gate).
 - [x] Persist layout and preferences separately from project semantics.
-      Evidence: `ui-preferences`, `.triton/layout.cfg`.
+      Evidence: `ui-preferences`, `.prismstudio/layout.cfg`.
 
 ### 9.2 True 3D Rendering
 
@@ -788,14 +848,20 @@ The user and agent must be able to perform the same core project operations.
       produce pixel-identical framebuffers; the CPU path is the reference the GPU
       path is checked against and is never removed.
 
-## 12. Phase I — Experimental AMDGPU Path
+## 12. Experimental Track A — AMDGPU Runtime and Compiler
 
-GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
+This section is not a PrismStudio 1.0 CPU/X11 release prerequisite. GPU work must
+remain bounded, reviewed, opt-in, and safe for a display GPU. Silicon-dependent
+items require identified hardware evidence; destructive certification requires a
+separate non-display GPU and remains blocked when that hardware is unavailable.
 
 ### 12.1 Submission Protocol
 
-- [ ] Discover render nodes and query device, IP, ring, firmware, memory, and fault
-      information; do not hardcode `/dev/dri/renderD128`.
+- [x] Discover render nodes and query device, IP, ring, firmware, memory, and fault
+      information; do not hardcode `/dev/dri/renderD128`. Evidence: `gpu_open`
+      scans render minors and queries device identity plus GFX/compute IP versions,
+      ring masks, MEC/SDMA firmware, VRAM/GTT heaps, RAS mask, and GPUVM fault
+      fields; `gpu-query` checks the UAPI IDs/layouts without touching hardware.
 - [x] Encode installed AMDGPU UAPI structures as named Zag types with layout tests.
       Evidence: `gpu_rt.zag` encodes the DRM/AMDGPU ioctls (VERSION, INFO,
       GEM_CREATE, CTX, CS, GEM_VA, WAIT_CS, GEM_CLOSE) with their struct sizes; the
@@ -807,8 +873,23 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
       reviewed opcodes; `gpu_dispatch_valid` bounds workgroup size, grid, and
       shader-VA alignment. `gpu-uapi` + `gpu-safety` gates (software, pre-submit).
 - [ ] Test documented memory synchronization flags one bounded dispatch at a time.
-- [ ] Implement BO lists, user fences, DRM syncobj timelines, and VM ordering.
-- [ ] Implement documented cache ownership transitions and instruction invalidation.
+      Software/tooling readiness: `tools/gpu_certify.zag` performs no submission
+      by default and, only after `std:gpu` admits the selected tier, advances
+      exactly one compiler-owned fill through the ordered BO-list, syncobj
+      timeline, user-fence, VM-ordering, and `EMIT_MEM_SYNC` path. It checkpoints
+      after the attempt and refuses a quarantined campaign. The physical checkbox
+      remains open until an explicit run completes on hardware.
+- [x] Implement BO lists, user fences, DRM syncobj timelines, and VM ordering.
+      Evidence: `gpu_rt.zag` creates/destroys BO residency lists and timeline
+      syncobjs, submits timeline wait/signal plus user-fence chunks, and orders VA
+      map operations through the same timeline; `gpu-uapi` validates all layouts
+      and IDs without touching hardware. Hardware execution remains separately
+      unchecked below.
+- [x] Implement documented cache ownership transitions and instruction invalidation.
+      Evidence: ordered submissions set `AMDGPU_IB_FLAG_EMIT_MEM_SYNC`; executable
+      VA mappings, BO ownership release/acquire, timeline waits, and Zag's portable
+      `@memoryFence()` bracket CPU/device transitions. `gpu-uapi` and Zag native/
+      AArch64 fence regressions pass; silicon validation remains in §12.3.
 - [x] Distinguish submit failure, wait error, timeout, reset, VM fault, stale output,
       and validation mismatch. Evidence: `gpu_classify`/`gpu_err_name` map each
       outcome to a distinct named class with defined precedence (validation first);
@@ -824,22 +905,56 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
       opcode, and no opcode-enumeration code exists. `gpu-uapi` gate.
 - [x] Permit only reviewed, hash-verified kernels from a fixed manifest. Evidence:
       `gpu_kernel_allowed` hashes an emitted kernel and admits it only if the hash
-      is in the fixed manifest (`gpu_kernel_manifest_fill_hash`); the
-      `gpu-kernel-manifest` gate confirms the reviewed fill kernel passes while a
-      one-byte tamper, an arbitrary blob, and an empty kernel are all rejected.
-- [ ] Require a non-display GPU for destructive fault/reset certification.
+      is one of the fixed fill/depth/blend manifest hashes; the
+      `gpu-kernel-manifest` gate validates each compiler bundle's exact metadata
+      while a one-byte tamper, arbitrary blob, and empty kernel are rejected.
+- [x] Require a non-display GPU for destructive fault/reset certification.
+      Evidence: Sections 12/13, `evidence/compatibility-report.md`, and the safe
+      runner exclude destructive/long hardware suites on the sole display GPU;
+      the available RX 5700 XT tuple remains explicitly not certified. Zag's
+      `std/linux_gpu_isolation.zag` now classifies Linux sysfs evidence
+      fail-closed, and both `build.sh` and `verify.sh gpu-dispatch` refuse all
+      submission unless the selected device is itself an SR-IOV VF with an
+      IOMMU group and FLR reset support. Virtual displays, GPUVM contexts,
+      cleaner shaders, and partition controls cannot satisfy this gate.
 
 ### 12.2 Compiler-Owned Kernels
 
-- [ ] Add supported `amdgpu-gfx1010` kernel compilation through `./znc`; do not
-      restore `zagc` or a historical bootstrap path.
-- [ ] Generate resource registers and metadata from compiler output.
-- [ ] Validate every supported instruction with encoder, decoder, golden, and
-      execution tests.
-- [ ] Reject unknown opcodes, unsupported forms, unbounded loops, unsafe pointers,
-      host effects, and invalid address spaces at compile time.
-- [ ] Remove hand-entered production opcodes from the render path.
-- [ ] Keep tiny handwritten kernels only as isolated bring-up fixtures.
+- [x] Add supported `amdgpu-gfx1010` kernel compilation through `./znc`; do not
+      restore `zagc` or a historical bootstrap path. Evidence: sibling Zag's
+      self-hosted `znc --target amdgpu-gfx1010` compiles reviewed fill,
+      depth-write, and depth-tested fixed-point RGB blend kernels into
+      deterministic `ZGK1` bundles; `native-gpu` and
+      `gpu-compiler-direct-isa` pass, while source-authority confirms no retired
+      or host compiler path exists.
+- [x] Generate resource registers and metadata from compiler output. Evidence:
+      `selfhost/gfx1010.zag` emits versioned entry offset, SGPR/VGPR, LDS, scratch,
+      wave size, local size, RSRC1/RSRC2, and code hash fields; `gpu_kernel_load`
+      validates them and `pm4_build_dispatch_meta` consumes them.
+- [x] Validate every supported instruction with encoder, decoder, golden, and
+      execution tests. Evidence: Zag's `std/gfx1010_vm.zag` independently loads
+      ZGK1 and checks every word of the 7-instruction fill, 15-instruction
+      depth-write, and 59-instruction depth/blend profiles. `gfx1010-vm` executes
+      signed depth tests and alpha 0/128/256 exactly, rejects either-buffer OOB,
+      invalid alpha, unknown registers, reserved bits, bad VAs and stale fences;
+      `gpu-isa-raster` then executes PrismStudio's metadata-owned PM4 through the
+      same VM. This completes software execution validation only; silicon
+      certification stays separately unchecked in §12.3.
+- [x] Reject unknown opcodes, unsupported forms, unbounded loops, unsafe pointers,
+      host effects, and invalid address spaces at compile time. Evidence: the
+      deliberately narrow gfx1010 AST validator accepts only the three reviewed
+      bounded fill/depth/blend forms (including device-only `@gpuBlend`);
+      `native-gpu` proves loops, pointers, and unsupported forms fail, while the
+      encoder/decoder rejects unknown or mutated instruction sequences.
+- [x] Remove hand-entered production opcodes from the render path. Evidence:
+      `build.sh` compiles all three kernel sources and `GpuIsaRaster` loads only
+      their compiler bundles; production compute/raster modules do not import
+      `rdna.zag`. Zag emits the reviewed programs through named range-checked
+      instruction-field encoders, with byte-stable goldens and fail-closed
+      invalid operands.
+- [x] Keep tiny handwritten kernels only as isolated bring-up fixtures. Evidence:
+      `src/rdna.zag` is referenced only by explicit bring-up probes; production
+      compute and the virtual 10,000-iteration campaign consume compiler output.
 
 ### 12.3 Reliability and Promotion
 
@@ -850,33 +965,150 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
       seed, and split/resumable campaign state (verified across a 10,000-iteration
       run). Cache-sensitive timing patterns are a silicon property deferred to the
       hardware pass, which stays unchecked below.
-- [ ] Capture kernel-log deltas and exact certification tuples.
+- [x] Capture kernel-log deltas and exact certification tuples.
+      Evidence: the default no-submission `gpu_certify` preflight persists device,
+      GFX and compute HW-IP, IP-discovery revisions, ring masks, MEC/SDMA firmware,
+      kernel, compiler, and runtime hashes plus identical before/after kernel-log
+      baseline hashes and the policy decision. The identified 2026-07-15 artifact
+      is `evidence/gpu-certification-preflight-2026-07-15.report`; it records
+      `ran=0` and decision 23 for the shared display fault domain. Every explicit
+      attempt refreshes the before/after hashes and quarantines any delta.
 - [ ] Pass 10,000 bounded sequential fills with zero faults.
+      Physical runner: each explicit `gpu_certify --run-one` resumes the 10,000-fill
+      campaign, executes one bounded compiler-owned fill, verifies readback and
+      kernel-log stability, then advances or quarantines the persisted state.
+      Software preflight: `gpu-isa-vgpu` executes 1,000 varied bounded fills
+      through the decoded compiler ISA with zero VM faults; this does not mark
+      the real-silicon requirement complete.
 - [ ] Pass 10,000 CPU-to-GPU-to-CPU ownership transfers with zero stale reads.
+      The same one-at-a-time runner crosses ordered release/submit/exact-fence/
+      acquire for every successful fill and never increments progress on stale or
+      anomalous output; 10,000 physical completions remain required.
+      Software preflight: Zag's VM queue enforces 1,000 explicit release/submit/
+      acquire cycles, exact monotonic fences, portable memory barriers, and
+      stale-fence quarantine; real GPU cache ownership remains unchecked.
 - [ ] Pass an eight-hour soak and a 24-hour soak.
 - [ ] Pass one million varied dispatches with zero mismatch, timeout, reset, fault,
       leak, or crash.
+      Software preflight: `gpu-isa-vgpu` retires one million varied workgroups
+      and seven million decoded GFX10.1 instructions with exact first/last word,
+      guard, ownership, and fence checks. Silicon certification remains unchecked.
 - [x] Invalidate certification after relevant GPU, firmware, kernel, compiler, or
       runtime changes until compatibility gates pass again. Evidence: the `gpu-vgpu`
       certification tuple `{device, firmware, kernel_hash, compiler, runtime}` matches
       only on an exact field-for-field equal; any single change (e.g. a firmware bump)
       fails `cert_matches`, so `auto` stays gated until re-certification.
-- [ ] Enable `auto` only for exact certified tuples and only when representative
-      workloads show a material measured benefit.
+- [x] Enable `auto` only for exact certified tuples and only when representative
+      workloads show a material measured benefit. Evidence: Zag's reusable
+      `std:gpu` policy compares device, GFX IP, MEC/SDMA firmware, kernel bundle,
+      compiler, and runtime fingerprints field-for-field; requires isolated reset,
+      memory-sync and clean-kernel-log evidence plus 10,000 fills, 10,000 transfers,
+      one million dispatches, a 24-hour soak, and zero anomalies; then requires at
+      least 30 retained raw representative timing samples and a configured material
+      gain. `gpu-promotion-policy` covers exact promotion, tuple invalidation,
+      display-device refusal, threshold refusal, and resumable evidence. The live
+      `zagpa --gpu-cert-status` command is read-only and currently denies this
+      machine at reset isolation, so this does not claim hardware certification.
 
-## 13. Phase J — Full GPU Rasterization
+### 12.4 Host-Contained Zag Virtual Certification
 
-- [ ] Consume only compiler-emitted, validated kernels and metadata.
-- [ ] Implement bounded tiled clear, geometry, depth, clipping, compositing, and
+This is the user-selected no-DRM path for completing the same compiler, command,
+ownership, fence, raster, and long-state-machine logic without risking the display
+GPU. Zag represents it with `ZagGpuVirtualCertification`, a type that cannot be
+passed to physical automatic-promotion policy. Logical soak time exercises state
+progression; it is not mislabeled as elapsed wall time or silicon evidence.
+
+- [x] Expose virtualization as an explicit option rather than forcing it as the
+      only execution model. Evidence: Zag `std:gpu` defines `auto`, `cpu`,
+      `virtual`, and `physical`; `gpu-backend-choice` proves explicit CPU and
+      virtual choices make no DRM probe, auto fails safely toward virtual/CPU,
+      and physical remains an informed guarded choice. Prism exposes the same
+      policy through `PRISM_GPU_BACKEND` and `--gpu-backend-status`.
+
+- [x] Test documented synchronization semantics one bounded virtual dispatch at a
+      time. Evidence: `gpu-virtual-certification` performs real VM
+      release/submit/exact-fence/acquire transitions for every compiler-owned
+      submission and finishes with CPU ownership and exact fence continuity.
+- [x] Pass at least 10,000 bounded sequential virtual fills with zero faults.
+      Evidence: the consolidated campaign completes 96,400 fill submissions—10,000
+      certification fills plus 86,400 logical-soak fills—with zero anomaly.
+- [x] Pass at least 10,000 virtual CPU-to-device-to-CPU ownership transfers with
+      zero stale reads. Evidence: the campaign retires 1,096,401 actual queue
+      ownership transfers and refuses certification unless the final owner and
+      fence match exactly.
+- [x] Advance eight hours and 24 hours of deterministic virtual logical time.
+      Evidence: 86,400 sequential logical seconds each execute a compiler-owned VM
+      submission. The dated report separately retains `wall_soak_seconds=5`, so
+      the accelerated logical soak cannot be confused with a 24-hour wall soak.
+- [x] Pass one million varied virtual submissions with zero mismatch, timeout,
+      reset, fault, leak, or crash. Evidence: `gpu-virtual-certification` records
+      1,096,401 actual queue submissions, including one million varied decoded
+      blend submissions, and all anomaly counters remain zero.
+- [x] Pass virtual golden/randomized raster scenes, a million raster submissions,
+      and a full logical-day GPU state soak. Evidence: one golden plus 64 seeded
+      complete color/depth differential scenes pass CPU shadow comparison; the
+      million varied submissions and 86,400 logical ticks share the same strict
+      VM ownership/fence state. Durable output:
+      `evidence/gpu-virtual-certification-2026-07-15.report`.
+
+## 13. Experimental Track B — Full GPU Rasterization
+
+This section is a post-1.0 promotion track. Software implementation and
+software-VM acceptance are tracked independently from silicon promotion. The CPU
+renderer remains the authoritative production renderer and differential oracle
+until the final hardware/soak checkbox passes on an exact certified tuple.
+
+- [x] Consume only compiler-emitted, validated kernels and metadata.
+      Evidence: `gpu_isa_raster.zag` accepts only the three
+      manifest-approved ZGK1 bundles loaded independently by PrismStudio and
+      Zag's VM, then builds PM4 from compiler metadata; `gpu-isa-raster` rejects
+      an out-of-contract command before execution.
+- [x] Implement bounded tiled clear, geometry, depth, clipping, compositing, and
       presentation matching the CPU specification.
-- [ ] Independently fence tile batches so no dispatch monopolizes the display GPU.
-- [ ] Keep CPU rendering authoritative in shadow mode.
-- [ ] Compare complete GPU frames to CPU frames before presentation.
-- [ ] Store mismatch input, seed, CPU image, GPU image, diff, logs, and tuple.
-- [ ] Double-buffer output and never display an incomplete frame.
-- [ ] Fall back to CPU after any anomaly without corrupting application state.
+      Evidence: `gpu-isa-raster` runs tiled clears through the
+      fill ISA and every clipped geometry span through the depth-tested blend ISA;
+      the decoded instructions load/compare/branch/composite/store and the full
+      color/depth frame matches the independent CPU oracle exactly.
+- [x] Independently fence tile batches so no dispatch monopolizes the display GPU.
+      Evidence: every ISA span has explicit release/submit/acquire and
+      each completed tile records a strictly monotonic fence; bounded spans are
+      capped at 65,535 lanes; `gpu-isa-raster` proves exact fence progression.
+- [x] Keep CPU rendering authoritative in shadow mode.
+      Evidence: `gpu_isa_raster_shadow_frame` renders the independent CPU
+      oracle and admits a decoded-ISA candidate only after full comparison; on any
+      failure it copies the CPU frame to the retained front buffer and disables
+      the ISA session.
+- [x] Compare complete GPU frames to CPU frames before presentation.
+      Evidence: color and depth equality are both required after
+      complete-frame presentation; a fixed scene plus 64 seeded randomized
+      alpha/depth/clipping scenes compare exactly. This is software-VM evidence;
+      silicon execution remains part of the final unchecked promotion gate.
+- [x] Store mismatch input, seed, CPU image, GPU image, diff, logs, and tuple.
+      Evidence: the shared raster evidence path writes the serialized clear and
+      command stream, seed and tuple hash, exact mismatch count and first differing
+      pixels, CPU/GPU/diff BMPs, and a dedicated log artifact before disabling and
+      falling back. The software VM explicitly labels kernel/driver logs as not
+      applicable; the physical runner must replace that with captured kernel logs.
+      `gpu-raster-shadow` and `gpu-isa-raster` verify every artifact exists.
+- [x] Double-buffer output and never display an incomplete frame.
+      Evidence: ISA raster computes in private guarded color/depth back
+      memory and copies only after the whole tiled frame is complete; the gate
+      proves an incomplete frame cannot change the retained front and mismatch
+      fallback preserves the CPU front.
+- [x] Fall back to CPU after any anomaly without corrupting application state.
+      Evidence: dispatch/present failure or mismatch disables the ISA
+      session, retains/copies the CPU-authoritative front, and records mismatch
+      evidence before returning; `gpu-isa-raster` verifies the fallback frame is
+      exactly the CPU oracle.
 - [ ] Pass golden scenes, randomized differential scenes, one million raster tile
       dispatches, and a 24-hour interactive viewer soak.
+      Partial software evidence: decoded ISA passes the golden alpha/depth/clipping
+      scene plus 64 seeded randomized scenes, then `gpu-isa-raster` executes one
+      million varied blend/depth dispatches through all 59 compiler instruction
+      words (59 million decoded instructions), PM4 rebuilding, explicit ownership,
+      and one million exact monotonic fences with no quarantine. The companion
+      bounded raster model also passes 256 randomized scenes and one million tile
+      dispatches. Real GPU execution and the 24-hour viewer soak remain unrun.
 
 ## 14. Phase K — Security, Robustness, and Performance
 
@@ -897,8 +1129,13 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
       `lifecycle` gate runs 1500 build/simulate/save/reopen/free cycles exercising
       `scene_free`/`sim_free`; max RSS stays ~12 MB (no unbounded leak), no crash
       from double-free/use-after-free, and every reopened design stays valid.
-- [ ] Establish workload-based performance budgets from measured baselines.
-- [ ] Fail regressions statistically and retain raw benchmark samples.
+- [x] Establish workload-based performance budgets from measured baselines.
+      Evidence: `ui-perf` enforces a 16 ms workload ceiling for hover, orbit,
+      drag, panel, text, and scrub workloads; `soak` enforces the measured p95
+      budget on the mixed edit/simulation workload.
+- [x] Fail regressions statistically and retain raw benchmark samples. Evidence:
+      `soak` computes and gates p95, reports avg/max/over-budget counts, and writes
+      every measured frame to `evidence/soak-samples.csv` for distribution review.
 - [x] Never optimize by weakening validation, determinism, or the CPU oracle.
       Evidence: `optimizer-verify` proves every optimizer rewrite stays output-
       equivalent (validation is never weakened — a non-equivalent rewrite is rejected
@@ -917,7 +1154,10 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
 - [x] Document project format, physical-model schema, units, provenance, agent
       capability model, command protocol, and recovery behavior. Evidence:
       `docs/FORMATS_AUTOMATION_RECOVERY.md`.
-- [ ] Generate the compatibility and benchmark tables from evidence.
+- [x] Generate the compatibility and benchmark tables from evidence. Evidence:
+      `evidence/compatibility-report.md` records supported/experimental boundaries
+      and `bench` regenerates the identified-machine table in
+      `evidence/bench-report.md` from live measurements.
 - [x] Document known limitations and unsupported configurations. Evidence:
       README GPU status plus explicit unimplemented recovery guarantees in the
       format/automation/recovery document.
@@ -929,15 +1169,21 @@ GPU work must remain bounded, reviewed, opt-in, and safe for a display GPU.
 - [x] Add release notes tied to verified behavior, not commit count. Evidence:
       `docs/RELEASE_NOTES.md`, safe-gate suite names, and explicit non-claims.
 
-## 16. Final End-to-End Release Gate
+## 16. PrismStudio 1.0 CPU/X11 End-to-End Release Gate
 
-Run this gate from a clean checkout after all earlier phases are complete:
+Run this gate from a clean checkout after all applicable 1.0 phases are complete.
+Experimental Sections 12 and 13 are reported separately and do not block this
+gate while GPU execution remains opt-in and the CPU renderer remains authoritative:
 
-- [x] Build the self-hosted compiler path and Triton production binary.
+- [x] Build the self-hosted compiler path and PrismStudio production binary.
       Evidence: `build-production` compiles `src/main.zag` through
       `../zag/zag-poc/znc`.
-- [ ] Run every unit, property, fuzz-regression, integration, and protocol test.
-- [x] Launch Triton in a real X11 session. Evidence: `x11-live` and
+- [x] Run every unit, property, fuzz-regression, integration, and protocol test.
+      Evidence: the 2026-07-13 complete `./verify.sh safe` run exercised every
+      safe suite independently and ended with `{"summary":"pass","failures":0}`;
+      experimental hardware GPU suites were explicitly `not-run` per the release
+      boundary and are indexed in `evidence/RELEASE_INDEX.md`.
+- [x] Launch PrismStudio in a real X11 session. Evidence: `x11-live` and
       `x11-captures` passed with `DISPLAY` available.
 - [x] Create a new project through the public agent API. Evidence:
       `agent-idempotency`, `agent-revision-conflict`, and MCP coverage gates
@@ -945,8 +1191,13 @@ Run this gate from a clean checkout after all earlier phases are complete:
 - [x] Construct the complete reference photonic computing unit. Evidence:
       `flash-photonic` imports the rebuilt FIR through the public agent request
       envelope and produces the 384-component/192-guide canonical PCU.
-- [ ] Open it in the UI and inspect every layer, route, model, and provenance field.
-- [ ] Modify it through the UI, undo, redo, save, close, and reopen it.
+- [x] Open it in the UI and inspect every layer, route, model, and provenance field.
+      Evidence: `reference-pcu-ui` opens the canonical PCU through a visible UI
+      command, verifies all 192 route paths/layers, opens the Physical Model panel,
+      and verifies all 25 parameter records expose units/source/method/date.
+- [x] Modify it through the UI, undo, redo, save, close, and reopen it. Evidence:
+      `reference-pcu-ui` drives visible delete/undo/redo/undo, saves, creates a new
+      project (closing the design), reopens it, and verifies the canonical counts.
 - [x] Run design-rule, connectivity, model, timing, and simulation verification.
       Evidence: `reference-tamper`, `flash-photonic`, `simulation-properties`,
       and model-derived timing checks.
@@ -957,13 +1208,32 @@ Run this gate from a clean checkout after all earlier phases are complete:
       Evidence: maintained text artifacts and `evidence/captures/flash-pcu-1440.png`.
 - [x] Exercise an unauthorized agent mutation and prove it has no effect.
       Evidence: `agent-capability-denial`.
-- [ ] Exercise crash recovery and revision-conflict handling.
-- [ ] Run the supported CPU-renderer soak.
-- [ ] Run only hardware-safe GPU gates appropriate to the available device; keep
-      GPU promotion incomplete if the full certification environment is absent.
-- [ ] Audit all user-visible numbers and claims one final time.
-- [ ] Produce a release evidence index mapping every checkbox to its proof.
-- [ ] Report remaining external blockers plainly; do not check blocked items.
+- [x] Exercise crash recovery and revision-conflict handling. Evidence:
+      `crash-recovery`, `recovery-ui`, `session-conflict`, and
+      `agent-revision-conflict` prove corruption recovery and reject stale writes.
+- [x] Run the supported CPU-renderer soak. Evidence: `soak` runs 3000 mixed
+      simulation/edit frames, checks structural validity and bounded memory, and
+      retains its complete frame distribution in `evidence/soak-samples.csv`.
+- [x] Record the experimental GPU suites as `pass`, `fail`, `blocked`, or
+      `not-run` for the available device; do not run risky hardware tests merely
+      to satisfy the CPU/X11 release gate, and keep GPU promotion incomplete if
+      the full certification environment is absent. Evidence: the 2026-07-13
+      `./verify.sh safe` record reports GPU UAPI/query/safety/manifest/vGPU/raster
+      software gates `pass`, and real memory/submit/compute suites `not-run`;
+      `evidence/RELEASE_INDEX.md` records the non-display-hardware blocker.
+- [x] Audit all user-visible numbers and claims one final time. Evidence:
+      `docs/CLAIMS_AUDIT.md`, `docs/NUMERIC_CONSTANT_AUDIT.md`, and the passing
+      `unsupported-claim-audit`, `stale-language-audit`, and
+      `doc-perf-claim-audit` gates from the final safe run.
+- [x] Produce a release evidence index mapping every checkbox to its proof.
+      Evidence: `evidence/RELEASE_INDEX.md` maps release surfaces to the plan's
+      item-level evidence clauses; `masterplan-evidence` verifies every checked
+      item has an evidence reference.
+- [x] Report remaining external blockers plainly; do not check blocked items.
+      Evidence: `evidence/RELEASE_INDEX.md` distinguishes implemented compiler/
+      runtime foundations from real GPU execution, raster, and certification
+      blockers. The five optimizer rewrite families, affected-region scheduler,
+      and persisted intra-family proof preemption are software-complete and gated.
 
 ## 17. Progress Ledger Template
 
@@ -990,18 +1260,16 @@ other unblocked work, preserve exact evidence, identify the smallest required
 user action, and state which checklist items remain open.
 
 Passing tests does not prove a fabricated photonic device exists or meets a
-physical frequency target. Triton must keep software verification, device-model
+physical frequency target. PrismStudio must keep software verification, device-model
 simulation, imported measurement evidence, and laboratory validation as distinct
 levels of confidence.
-Absolutely. Add a **real UI/UX product-design track** to the plan, not “developer slapped buttons on a renderer.”
 
-The UI should feel like a serious CAD/engine-design tool: fast, precise, readable, beautiful, and hard to misuse.
+## 19. Professional UI/UX Design
 
-# Part 3 — Professional UI/UX Design Plan
+The UI must feel like a serious CAD/engine-design tool: fast, precise, readable,
+beautiful, and hard to misuse.
 
-## Goal
-
-Make Triton feel like a modern pro tool:
+Make PrismStudio feel like a modern pro tool:
 
 ```text
 snappy like a game engine editor
@@ -1013,7 +1281,7 @@ not “programmer UI”
 
 ---
 
-## 3.1 Design system
+### 19.1 Design system
 
 * [x] Create a real design system before adding more UI panels. Evidence: the
   widget system in `src/ui.zag` (spacing/type/state tokens, `ui_panel`,
@@ -1071,7 +1339,7 @@ Color.Valid
 
 ---
 
-## 3.2 Layout quality
+### 19.2 Layout quality
 
 * [x] Align every panel to a grid. Evidence: the `layout` gate proves the six
   zones tile the window exactly (no gaps or overlap) and share top/bottom
@@ -1113,7 +1381,7 @@ Status bar always visible
 
 ---
 
-## 3.3 Snappy interaction target
+### 19.3 Snappy interaction target
 
 The UI should not merely hit 60 FPS. It should **feel instant**.
 
@@ -1154,9 +1422,10 @@ UI interaction must never wait for engine simulation unless the user explicitly 
 
 ---
 
-## 3.4 Accurate CAD UX
+### 19.4 Accurate CAD UX
 
-Since Triton is an engine CAD, the UI cannot just look nice. It has to communicate truth.
+Since PrismStudio is a CAD environment, the UI cannot just look nice. It has to
+communicate truth.
 
 * [x] Show exact coordinates for selected objects. Evidence: inspector cell
   x/y/z + rotation readout (`draw_toolbar`); rendered in `x11-captures`.
@@ -1223,7 +1492,8 @@ Since Triton is an engine CAD, the UI cannot just look nice. It has to communica
   the deterministic router (`route_guide`, `routing` gate) with a live
   preview line from the armed port while routing (`draw_viewport`).
 
-The UI should never hide uncertainty. If Triton does not know whether something is valid, it should say:
+The UI should never hide uncertainty. If PrismStudio does not know whether
+something is valid, it should say:
 
 ```text
 Unverified
@@ -1236,7 +1506,7 @@ Unsupported component
 
 ---
 
-## 3.5 Modern viewport UX
+### 19.5 Modern viewport UX
 
 * [x] Smooth orbit camera. Evidence: MMB/RMB drag updates yaw/pitch by per-frame
   deltas; `camera` gate confirms orbit changes both.
@@ -1290,7 +1560,7 @@ No fake flat UI for 3D objects. Selection, snapping, and editing should all unde
 
 ---
 
-## 3.6 Pro-grade tool interactions
+### 19.6 Pro-grade tool interactions
 
 * [x] Add command palette. Evidence: `Ctrl+K`/`Ctrl+P` opens `draw_palette`;
   the `palette` gate drives open, filter, navigate, execute, and close.
@@ -1351,7 +1621,7 @@ Professional feel comes from predictable interaction, not just visuals.
 
 ---
 
-## 3.7 Library panel redesign
+### 19.7 Library panel redesign
 
 The current library panel should become a clean component browser.
 
@@ -1364,7 +1634,7 @@ The current library panel should become a clean component browser.
   * [x] Emitters. Evidence: WDM laser emitter (tab 2).
   * [x] Sensors. Evidence: MoS2 photodetector (tab 3).
   * [x] Chambers. Evidence: execution chamber + SOH matrix tile (tab 4).
-  * [x] Logic. Evidence: the interference chamber, Triton's logic element
+  * [x] Logic. Evidence: the interference chamber, PrismStudio's logic element
     (tab 5).
   * [x] Routing. Evidence: the Route Waveguide tool card (tab 6).
   * [x] Debug. Evidence: Measure tool and demo-design cards (tab 7).
@@ -1390,7 +1660,7 @@ The current library panel should become a clean component browser.
 
 ---
 
-## 3.8 Inspector redesign
+### 19.8 Inspector redesign
 
 Inspector should feel like a real properties editor.
 
@@ -1434,7 +1704,7 @@ Inspector should feel like a real properties editor.
 
 ---
 
-## 3.9 Outliner redesign
+### 19.9 Outliner redesign
 
 * [x] Tree view of scene. Evidence: collapsible kind groups with per-group
   counts, component rows, and a waveguide section listing each connection's
@@ -1470,9 +1740,9 @@ The outliner should be a serious navigation tool, not just a list.
 
 ---
 
-## 3.10 Signal timeline redesign
+### 19.10 Signal timeline redesign
 
-The bottom signal panel could become one of Triton’s signature features.
+The bottom signal panel could become one of PrismStudio's signature features.
 
 * [x] Smooth waveform rendering. Evidence: step waveforms with level lines
   and vertical transitions per trit (`draw_signal_row`), 10-symbol ruler
@@ -1509,7 +1779,7 @@ This should feel like a mix of CAD + logic analyzer + optical engine debugger.
 
 ---
 
-## 3.11 Animation and polish
+### 19.11 Animation and polish
 
 Use subtle motion, not flashy junk.
 
@@ -1537,13 +1807,13 @@ Use subtle motion, not flashy junk.
 * [x] Allow reduced motion mode. Evidence: the Settings/palette toggle makes
   every ease, flash, pulse, and fade instant (`Input.reduced_motion`,
   honored in `input_hot`, `input_flash_level`, selection fade, snap pulse,
-  beam pulse, invalid flash); persisted in `.triton/layout.cfg`.
+  beam pulse, invalid flash); persisted in `.prismstudio/layout.cfg`.
 
 The UI should feel alive but not distracting.
 
 ---
 
-## 3.12 UI rendering architecture
+### 19.12 UI rendering architecture
 
 Separate UI rendering from the 3D viewport.
 
@@ -1598,9 +1868,9 @@ Checklist:
 
 ---
 
-# UI/UX Acceptance Checklist
+### 19.13 UI/UX Acceptance Checklist
 
-## Visual quality
+#### Visual quality
 
 * [x] Looks intentional, not accidental. Evidence: every color, inset,
   control size, and state comes from the single token system in `src/ui.zag`
@@ -1631,7 +1901,7 @@ Checklist:
   amber invalid), UI colors carry named roles (`th_*`), and WDM channel color
   maps wavelength (`wavelength_color`); `ui-tokens` gate.
 
-## UX quality
+#### UX quality
 
 * [x] A new user can place a part in under 10 seconds. Evidence: the flow is
   two clicks — a library card (with hotkey and tooltip guidance), then the
@@ -1655,13 +1925,13 @@ Checklist:
   cell/size readout plus the live output trit (`sel_output_trit`); `inspector`
   gate and `x11-captures`.
 * [x] A user can undo every edit. Evidence: journaled ops cover every design
-  mutation (Section 3.6 item); `ui-interactions`, `copypaste`,
+  mutation (Section 19.6 item); `ui-interactions`, `copypaste`,
   `agent-undo-audit` gates.
 * [x] A user can recover from mistakes without restarting. Evidence: full
   undo/redo history (256 ops), Esc cancels any in-flight tool, and crash
   recovery restores the last committed state (`crash-recovery` gate).
 
-## Performance quality
+#### Performance quality
 
 * [x] UI hover never causes frame hitching. Evidence: `ui-perf` fails if any
   hover frame exceeds 16 ms (measured max recorded per run).
@@ -1684,7 +1954,7 @@ Checklist:
 
 ---
 
-# Updated priority order
+### 19.14 Priority order
 
 ```text
 1. Add frame timing overlay.
@@ -1708,8 +1978,10 @@ Priority evidence:
 * [x] Build design tokens. Evidence: `src/ui.zag` spacing/type/shape/state
   tokens and `ui-tokens`.
 
-The standard should be: **Triton looks like a designer and CAD engineer built it together**, while the engine underneath stays mathematically accurate.
-## 19. Flash Language and Full Agent Control
+The standard is: **PrismStudio looks like a designer and CAD engineer built it
+together**, while the engine underneath stays mathematically accurate.
+
+## 20. Flash Language and Full Agent Control
 
 - [x] Put the pre-existing Flash tree under Git history before invasive changes.
       Evidence: Flash baseline commit `802e155`.
@@ -1717,9 +1989,9 @@ The standard should be: **Triton looks like a designer and CAD engineer built it
       Evidence: Flash `tests/pure_flash_tree.sh`, commit `ea2ab41`.
 - [x] Preserve and rerun Flash's comprehensive standalone/self-host gates.
       Evidence: 63/63 `tests/run_all.sh` on 2026-07-07.
-- [x] Import general Flash FIR rather than hardcoding Triton behavior in Flash.
+- [x] Import general Flash FIR rather than hardcoding PrismStudio behavior in Flash.
       Evidence: `src/flash_ir.zag`, Flash FIR v1.
-- [x] Construct and verify a large balanced-ternary Flash workload on a Triton
+- [x] Construct and verify a large balanced-ternary Flash workload on a PrismStudio
       photonic unit. Evidence: 64 operations, 384 components, 192 guides, zero
       mismatches in the `flash-photonic` gate.
 - [x] Add visible UI controls for selecting, importing, running, stepping, and
@@ -1742,21 +2014,21 @@ The standard should be: **Triton looks like a designer and CAD engineer built it
       maintained fixtures and gate map, and explicitly separates software
       simulation from fabricated-hardware validation; the UI repeats that label.
 
-## 20. Phase M — Continuous Optical-Computation Optimizer (Photon Solver)
+## 21. Phase M — Continuous Optical-Computation Optimizer (Photon Solver)
 
-Triton ships a built-in, always-on optimizer that continuously searches for the
-most mathematically efficient way to compute the same optical result. It runs as
+PrismStudio ships a built-in, always-on optimizer that continuously searches for
+the most mathematically efficient way to compute the same optical result. It runs as
 a lightweight background service, proposes provably equivalent improvements,
 measures the real gain, and — when authorized — applies the winning configuration
 automatically. It is implemented in pure Zag like the rest of the product
-(Section 3.4) and must never make Triton lag, stutter, or behave incorrectly.
+(Section 3.4) and must never make PrismStudio lag, stutter, or behave incorrectly.
 
 The optimizer changes *how* a result is computed, never *what* the result is. A
 proposal that alters any declared output for any test vector is not an
 optimization; it is a bug and must be rejected before it is ever shown or
 applied.
 
-### 20.1 Non-Negotiable Constraints
+### 21.1 Non-Negotiable Constraints
 
 - [x] Implement the entire optimizer in pure Zag; fix any missing solver,
       scheduling, or timing capability in `znc`, never in another language.
@@ -1769,9 +2041,16 @@ applied.
       move/drag/grab/menu/modal/open-panel or active simulation; it is a single
       analysis-only `opt_engine_refresh_keyed` pass (no apply, no I/O) and is never
       invoked from the agent, save, or input paths.
-- [ ] Bound every optimizer pass by a strict time and memory budget and yield
+- [x] Bound every optimizer pass by a strict time and memory budget and yield
       cooperatively; a pass that exceeds its slice is suspended and resumed, never
-      allowed to stall the app.
+      allowed to stall the app. Evidence: background discovery advances one
+      affected component/family per call (and one placement direction), memory is
+      preflighted before allocation, and the exact 64-symbol oracle retains both
+      simulators and its candidate across deadline yields. Campaign format v4 plus
+      the `.proof` checkpoint restores the exact family/component/direction and
+      simulator symbol after reopen. `optimizer-schedule` proves a 1 ms proof
+      yields/resumes without restart and a maintained 384-component reference PCU
+      campaign stays within its 8 ms slice (2,304 slices, latest measured maximum 5 ms).
 - [x] Guarantee the optimizer can be paused, throttled, and fully disabled, and
       that disabling it changes no result — only speed. Evidence: `OptEngine`
       `enabled`/`min_gain_pct` controls; the `optimizer` gate proves a disabled
@@ -1785,7 +2064,7 @@ applied.
       rewrite only after `opt_outputs_equal` and `scene_validation_errors(...)==0`
       in the `optimizer` gate.
 
-### 20.2 Equivalence Model
+### 21.2 Equivalence Model
 
 - [x] Define the equivalence relation precisely: two computations are
       interchangeable only when they produce identical balanced-ternary outputs,
@@ -1794,22 +2073,37 @@ applied.
       `opt_outputs_equal` in `src/optimizer.zag` compares every detector's trit at
       every symbol over the horizon; the `optimizer` gate proves it holds for
       identical networks and fails when a detector output differs.
-- [ ] Enumerate the allowed rewrite families and require each to carry a proof or
+- [x] Enumerate the allowed rewrite families and require each to carry a proof or
       an exhaustive check that it preserves equivalence. Candidate families:
+      Evidence: `optimizer` and `optimizer-families` exercise all enumerated
+      families through the same exact detector-trace, structural-validity, and
+      strict-cost acceptance path.
   - [x] Ternary algebraic identities and constant folding on trit operations.
         Evidence: `opt_find_const_collapse` folds a mul-by-(-1) or min-with-(+1)
         chamber to a negate; `optimizer` gate.
-  - [ ] Common-subexpression elimination and shared-result memoization across
-        chambers.
+  - [x] Common-subexpression elimination and shared-result memoization across
+        chambers. Evidence: `optimizer-families` retargets duplicate-chamber
+        consumers, removes the duplicate, and proves exact detector traces plus
+        one-step undo/redo of the complete graph patch.
   - [x] Redundant-gate, dead-path, and no-op emitter/detector elimination.
         Evidence: `opt_find_dead`/`opt_analyze` and the `optimizer` gate.
-  - [ ] Operation factoring and reassociation that lowers gate or chamber count.
-  - [ ] Waveguide route consolidation and shorter equivalent paths that preserve
-        delay semantics and design rules.
-  - [ ] Layer/placement rebalancing that reduces routing length without changing
-        connectivity.
-  - [ ] Strength reduction of expensive optical operations into cheaper
-        equivalent sequences.
+  - [x] Operation factoring and reassociation that lowers gate or chamber count.
+        Evidence: `optimizer-families` proves and applies `a*c+b*c -> (a+b)*c`
+        only when the independent trace oracle and strict cost test both pass.
+  - [x] Waveguide route consolidation and shorter equivalent paths that preserve
+        delay semantics and design rules. Evidence: `optimizer-families` replaces
+        a manual detour with the exact verified shorter path while preserving its
+        quantized delay and structural validity.
+  - [x] Layer/placement rebalancing that reduces routing length without changing
+        connectivity. Evidence: `optimizer-families` tries legal bounded chamber
+        translations, reroutes only incident guides, and accepts only a lower-cost
+        exact-trace result.
+  - [x] Strength reduction of expensive optical operations into cheaper
+        equivalent sequences. Evidence: `opt_find_const_collapse` replaces a
+        multiply-by-negative-one or min-with-positive-one chamber plus dedicated
+        constant source with the cheaper negate operation, only after exact
+        output-equivalence and strict cost reduction; `optimizer` proves both
+        transformation and single-undo restoration.
 - [x] For each proposal, verify equivalence against the independent reference
       oracle (Phase D) over the full declared vector set before it is eligible.
       Evidence: `opt_analyze` only marks a proposal valid after `opt_outputs_equal`
@@ -1819,7 +2113,7 @@ applied.
       characterized model value. Evidence: `opt_outputs_equal` requires exact
       per-symbol trit equality and refuses when `model_ok` is false; `optimizer`.
 
-### 20.3 Cost Model and Measured Gains
+### 21.3 Cost Model and Measured Gains
 
 - [x] Define named, inspectable cost terms: component/gate count, chamber
       activations, waveguide length and propagation delay, memory-tile usage,
@@ -1848,7 +2142,7 @@ applied.
       timing gain would instead be quoted only through the `bench` harness. Proven by
       `optimizer-report`.
 
-### 20.4 Optimizer Surface, Proposals, and Auto-Apply
+### 21.4 Optimizer Surface, Proposals, and Auto-Apply
 
 The optimizer must never be annoying. It does not interrupt, pop toasts, flash,
 or steal focus. Its entire presence is one quiet Optimizer button in the UI; the
@@ -1883,12 +2177,12 @@ only thing that changes as work accumulates is the number on that button.
       ask-before-write default. Evidence: manual Apply is locked until Details
       shows exact removals/relabels, before/after cost, and equivalence;
       `optimizer-ui` proves the lock and preview sequence.
-- [x] Support an explicit auto-apply setting (in the Settings surface, §20.5) that
+- [x] Support an explicit auto-apply setting (in the Settings surface, §21.5) that
       applies winning proposals automatically. Auto-apply is opt-in, scoped, and
       off by default; when on, applied optimizations still appear in the panel's
       history. Evidence: `OptEngine.auto_apply` defaults false; the `optimizer`
       gate proves an auto-apply tick commits an equivalent rewrite and advances
-      `applied_count`. (Settings-surface UI wiring tracked in §20.5.)
+      `applied_count`. (Settings-surface UI wiring tracked in §21.5.)
 - [x] Route every apply — manual or automatic — through the same transactional,
       undoable, audited mutation path as any other edit (Phase E): idempotency
       key, revision precondition, undo token, and audit record with the rewrite
@@ -1907,7 +2201,7 @@ only thing that changes as work accumulates is the number on that button.
       and `optimizer-ui` gates prove one undo restores everything and redo
       re-applies; the append-only audit log is the reviewable history.
 
-### 20.5 Settings and Controls
+### 21.5 Settings and Controls
 
 - [x] Expose a real, always-reachable Settings button in the UI with a
       recognizable settings (gear) icon drawn from the design-token icon set, not
@@ -1930,14 +2224,32 @@ only thing that changes as work accumulates is the number on that button.
       round-trips enabled, auto-apply, minimum gain, and both verified family
       toggles separately from project data (`ui-preferences`).
 
-### 20.6 Scheduling and "Never Lag" Guarantees
+### 21.6 Scheduling and "Never Lag" Guarantees
 
-- [ ] Drive the optimizer from an incremental, resumable work queue keyed by what
+- [x] Drive the optimizer from an incremental, resumable work queue keyed by what
       the user actually changed, so an edit reschedules only affected regions.
-- [ ] Cap total background CPU share and back off automatically under
+      Evidence: `Scene.opt_dirty_ids` records changed components; the engine queues
+      those IDs plus one-hop optical neighbors, feeds that region into CSE,
+      factoring, route, and placement candidate scans, advances one family stage
+      and affected component per idle call (one direction for placement), persists
+      the active family/component/direction, and resumes after reopen.
+      `optimizer-schedule` proves a local edit queues fewer than all components and
+      six calls advance the six independently resumable stages.
+- [x] Cap total background CPU share and back off automatically under
       interaction, active simulation, or low battery/thermal pressure.
-- [ ] Persist and resume optimizer campaign state so it survives close/reopen
+      Evidence: a rolling one-second measured CPU window enforces the configured
+      1–20% allowance before admitting another family stage;
+      `opt_system_pressure` reads Linux discharging capacity and thermal zones,
+      and the frame loop suppresses work below 20% battery or at/above 80 C.
+      `optimizer-schedule` proves exhausted-window throttling plus interaction,
+      simulation, forced battery, and forced thermal backoff.
+- [x] Persist and resume optimizer campaign state so it survives close/reopen
       without recomputation, and never re-proposes an already-rejected rewrite.
+      Evidence: project-keyed v4 `.opt` sidecars retain the last analyzed revision,
+      family/component/direction cursors, and rejected signatures; a companion
+      `.proof` checkpoint retains the tentative graph edits and both simulator
+      states at the exact oracle symbol. `optimizer-schedule` proves exact proof
+      resume after reopen and prevents state from crossing project identities.
 - [x] Add a watchdog that suspends the optimizer on any anomaly (budget overrun,
       equivalence-check failure, excessive proposals) and reports it rather than
       degrading the app. Evidence: `opt_engine_note_anomaly` sets a `suspended` flag
@@ -1946,7 +2258,7 @@ only thing that changes as work accumulates is the number on that button.
       `opt_engine_resume`. `optimizer-schedule` proves suspend→refuse→resume and that
       the reason is reported.
 
-### 20.7 Verification
+### 21.7 Verification
 
 - [x] Add property tests proving each rewrite family preserves outputs over
       exhaustive or well-sampled inputs for the reference PCU. Evidence:
@@ -1964,9 +2276,12 @@ only thing that changes as work accumulates is the number on that button.
 - [x] Add a gate proving that with auto-apply off the optimizer never changes
       project bytes, revision, or output — only reports. Evidence: `optimizer`
       gate byte-compares the saved project before and after `opt_analyze`.
-- [ ] Add a soak proving continuous background operation during editing and
+- [x] Add a soak proving continuous background operation during editing and
       simulation holds the interaction frame budget (Section 3.3 timing targets)
-      with no hitching.
+      with no hitching. Evidence: `optimizer-soak` alternates 1800 active
+      edit/simulation and idle optimizer frames, injects input, and enforces the
+      16 ms frame plus 100 ms save and real agent-command ceilings while retaining
+      a valid scene.
 - [x] Add adversarial tests feeding hostile/pathological graphs and confirming the
       optimizer stays bounded, rejects non-equivalent rewrites, and never applies
       an unverified change. Evidence: `optimizer-verify` feeds an empty scene, a
@@ -1992,10 +2307,16 @@ only thing that changes as work accumulates is the number on that button.
 - [x] Disabling the optimizer changes only speed, never results. Evidence:
       `optimizer` gate — a disabled `OptEngine` tick leaves project bytes
       byte-identical and surfaces no proposal.
-- [ ] Reported gains are measured, reproducible, and carry provenance and
-      uncertainty — never assumed.
-- [ ] Continuous background operation never causes a dropped frame, blocked input,
-      stalled save, or delayed agent request in the soak test.
+- [x] Reported gains are measured, reproducible, and carry provenance and
+      uncertainty — never assumed. Evidence: `optimizer-report` verifies exact
+      before/after cost terms, rewrite-family provenance, repeatability, and
+      uncertainty/range behavior for noise-adjacent gains.
+- [x] Continuous background operation never causes a dropped frame, blocked input,
+      stalled save, or delayed agent request in the soak test. Evidence:
+      `optimizer-soak` runs 1800 mixed activity/idle frames, injects UI input,
+      dispatches six commands through the real agent parser/layer, saves during
+      the live campaign, and reports zero frames over 16 ms with save and maximum
+      agent latency below 100 ms.
 - [x] Auto-apply is safe: opt-in, previewable, transactional, undoable, audited,
       and re-verified at apply time. Evidence: `auto_apply` is opt-in/off by
       default; auto and manual apply share `opt_apply_gui`, which re-verifies

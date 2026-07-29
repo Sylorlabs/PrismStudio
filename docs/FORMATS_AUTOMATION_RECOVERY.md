@@ -1,4 +1,4 @@
-# Triton Formats, Automation, and Recovery
+# PrismStudio Formats, Automation, and Recovery
 
 This document describes implemented behavior. `masterplan.md` remains the
 acceptance contract; unchecked work there is not implied complete here.
@@ -57,7 +57,7 @@ schema, completeness, and every device-type descriptor.
 
 ## Agent protocol
 
-The native line protocol is `triton-agent-1`. One command produces one `OK` or
+The native line protocol is `prismstudio-agent-1`. One command produces one `OK` or
 `ERR E_CODE diagnostic` response. `capabilities` returns protocol version,
 effective grant bits, revision, request limit, mutation metadata mechanism, and
 whether project-root confinement is active.
@@ -84,18 +84,18 @@ The maintained command set is reported by `help`; it covers project creation,
 open/save, component placement/deletion, routing, inspection, undo/redo,
 functional/physical simulation, trace/render/export, Flash FIR import and
 verification, and local verification commands. `zagctl` adds mutation envelopes
-automatically. Set `TRITON_IDEMPOTENCY` to reuse a caller key across retries.
+automatically. Set `PRISMSTUDIO_IDEMPOTENCY` to reuse a caller key across retries.
 
 ## Capabilities and confinement
 
 The bit capabilities are `read`, `inspect`, `simulate`, `edit`, `save`,
 `export`, `execute-local`, and `admin`. The default is read/inspect/simulate.
-`TRITON_CAPS` must explicitly grant other classes. `TRITON_PROJECT_ROOT`, when
+`PRISMSTUDIO_CAPS` must explicitly grant other classes. `PRISMSTUDIO_PROJECT_ROOT`, when
 set, confines open/save/render/export/import paths and rejects lexical parent
 traversal with `E_PATH_OUTSIDE_ROOT`.
 
 The MCP server uses Content-Length framing capped by `src/limits.zag`, negotiates
-MCP protocol `2024-11-05`, and advertises `triton_mutate` plus specialized
+MCP protocol `2024-11-05`, and advertises `prismstudio_mutate` plus specialized
 tools for placement, routing, deletion, inspection, export, trace, and Flash
 import/verification. Specialized mutation tools require `idempotency_key` and
 `expected_revision`; component-targeting tools use `component_id` so arguments
@@ -109,7 +109,7 @@ For a session path `<project>.zpa`:
 - `<project>.zpa.rev` is the monotonic committed revision.
 - `<project>.zpa.jrn` is journal schema `1` with bounded undo/redo operations.
 - `<project>.zpa.idem` maps committed idempotency keys to revisions.
-- `.triton/audit.log`, or `TRITON_AUDIT`, is append-only request/denial/success
+- `.prismstudio/audit.log`, or `PRISMSTUDIO_AUDIT`, is append-only request/denial/success
   evidence with actor, capability class, validated request, result, revision,
   affected ID, and undo token.
 

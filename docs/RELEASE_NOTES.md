@@ -1,4 +1,4 @@
-# Triton verified release notes
+# PrismStudio verified release notes
 
 These notes summarize behavior verified by the local safe gate. They are not
 based on commit count and they do not imply unrun hardware certification.
@@ -37,6 +37,28 @@ based on commit count and they do not imply unrun hardware certification.
 - Unsupported physical/performance claims and stale positive marketing phrases
   are rejected by release gates. Evidence: `unsupported-claim-audit`,
   `stale-language-audit`.
+- Compiler-owned GFX10.1 fill/depth/blend execution now includes a million
+  varied decoded raster dispatches (59 million instruction executions), exact
+  ownership/fences, and a reusable evidence-first auto-promotion policy with
+  resumable campaign state. Evidence: `gpu-isa-raster`,
+  `gpu-promotion-policy`. This is software VM evidence, not silicon evidence.
+- `tools/gpu_certify.zag` provides default-read-only physical preflight and an
+  explicit, resumable one-dispatch certification step. It records the exact
+  tuple, policy decision, output, kernel-log hashes, timing, fences, and anomaly
+  counters; shared-display override results remain labeled uncontained.
+- Raster mismatch quarantine now archives the serialized clear/command input,
+  seed, tuple hash, CPU/GPU/diff images, and a dedicated log artifact before CPU
+  fallback. Software-VM evidence labels kernel/driver logs not applicable rather
+  than pretending a hardware log was captured. Evidence: `gpu-raster-shadow`,
+  `gpu-isa-raster`.
+- Zag virtual certification now consolidates the remaining GPU logic campaigns
+  without opening DRM: more than one million actual VM submissions and ownership
+  transfers, 96,400 fills, 86,400 logical soak ticks, and 65 complete raster
+  differential scenes. Its distinct evidence type and report explicitly forbid
+  physical promotion. Evidence: `gpu-virtual-certification`.
+- GPU execution policy now exposes `auto`, `cpu`, `virtual`, and guarded
+  `physical` choices. Explicit CPU/virtual selection performs no DRM probe;
+  virtualization is available but is not forced. Evidence: `gpu-backend-choice`.
 
 ## Explicitly not claimed
 
