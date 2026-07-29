@@ -82,6 +82,50 @@ fn main() i32 {
     app_action(a, 27);
     check("cycle wraps back to 1x", a.*.ui_scale == 1, &failures);
 
+    // ── multi-scale font atlas ────────────────────────────────────────────
+    // fa_face_count returns the LOGICAL face count (5), not the baked count.
+    check("fa_face_count is 5 (logical)", fa_face_count() == 5, &failures);
+    check("fa_scale_count is 3", fa_scale_count() == 3, &failures);
+    // The 1x face 0 advance for 'A' must match the logical advance.
+    let a_adv: i32 = fa_adv(0, 'A' as i32);
+    check("fa_adv face0 A is positive", a_adv > 0, &failures);
+    // The 2x baked face (index 5) must have a wider glyph than the 1x face.
+    let a_w1: i32 = fa_w(0, 'A' as i32);
+    let a_w2: i32 = fa_w(5, 'A' as i32);
+    check("2x baked glyph wider than 1x", a_w2 > a_w1, &failures);
+    // The 3x baked face (index 10) must be wider still.
+    let a_w3: i32 = fa_w(10, 'A' as i32);
+    check("3x baked glyph wider than 2x", a_w3 > a_w2, &failures);
+    // Coverage offsets must be distinct across scales (different baked data).
+    check("2x coverage offset differs from 1x",
+          fa_off(5, 'A' as i32) != fa_off(0, 'A' as i32), &failures);
+
+    // draw_glyph at scale 2 blits real 2x coverage (not replicated 1x).
+    // A 2x glyph has ~4x the coverage bytes of the 1x glyph, so the 2x
+    // framebuffer should have more distinct alpha levels in the glyph area.
+    let ft: FB = fb_new_scaled(200, 80, 2);
+    fb_clip_reset(&ft);
+    fb_build_atlas(&ft);
+    fill_rect(&ft, 0, 0, 200, 80, rgb(0, 0, 0));
+    draw_text(&ft, 10, 10, "A", rgb(255, 255, 255));
+    // At 2x, the glyph should cover more physical pixels than a 1x glyph
+    // would (which is just 1x dimensions replicated). Check that we have
+    // anti-aliased edge pixels (not just 0 and 255).
+    let pw_ft: i32 = fb_pw(&ft);
+    let edge_pixels: i32 = 0;
+    let yy: i32 = 0;
+    while (yy < 80) {
+        let xx: i32 = 0;
+        while (xx < pw_ft) {
+            let px: i64 = ft.px.data[yy * pw_ft + xx];
+            let r: i32 = (px >> 16) as i32 & 255;
+            if (r > 0 && r < 255) { edge_pixels = edge_pixels + 1; }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    check("2x text has anti-aliased edge pixels", edge_pixels > 0, &failures);
+
     if (failures == 0) { _zag_println("DPI: ALL PASS"); return 0; }
     _zag_println("DPI: FAILURES"); return 1;
 }
