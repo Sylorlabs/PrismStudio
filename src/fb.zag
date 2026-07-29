@@ -633,69 +633,46 @@ fn line2d(f: *FB, x0_: i32, y0_: i32, x1_: i32, y1_: i32, c: i64) void {
 // ── text ─────────────────────────────────────────────────────────────────────
 // Proportional anti-aliased text from the baked coverage atlas. `y` is the
 // TOP of the line box; the baseline sits at y + fa_ascent(face). Coverage is
-// 8-bit alpha baked at generation time, so rendering is deterministic.
+// 8-bit alpha baked at generation time for each integral UI scale, so
+// draw_glyph blits real physical-resolution coverage — no replication.
 
-// Blit one glyph at pen position (x, line-top y); returns the pen advance.
-// At scale > 1 each coverage pixel becomes a scale×scale block so the
-// anti-aliased ramp is preserved at physical resolution.
+// Blit one glyph at pen position (x, line-top y); returns the pen advance
+// in LOGICAL pixels. At scale > 1 the baked face for that scale is selected
+// so each physical pixel gets its own anti-aliased coverage sample.
 fn draw_glyph(f: *FB, x: i32, y: i32, face: i32, ch: i32, c: i64) i32 {
-    let g: i64 = fa_g(face, ch);
-    if (g == 0) { return fa_adv(face, ' ' as i32); }
-    let adv: i32 = (g & 63) as i32;
-    let gx: i32 = x + (((g >> 6) & 63) as i32) - 16;
-    let gy: i32 = y + (((g >> 12) & 63) as i32) - 8;
-    let gw: i32 = ((g >> 18) & 63) as i32;
-    let gh: i32 = ((g >> 24) & 63) as i32;
-    let off: i32 = (g >> 30) as i32;
     let s: i32 = f.*.scale;
-    if (s == 1) {
-        let row: i32 = 0;
-        while (row < gh) {
-            let rbase: i32 = off + row * gw;
-            let col: i32 = 0;
-            while (col < gw) {
-                let cov: i32 = f.*.fcov.data[rbase + col] as i32;
-                if (cov >= 255) { px_set(f, gx + col, gy + row, c); }
-                else if (cov > 0) { px_blend(f, gx + col, gy + row, c, cov + 1); }
-                col = col + 1;
-            }
-            row = row + 1;
-        }
-        return adv;
-    }
-    // scaled: replicate each coverage pixel into s×s physical block
+    let baked: i32 = face + (s - 1) * fa_face_count();
+    let g_phys: i64 = fa_g(baked, ch);
+    let g_log: i64 = fa_g(face, ch);
+    // advance always comes from the 1x (logical) face so pen movement
+    // is in logical pixels regardless of the baked scale.
+    let adv: i32 = (g_log & 127) as i32;
+    if (g_phys == 0) { return adv; }
+    let gw: i32 = ((g_phys >> 21) & 127) as i32;
+    let gh: i32 = ((g_phys >> 28) & 127) as i32;
+    let off: i32 = (g_phys >> 35) as i32;
+    // physical blit origin: scale the logical pen, add the physical bearing.
+    let gxp: i32 = x * s + (((g_phys >> 7) & 127) as i32) - 32;
+    let gyp: i32 = y * s + (((g_phys >> 14) & 127) as i32) - 16;
     let pw: i32 = fb_pw(f);
-    let gxp: i32 = gx * s;
-    let gyp: i32 = gy * s;
     let row: i32 = 0;
     while (row < gh) {
         let rbase: i32 = off + row * gw;
-        let col: i32 = 0;
-        while (col < gw) {
-            let cov: i32 = f.*.fcov.data[rbase + col] as i32;
-            if (cov > 0) {
-                let bx0: i32 = gxp + col * s;
-                let by0: i32 = gyp + row * s;
-                let a: i32 = cov + 1;
-                let yy: i32 = 0;
-                while (yy < s) {
-                    let ry: i32 = by0 + yy;
-                    if (ry >= f.*.cy0 && ry < f.*.cy1) {
-                        let db: i32 = ry * pw;
-                        let xx: i32 = 0;
-                        while (xx < s) {
-                            let rx: i32 = bx0 + xx;
-                            if (rx >= f.*.cx0 && rx < f.*.cx1) {
-                                if (cov >= 255) { f.*.px.data[db + rx] = c; }
-                                else { f.*.px.data[db + rx] = mix(c, f.*.px.data[db + rx], a); }
-                            }
-                            xx = xx + 1;
-                        }
+        let ry: i32 = gyp + row;
+        if (ry >= f.*.cy0 && ry < f.*.cy1) {
+            let db: i32 = ry * pw;
+            let col: i32 = 0;
+            while (col < gw) {
+                let cov: i32 = f.*.fcov.data[rbase + col] as i32;
+                if (cov > 0) {
+                    let rx: i32 = gxp + col;
+                    if (rx >= f.*.cx0 && rx < f.*.cx1) {
+                        if (cov >= 255) { f.*.px.data[db + rx] = c; }
+                        else { f.*.px.data[db + rx] = mix(c, f.*.px.data[db + rx], cov + 1); }
                     }
-                    yy = yy + 1;
                 }
+                col = col + 1;
             }
-            col = col + 1;
         }
         row = row + 1;
     }
