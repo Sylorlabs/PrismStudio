@@ -9,6 +9,7 @@
 @import("ui.zag")
 @import("voxel.zag")
 @import("components.zag")
+@import("process_stack.zag")
 @import("scene.zag")
 @import("routing.zag")
 @import("sim.zag")
@@ -19,6 +20,7 @@
 @import("optimizer.zag")
 @import("uilayer.zag")
 @import("flash_ir.zag")
+@import("strutil.zag")
 
 // tools
 fn tool_select() i32 { return 0; }
@@ -112,6 +114,7 @@ struct App {
     request_command: []u8,
     request_required: i64,
     cam_drag: bool,
+    fly_speed: f64,
     pmx: i32,
     pmy: i32,
     tile_cache: TileCache,
@@ -123,6 +126,8 @@ struct App {
     palette_open: bool,     // command palette open
     palette_text: list.ArrayList[u8],
     palette_sel: i32,       // highlighted row in the filtered command list
+    palette_scratch: list.ArrayList[[]u8],  // heap-owned dynamic palette labels; freed+rebuilt by palette_filtered each call
+    frame_scratch: list.ArrayList[[]u8],    // heap strings with single-frame lifetime (UI catalog labels); freed at next frame build
     flash_open: bool,       // Flash FIR import/source/operation inspector
     model_open: bool,       // versioned physical-model and provenance browser
     model_param_sel: i32,
@@ -223,10 +228,23 @@ struct App {
     present_rev_prev: i64,     // scene render_rev at last present-decision
 }
 
+fn layout_left_min(w: i32) i32 { return clampi(w / 5, 64, 170); }
+fn layout_right_min(w: i32) i32 { return clampi(w / 4, 80, 220); }
+fn layout_bottom_min(h: i32) i32 { return clampi(h / 4, 60, 130); }
+
+// Keep all panels and a useful center viewport inside the current logical
+// framebuffer. This is run on every frame because an X11 resize can make a
+// previously valid desktop layout invalid without touching a splitter.
+fn app_layout_constrain(a: *App) void {
+    a.*.left_w = clampi(a.*.left_w, layout_left_min(a.*.inp.w), a.*.inp.w / 4);
+    a.*.right_w = clampi(a.*.right_w, layout_right_min(a.*.inp.w), a.*.inp.w / 3);
+    a.*.bottom_h = clampi(a.*.bottom_h, layout_bottom_min(a.*.inp.h), (a.*.inp.h * 2) / 5);
+}
+
 fn app_new(w: i32, h: i32) *App {
-    let default_left: i32 = clampi(w / 5, 190, 224);
-    let default_right: i32 = clampi(w / 4, 240, 306);
-    let default_bottom: i32 = clampi(h / 4, 160, 236);
+    let default_left: i32 = clampi(w / 5, layout_left_min(w), 224);
+    let default_right: i32 = clampi(w / 4, layout_right_min(w), 306);
+    let default_bottom: i32 = clampi(h / 4, layout_bottom_min(h), 236);
     let a: *App = new(App{
         .f = fb_new(w, h),
         .scene = scene_new(),
@@ -281,6 +299,7 @@ fn app_new(w: i32, h: i32) *App {
         .request_command = "",
         .request_required = 0,
         .cam_drag = false,
+        .fly_speed = 18.0,
         .pmx = 0,
         .pmy = 0,
         .tile_cache = tiles_cache_new(),
@@ -292,6 +311,8 @@ fn app_new(w: i32, h: i32) *App {
         .palette_open = false,
         .palette_text = list.make[u8](32),
         .palette_sel = 0,
+        .palette_scratch = list.make[[]u8](8),
+        .frame_scratch = list.make[[]u8](8),
         .flash_open = false,
         .model_open = false,
         .model_param_sel = 0,
@@ -331,7 +352,9 @@ fn app_new(w: i32, h: i32) *App {
         .insp_open_p = 1,
         .insp_edit_field = 0 - 1,
         .insp_edit = textedit_new(),
-        .insp_err = "",
+        // insp_err is always heap-owned (see insp_err_set/clear); a literal
+        // here would be freed later and corrupt the allocator.
+        .insp_err = _zag_strdup(""),
         .insp_err_frame = 0 - 1000,
         .tl_zoom = 7,
         .tl_scrub = 0,
@@ -389,17 +412,20 @@ fn app_new(w: i32, h: i32) *App {
 }
 
 fn app_layout_path() []u8 {
-    let env: []u8 = _zag_getenv("TRITON_LAYOUT");
+    let env: []u8 = _zag_getenv("PRISMSTUDIO_LAYOUT");
     if (env.len > 0) { return env; }
-    return ".triton/layout.cfg";
+    return ".prismstudio/layout.cfg";
 }
 
 fn app_layout_load(a: *App) void {
     let raw: []u8 = _zag_read_file(app_layout_path());
-    if (raw.len <= 0) { return; }
-    let vals: list.ArrayList[i64] = list.make[i64](14);
+    // len == -1 is the open-failure sentinel (no buffer); len == 0 is a real,
+    // owned 64 KiB buffer for an empty file. Free on every non-failure path.
+    if (raw.len < 0) { return; }
+    if (raw.len == 0) { _zag_str_free(raw); return; }
+    let vals: list.ArrayList[i64] = list.make[i64](18);
     let pos: i32 = 0;
-    while (pos < raw.len && vals.len < 14) {
+    while (pos < raw.len && vals.len < 18) {
         while (pos < raw.len && ((raw[pos] as i32) == 32 || (raw[pos] as i32) == 10)) { pos = pos + 1; }
         let st: i32 = pos;
         while (pos < raw.len && (raw[pos] as i32) != 32 && (raw[pos] as i32) != 10) { pos = pos + 1; }
@@ -407,9 +433,9 @@ fn app_layout_load(a: *App) void {
     }
     if (vals.len >= 3) {
         // clamps keep the viewport visually dominant at any drag (Section 3.2)
-        a.*.left_w = clampi(vals.data[0] as i32, 170, a.*.inp.w / 4);
-        a.*.right_w = clampi(vals.data[1] as i32, 220, a.*.inp.w / 3);
-        a.*.bottom_h = clampi(vals.data[2] as i32, 130, (a.*.inp.h * 2) / 5);
+        a.*.left_w = clampi(vals.data[0] as i32, layout_left_min(a.*.inp.w), a.*.inp.w / 4);
+        a.*.right_w = clampi(vals.data[1] as i32, layout_right_min(a.*.inp.w), a.*.inp.w / 3);
+        a.*.bottom_h = clampi(vals.data[2] as i32, layout_bottom_min(a.*.inp.h), (a.*.inp.h * 2) / 5);
     }
     // optional trailing preferences (older files stop at three values)
     if (vals.len >= 5) {
@@ -431,39 +457,57 @@ fn app_layout_load(a: *App) void {
         a.*.opt.*.quiet_start_hour = clampi(vals.data[12] as i32, 0, 23);
         a.*.opt.*.quiet_end_hour = clampi(vals.data[13] as i32, 0, 23);
     }
+    if (vals.len >= 18) {
+        a.*.opt.*.family_cse = vals.data[14] != 0;
+        a.*.opt.*.family_factoring = vals.data[15] != 0;
+        a.*.opt.*.family_route = vals.data[16] != 0;
+        a.*.opt.*.family_placement = vals.data[17] != 0;
+    }
+    _zag_str_free(raw);
     list.free[i64](&vals);
 }
 
+// Autosave of panel/prefs state. This runs on the autosave loop for the whole
+// session: it must allocate exactly one transient line and free it (the old
+// 22-concat chain leaked every intermediate and every i64_to_str per save).
 fn app_layout_save(a: *App) bool {
-    let p1: []u8 = _zag_str_concat(_zag_i64_to_str(a.*.left_w as i64), " ");
-    let p2: []u8 = _zag_str_concat(p1, _zag_i64_to_str(a.*.right_w as i64));
-    let p3: []u8 = _zag_str_concat(p2, " ");
-    let p4: []u8 = _zag_str_concat(p3, _zag_i64_to_str(a.*.bottom_h as i64));
-    let rm: i64 = 0;
-    if (a.*.inp.reduced_motion) { rm = 1; }
-    let sn: i64 = 0;
-    if (a.*.snap_obj) { sn = 1; }
-    let p5: []u8 = _zag_str_concat(_zag_str_concat(p4, " "), _zag_i64_to_str(rm));
-    let p6: []u8 = _zag_str_concat(_zag_str_concat(p5, " "), _zag_i64_to_str(sn));
-    let p7: []u8 = _zag_str_concat(_zag_str_concat(p6, " "), _zag_i64_to_str(a.*.tl_zoom as i64));
-    let oe: i64 = 0; if (a.*.opt.*.enabled) { oe = 1; }
-    let oa: i64 = 0; if (a.*.opt.*.auto_apply) { oa = 1; }
-    let fd: i64 = 0; if (a.*.opt.*.family_dead_path) { fd = 1; }
-    let fc: i64 = 0; if (a.*.opt.*.family_const_collapse) { fc = 1; }
-    let p8: []u8 = _zag_str_concat(_zag_str_concat(p7, " "), _zag_i64_to_str(oe));
-    let p9: []u8 = _zag_str_concat(_zag_str_concat(p8, " "), _zag_i64_to_str(oa));
-    let p10: []u8 = _zag_str_concat(_zag_str_concat(p9, " "), _zag_i64_to_str(a.*.opt.*.min_gain_pct as i64));
-    let p11: []u8 = _zag_str_concat(_zag_str_concat(p10, " "), _zag_i64_to_str(fd));
-    let p12: []u8 = _zag_str_concat(_zag_str_concat(p11, " "), _zag_i64_to_str(fc));
-    let p13: []u8 = _zag_str_concat(_zag_str_concat(p12, " "), _zag_i64_to_str(a.*.opt.*.cpu_budget_pct as i64));
-    let p14: []u8 = _zag_str_concat(_zag_str_concat(p13, " "), _zag_i64_to_str(a.*.opt.*.quiet_start_hour as i64));
-    let p15: []u8 = _zag_str_concat(_zag_str_concat(p14, " "), _zag_i64_to_str(a.*.opt.*.quiet_end_hour as i64));
-    return atomic_write_file(app_layout_path(), _zag_str_concat(p15, "\n"));
+    let vals: list.ArrayList[i64] = list.make[i64](22);
+    list.push[i64](&vals, a.*.left_w as i64);
+    list.push[i64](&vals, a.*.right_w as i64);
+    list.push[i64](&vals, a.*.bottom_h as i64);
+    if (a.*.inp.reduced_motion) { list.push[i64](&vals, 1); } else { list.push[i64](&vals, 0); }
+    if (a.*.snap_obj) { list.push[i64](&vals, 1); } else { list.push[i64](&vals, 0); }
+    list.push[i64](&vals, a.*.tl_zoom as i64);
+    if (a.*.opt.*.enabled) { list.push[i64](&vals, 1); } else { list.push[i64](&vals, 0); }
+    if (a.*.opt.*.auto_apply) { list.push[i64](&vals, 1); } else { list.push[i64](&vals, 0); }
+    list.push[i64](&vals, a.*.opt.*.min_gain_pct as i64);
+    if (a.*.opt.*.family_dead_path) { list.push[i64](&vals, 1); } else { list.push[i64](&vals, 0); }
+    if (a.*.opt.*.family_const_collapse) { list.push[i64](&vals, 1); } else { list.push[i64](&vals, 0); }
+    list.push[i64](&vals, a.*.opt.*.cpu_budget_pct as i64);
+    list.push[i64](&vals, a.*.opt.*.quiet_start_hour as i64);
+    list.push[i64](&vals, a.*.opt.*.quiet_end_hour as i64);
+    if (a.*.opt.*.family_cse) { list.push[i64](&vals, 1); } else { list.push[i64](&vals, 0); }
+    if (a.*.opt.*.family_factoring) { list.push[i64](&vals, 1); } else { list.push[i64](&vals, 0); }
+    if (a.*.opt.*.family_route) { list.push[i64](&vals, 1); } else { list.push[i64](&vals, 0); }
+    if (a.*.opt.*.family_placement) { list.push[i64](&vals, 1); } else { list.push[i64](&vals, 0); }
+    let line: []u8 = join_i64s_sp(&vals);
+    list.free[i64](&vals);
+    let body: []u8 = s2(line, "\n");
+    _zag_str_free(line);
+    let ok: bool = atomic_write_file(app_layout_path(), body);
+    _zag_str_free(body);
+    return ok;
 }
 
+// Status-log ring (last 5 messages).
+// OWNERSHIP INVARIANT: every entry in a.*.log is heap-owned by the ring.
+// app_log copies `msg` (callers keep ownership of whatever they built and must
+// free it); eviction frees the dropped entry. Never push a raw concat result
+// into a.*.log directly — that invariant has leaked before.
 fn app_log(a: *App, msg: []u8) void {
     a.*.log_rev = a.*.log_rev + 1;
     if (a.*.log.len >= 5) {
+        _zag_str_free(a.*.log.data[0]);
         let i: i32 = 0;
         while (i + 1 < a.*.log.len) {
             a.*.log.data[i] = a.*.log.data[i + 1];
@@ -471,7 +515,7 @@ fn app_log(a: *App, msg: []u8) void {
         }
         a.*.log.len = a.*.log.len - 1;
     }
-    list.push[[]u8](&a.*.log, msg);
+    list.push[[]u8](&a.*.log, _zag_strdup(msg));
 }
 
 fn app_mark_dirty(a: *App) void {
@@ -479,6 +523,32 @@ fn app_mark_dirty(a: *App) void {
         a.*.dirty = true;
         a.*.title_dirty = true;
     }
+}
+
+// Inspector inline-error ownership invariant: a.*.insp_err is ALWAYS
+// heap-owned. Mutate it only through these two helpers; assigning a literal or
+// a raw concat result directly either leaks or double-frees (both have shipped
+// before). `msg` is borrowed (copied), so callers free their own temporaries.
+fn insp_err_set(a: *App, msg: []u8) void {
+    _zag_str_free(a.*.insp_err);
+    a.*.insp_err = _zag_strdup(msg);
+    a.*.insp_err_frame = a.*.frame;
+}
+
+fn insp_err_clear(a: *App) void {
+    _zag_str_free(a.*.insp_err);
+    a.*.insp_err = _zag_strdup("");
+}
+
+// Parks a heap string in the frame-lifetime registry and returns it. Strings
+// registered into the UI catalog (ui_register) are read by automation AFTER
+// the frame finishes drawing, so a dynamically built label must outlive its
+// draw call: park it here and it is freed at the start of the next frame
+// build. Registering an unparked built string is a use-after-free on the
+// agent `ui list` path — this has shipped as a bug class before.
+fn ui_park(a: *App, s: []u8) []u8 {
+    list.push[[]u8](&a.*.frame_scratch, s);
+    return s;
 }
 
 // ── selection ─────────────────────────────────────────────────────────────────
@@ -676,7 +746,11 @@ fn app_group_selection(a: *App) void {
         list.push[i32](&a.*.groups, gid);
         i = i + 1;
     }
-    app_log(a, _zag_str_concat(_zag_i64_to_str(a.*.sel.len as i64), " parts grouped"));
+        let __log_n: []u8 = _zag_i64_to_str(a.*.sel.len as i64);
+        let __log_g: []u8 = s2(__log_n, " parts grouped");
+        _zag_str_free(__log_n);
+        app_log(a, __log_g);
+        _zag_str_free(__log_g);
 }
 
 fn app_ungroup_selection(a: *App) void {
@@ -755,8 +829,8 @@ fn app_dblclick(a: *App) bool {
 
 // ── zone layout ───────────────────────────────────────────────────────────────
 
-fn menu_h() i32 { return 24; }
-fn status_h() i32 { return 22; }
+fn menu_h() i32 { return 30; }
+fn status_h() i32 { return 26; }
 
 fn zone_menu(a: *App) Rect {
     return rect(0, 0, a.*.inp.w, menu_h());
@@ -815,9 +889,9 @@ fn app_splitters(a: *App) void {
         a.*.grab = 0;
     }
     // clamps keep the viewport visually dominant at any drag (Section 3.2)
-    if (a.*.grab == 1) { a.*.left_w = clampi(inp.*.mx, 170, inp.*.w / 4); }
-    if (a.*.grab == 2) { a.*.right_w = clampi(inp.*.w - inp.*.mx, 220, inp.*.w / 3); }
-    if (a.*.grab == 3) { a.*.bottom_h = clampi(inp.*.h - inp.*.my - status_h(), 130, (inp.*.h * 2) / 5); }
+    if (a.*.grab == 1) { a.*.left_w = clampi(inp.*.mx, layout_left_min(inp.*.w), inp.*.w / 4); }
+    if (a.*.grab == 2) { a.*.right_w = clampi(inp.*.w - inp.*.mx, layout_right_min(inp.*.w), inp.*.w / 3); }
+    if (a.*.grab == 3) { a.*.bottom_h = clampi(inp.*.h - inp.*.my - status_h(), layout_bottom_min(inp.*.h), (inp.*.h * 2) / 5); }
     if (a.*.grab != 0) { inp.*.capture = 1; }
 }
 
@@ -851,13 +925,31 @@ fn app_frame_all(a: *App) void {
     }
     a.*.cam.target = v3((mnx + mxx) * 0.5, (mny + mxy) * 0.5, (mnz + mxz) * 0.5);
     let span: f64 = fmax(mxx - mnx, fmax(mxy - mny, mxz - mnz));
-    a.*.cam.dist = clampf(span * 1.35 + 9.0, 10.0, 200.0);
+    // Fit is a working view, not a distant overview.  The old 1.35 factor
+    // left sparse photonic layouts as tiny islands in a largely empty grid.
+    // 1.05 keeps the design legible while the navigation renderer switches to
+    // a lightweight, still-readable LOD during active camera motion.
+    a.*.cam.dist = clampf(span * 1.05 + 8.0, 10.0, 200.0);
 }
 
 // Reset view (Section 3.5): the exact default camera, including projection.
 fn app_reset_view(a: *App) void {
     a.*.cam = cam_new();
     app_log(a, "view reset");
+}
+
+// Move the camera eye to an exact world coordinate while preserving its
+// current look direction, projection, and orbit distance.
+fn app_camera_teleport(a: *App, x: f64, y: f64, z: f64) void {
+    cam_update(&a.*.cam, zone_center(a).h);
+    let desired: Vec3 = v3(x, y, z);
+    let delta: Vec3 = vsub(desired, a.*.cam.eye);
+    a.*.cam.target = vadd(a.*.cam.target, delta);
+    cam_update(&a.*.cam, zone_center(a).h);
+    tiles_mark_all_dirty(&a.*.tile_cache);
+    a.*.present_full = true;
+    a.*.present_none = false;
+    a.*.session_sync_now = true;
 }
 
 fn app_frame_selected(a: *App) void {
@@ -918,7 +1010,11 @@ fn app_delete_selection(a: *App) void {
     if (n > 0) {
         app_mark_dirty(a);
         if (n == 1) { app_log(a, "1 component removed"); }
-        else { app_log(a, _zag_str_concat(_zag_i64_to_str(n as i64), " components removed")); }
+        else { let __log_nr: []u8 = _zag_i64_to_str(n as i64);
+        let __log_r: []u8 = s2(__log_nr, " components removed");
+        _zag_str_free(__log_nr);
+        app_log(a, __log_r);
+        _zag_str_free(__log_r); }
     }
     sel_clear(a);
 }
@@ -952,7 +1048,11 @@ fn app_copy(a: *App) void {
         i = i + 1;
     }
     if (a.*.clipboard.len > 0) {
-        app_log(a, _zag_str_concat(_zag_i64_to_str(a.*.clipboard.len as i64), " copied"));
+        let __log_nc: []u8 = _zag_i64_to_str(a.*.clipboard.len as i64);
+        let __log_c: []u8 = s2(__log_nc, " copied");
+        _zag_str_free(__log_nc);
+        app_log(a, __log_c);
+        _zag_str_free(__log_c);
     }
 }
 
@@ -987,7 +1087,11 @@ fn app_paste(a: *App) void {
     }
     if (placed > 0) {
         app_mark_dirty(a);
-        app_log(a, _zag_str_concat(_zag_i64_to_str(placed as i64), " pasted"));
+        let __log_np: []u8 = _zag_i64_to_str(placed as i64);
+        let __log_p: []u8 = s2(__log_np, " pasted");
+        _zag_str_free(__log_np);
+        app_log(a, __log_p);
+        _zag_str_free(__log_p);
     } else {
         app_log(a, "paste: no room at the offset");
     }
@@ -1070,9 +1174,14 @@ fn app_new_design(a: *App) void {
 
 fn app_save(a: *App) void {
     if (design_save(a.*.scene, a.*.file_)) {
+        let bytes: []u8 = _zag_read_file(a.*.file_);
+        let _campaign: bool = opt_campaign_save_full(a.*.opt,
+            _zag_str_concat(a.*.file_, ".opt"), design_bytes_hash(bytes));
         a.*.dirty = false;
         a.*.title_dirty = true;
-        app_log(a, _zag_str_concat("saved ", a.*.file_));
+        let __log_s: []u8 = s2("saved ", a.*.file_);
+        app_log(a, __log_s);
+        _zag_str_free(__log_s);
     } else {
         app_log(a, "save failed");
     }
@@ -1083,13 +1192,20 @@ fn app_open_file(a: *App, path: []u8) void {
         journal_clear(&a.*.jrn);
         sel_clear(a);
         a.*.file_ = _zag_strdup(path);
+        let bytes: []u8 = _zag_read_file(path);
+        let _campaign: bool = opt_campaign_load_full(a.*.opt,
+            _zag_str_concat(path, ".opt"), design_bytes_hash(bytes), a.*.scene);
         a.*.dirty = true;
         a.*.title_dirty = true;
         a.*.session_sync_now = true;
         app_frame_all(a);
-        app_log(a, _zag_str_concat("opened ", path));
+            let __log_o2: []u8 = s2("opened ", path);
+            app_log(a, __log_o2);
+            _zag_str_free(__log_o2);
     } else {
-        app_log(a, _zag_str_concat("cannot open ", path));
+        let __log_co: []u8 = s2("cannot open ", path);
+        app_log(a, __log_co);
+        _zag_str_free(__log_co);
     }
 }
 
@@ -1098,7 +1214,9 @@ fn app_flash_import(a: *App, path: []u8) bool {
     if (!ir.valid) {
         a.*.flash_verify_errors = 0 - 1;
         app_invalid(a, "invalid or unsupported Flash FIR");
-        app_log(a, _zag_str_concat("cannot import Flash FIR ", path));
+        let __log_f: []u8 = s2("cannot import Flash FIR ", path);
+        app_log(a, __log_f);
+        _zag_str_free(__log_f);
         list.free[FlashOp](&ir.ops);
         return false;
     }
@@ -1121,7 +1239,9 @@ fn app_flash_import(a: *App, path: []u8) bool {
     journal_clear(&a.*.jrn); sel_clear(a); app_frame_all(a);
     a.*.file_ = "untitled-flash.zpa";
     a.*.dirty = true; a.*.title_dirty = true; a.*.session_sync_now = true;
-    app_log(a, _zag_str_concat("imported Flash FIR ", path));
+    let __log_i: []u8 = s2("imported Flash FIR ", path);
+        app_log(a, __log_i);
+        _zag_str_free(__log_i);
     list.free[FlashOp](&ir.ops);
     return true;
 }
@@ -1144,22 +1264,31 @@ fn app_show_saveas(a: *App) void {
 }
 
 fn app_recovery_base() []u8 {
-    let p: []u8 = _zag_getenv("TRITON_SESSION");
+    let p: []u8 = _zag_getenv("PRISMSTUDIO_SESSION");
     if (p.len > 0) { return p; }
-    return ".triton/live.zpa";
+    return ".prismstudio/live.zpa";
 }
 
+// Owned recovery-snapshot path. Caller frees (app_show_recovery stores it in
+// modal_files and list/free discipline applies there).
 fn app_recovery_path(slot: i32) []u8 {
-    return _zag_str_concat(_zag_str_concat(app_recovery_base(), ".recovery."),
-                           _zag_str_concat(_zag_i64_to_str(slot as i64), ".zpa"));
+    let ns: []u8 = _zag_i64_to_str(slot as i64);
+    let tail: []u8 = s2(ns, ".zpa");
+    _zag_str_free(ns);
+    let head: []u8 = s2(app_recovery_base(), ".recovery.");
+    let r: []u8 = s2(head, tail);
+    _zag_str_free(head);
+    _zag_str_free(tail);
+    return r;
 }
 
 fn app_show_recovery(a: *App) void {
-    a.*.modal_files.len = 0;
+    free_str_list(&a.*.modal_files);
     let i: i32 = 1;
     while (i <= 3) {
         let p: []u8 = app_recovery_path(i);
         if (_zag_file_exists(p) == 1) { list.push[[]u8](&a.*.modal_files, p); }
+        else { _zag_str_free(p); }
         i = i + 1;
     }
     a.*.modal = modal_recovery();
@@ -1175,7 +1304,9 @@ fn app_recover_file(a: *App, path: []u8) bool {
     a.*.file_ = "recovered.zpa";
     a.*.dirty = true; a.*.title_dirty = true; a.*.session_sync_now = false;
     a.*.modal = modal_none();
-    app_log(a, _zag_str_concat("recovered snapshot ", path));
+    let __log_rec: []u8 = s2("recovered snapshot ", path);
+        app_log(a, __log_rec);
+        _zag_str_free(__log_rec);
     return true;
 }
 
@@ -1265,7 +1396,7 @@ fn gizmo_apply(a: *App, i: i32) void {
     app_log(a, "view aligned to axis");
 }
 
-fn app_viewport_input(a: *App) void {
+fn app_viewport_input(a: *App, dt: f64) void {
     let inp: *Input = &a.*.inp;
     let vp: Rect = zone_center(a);
     let over: bool = rect_has(vp, inp.*.mx, inp.*.my) && inp.*.capture == 0;
@@ -1294,7 +1425,11 @@ fn app_viewport_input(a: *App) void {
     }
     if (!btn_down(inp, 2) && !btn_down(inp, 1)) { a.*.rmb_live = false; }
 
-    // camera: MMB orbit / Shift+MMB pan / RMB-drag orbit / wheel zoom
+    // Camera navigation deliberately offers both CAD orbit and unconstrained
+    // free-look. MMB orbits the current pivot; Shift+MMB pans it. RMB drag
+    // keeps the eye fixed and turns the view, so navigation is not forced to
+    // revolve around whatever happens to be centered. Wheel zoom is anchored
+    // beneath the pointer instead of pulling everything toward screen center.
     if (over || inp.*.capture == 2) {
         let dragging: bool = btn_down(inp, 1) || (btn_down(inp, 2) && (rmb_moved || !a.*.rmb_live));
         a.*.cam_drag = dragging;
@@ -1310,6 +1445,22 @@ fn app_viewport_input(a: *App) void {
                 let move_u: Vec3 = vscale(up, dy * s);
                 let t0: Vec3 = vadd(a.*.cam.target, move_r);
                 a.*.cam.target = vadd(t0, move_u);
+            } else if (btn_down(inp, 2)) {
+                // Free-look: rotate the view while preserving the eye. The
+                // orbit representation stores a target, so rebuild that target
+                // from the new orientation and the unchanged eye position.
+                let eye0: Vec3 = a.*.cam.eye;
+                a.*.cam.yaw = a.*.cam.yaw + dx * 0.008;
+                a.*.cam.pitch = a.*.cam.pitch + dy * 0.006;
+                a.*.cam.pitch = clampf(a.*.cam.pitch, 0.02, 1.52);
+                let cp: f64 = cos(a.*.cam.pitch);
+                let sp: f64 = sin(a.*.cam.pitch);
+                let cy: f64 = cos(a.*.cam.yaw);
+                let sy: f64 = sin(a.*.cam.yaw);
+                let off: Vec3 = v3(cp * cy * a.*.cam.dist,
+                                   sp * a.*.cam.dist,
+                                   cp * sy * a.*.cam.dist);
+                a.*.cam.target = vsub(eye0, off);
             } else {
                 a.*.cam.yaw = a.*.cam.yaw + dx * 0.008;
                 a.*.cam.pitch = a.*.cam.pitch + dy * 0.006;
@@ -1318,7 +1469,18 @@ fn app_viewport_input(a: *App) void {
             inp.*.capture = 0;
             a.*.cam_drag = false;
         }
-        if (over && inp.*.wheel != 0) {
+        if (over && inp.*.wheel != 0 && btn_down(inp, 2)) {
+            let wn: i32 = inp.*.wheel;
+            while (wn > 0) { a.*.fly_speed = a.*.fly_speed * 1.2; wn = wn - 1; }
+            while (wn < 0) { a.*.fly_speed = a.*.fly_speed / 1.2; wn = wn + 1; }
+            a.*.fly_speed = clampf(a.*.fly_speed, 1.0, 160.0);
+        } else if (over && inp.*.wheel != 0) {
+            let old_dist: f64 = a.*.cam.dist;
+            let sx: f64 = (inp.*.mx - (vp.x + vp.w / 2)) as f64;
+            let sy: f64 = (inp.*.my - (vp.y + vp.h / 2)) as f64;
+            let wr: Vec3 = vscale(a.*.cam.right, sx * old_dist / a.*.cam.flen);
+            let wu: Vec3 = vscale(a.*.cam.up, (0.0 - sy) * old_dist / a.*.cam.flen);
+            let pointer_offset: Vec3 = vadd(wr, wu);
             let n: i32 = inp.*.wheel;
             while (n > 0) {
                 a.*.cam.dist = a.*.cam.dist * 0.9;
@@ -1327,6 +1489,35 @@ fn app_viewport_input(a: *App) void {
             while (n < 0) {
                 a.*.cam.dist = a.*.cam.dist * 1.111;
                 n = n + 1;
+            }
+            a.*.cam.dist = clampf(a.*.cam.dist, 4.0, 220.0);
+            let anchor_shift: f64 = 1.0 - a.*.cam.dist / old_dist;
+            let shifted: Vec3 = vscale(pointer_offset, anchor_shift);
+            a.*.cam.target = vadd(a.*.cam.target, shifted);
+        }
+
+        // RMB fly mode. Translation moves eye and target together, retaining
+        // the free-look orientation established above. Editing shortcuts are
+        // suppressed by app_keys while RMB is held.
+        if (btn_down(inp, 2)) {
+            let fly_keys: bool = key_down(inp, 'w' as i32) || key_down(inp, 'a' as i32) ||
+                key_down(inp, 's' as i32) || key_down(inp, 'd' as i32) ||
+                key_down(inp, 'q' as i32) || key_down(inp, 'e' as i32);
+            if (fly_keys) {
+                a.*.rmb_live = false; // movement cannot become a context click
+                let speed: f64 = a.*.fly_speed;
+                if (shift_down(inp)) { speed = speed * 3.0; }
+                if (ctrl_down(inp)) { speed = speed * 0.25; }
+                let step: f64 = speed * clampf(dt, 0.0, 0.1);
+                let move: Vec3 = v3(0.0, 0.0, 0.0);
+                if (key_down(inp, 'w' as i32)) { move = vadd(move, vscale(a.*.cam.fwd, step)); }
+                if (key_down(inp, 's' as i32)) { move = vadd(move, vscale(a.*.cam.fwd, 0.0 - step)); }
+                if (key_down(inp, 'a' as i32)) { move = vadd(move, vscale(a.*.cam.right, 0.0 - step)); }
+                if (key_down(inp, 'd' as i32)) { move = vadd(move, vscale(a.*.cam.right, step)); }
+                if (key_down(inp, 'q' as i32)) { move = vadd(move, v3(0.0, 0.0 - step, 0.0)); }
+                if (key_down(inp, 'e' as i32)) { move = vadd(move, v3(0.0, step, 0.0)); }
+                a.*.cam.target = vadd(a.*.cam.target, move);
+                a.*.cam_drag = true;
             }
         }
     }
@@ -1426,7 +1617,9 @@ fn app_viewport_input(a: *App) void {
                         sel_set(a, id);
                         app_mark_dirty(a);
                         let ci: i32 = scene_comp_index(a.*.scene, id);
-                        app_log(a, _zag_str_concat("placed ", a.*.scene.*.comps.data[ci].name_));
+                        let __log_pl: []u8 = s2("placed ", a.*.scene.*.comps.data[ci].name_);
+        app_log(a, __log_pl);
+        _zag_str_free(__log_pl);
                     }
                 } else {
                     app_invalid(a, _zag_str_concat("cannot place: ", place_err_text(a.*.ghost_ok)));
@@ -1565,6 +1758,9 @@ fn app_keys(a: *App) void {
         app_modal_keys(a);
         return;
     }
+    // RMB owns WASD/QE for fly navigation. Do not leak those presses into
+    // Select/Route or other edit shortcuts.
+    if (btn_down(inp, 2)) { return; }
 
     if (key_hit(inp, key_esc())) {
         if (a.*.ctx_open) { a.*.ctx_open = false; }

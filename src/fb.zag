@@ -7,82 +7,70 @@
 
 @import("../std/list.zag") as list
 @import("../std/rt.zag")
-@import("fontdata.zag")
+@import("fontatlas.zag")
+
+// Typography faces (see tools/genfontatlas.py). All UI text renders from a
+// proportional anti-aliased face; the old 5x9 bitmap font is retired.
+fn face_body() i32 { return 0; }      // Fira Sans Regular 13 — default UI text
+fn face_body_med() i32 { return 1; }  // Fira Sans Medium 13 — emphasis, active
+fn face_dense() i32 { return 2; }     // Fira Sans Regular 12 — rows, status
+fn face_section() i32 { return 3; }   // Fira Sans Medium 15 — panel titles
+fn face_title() i32 { return 4; }     // Fira Sans Medium 18 — app title
 
 struct FB {
     px: list.ArrayList[i64],
     zb: list.ArrayList[i64],
-    w: i32,
-    h: i32,
-    // active clip rect (inclusive min, exclusive max)
+    w: i32,           // logical width (app coordinates)
+    h: i32,           // logical height (app coordinates)
+    scale: i32,       // physical pixels per logical pixel (1 = unscaled)
+    // active clip rect in LOGICAL coordinates (inclusive min, exclusive max)
     cx0: i32,
     cy0: i32,
     cx1: i32,
     cy1: i32,
-    // text atlas (Section 3.12): 96 printable glyphs x 9 row bitmasks,
-    // pre-rasterized once so glyph runs blit without per-char dispatch
-    glyphs: list.ArrayList[i64],
-    // per-cell anti-aliasing coverage (96 glyphs x 9 rows x 5 cols, 0..256),
-    // computed once from the bitmaps via scale2x so the text hot path only
-    // reads a value instead of recomputing edge coverage per pixel per frame.
-    cov: list.ArrayList[i64],
-    // anti-aliased text: soften glyph edges so the UI does not read as raw
-    // pixels. Off for deterministic golden probes and HiDPI scaled text.
+    // decoded 8-bit glyph coverage for every baked face (fontatlas.zag),
+    // decoded once from base64 so the text hot path is a table blit.
+    fcov: list.ArrayList[u8],
+    // retained for API compatibility; baked coverage is deterministic, so
+    // anti-aliased text no longer needs a crisp fallback mode.
     aa_text: bool,
 }
 
-// scale2x coverage 0..256 for source pixel (col,row) given its row bitmasks.
-fn atlas_cov_at(up: i32, mid: i32, dn: i32, col: i32) i32 {
-    let p: i32 = (mid >> (4 - col)) & 1;
-    let a: i32 = 0;
-    if (col >= 0 && col <= 4) { a = (up >> (4 - col)) & 1; }
-    let b: i32 = 0;
-    if (col + 1 <= 4) { b = (mid >> (4 - (col + 1))) & 1; }
-    let cc: i32 = 0;
-    if (col - 1 >= 0) { cc = (mid >> (4 - (col - 1))) & 1; }
-    let d: i32 = 0;
-    if (col >= 0 && col <= 4) { d = (dn >> (4 - col)) & 1; }
-    let e0: i32 = p;
-    let e1: i32 = p;
-    let e2: i32 = p;
-    let e3: i32 = p;
-    if (cc == a && cc != d && a != b) { e0 = a; }
-    if (a == b && a != cc && b != d) { e1 = b; }
-    if (d == cc && d != b && cc != a) { e2 = cc; }
-    if (b == d && b != a && d != cc) { e3 = d; }
-    return (e0 + e1 + e2 + e3) * 64;
+// Physical dimensions of the pixel buffer.
+fn fb_pw(f: *FB) i32 { return f.*.w * f.*.scale; }
+fn fb_ph(f: *FB) i32 { return f.*.h * f.*.scale; }
+
+fn fa_b64_val(c: i32) i32 {
+    if (c >= 'A' && c <= 'Z') { return c - 'A'; }
+    if (c >= 'a' && c <= 'z') { return c - 'a' + 26; }
+    if (c >= '0' && c <= '9') { return c - '0' + 52; }
+    if (c == '+') { return 62; }
+    if (c == '/') { return 63; }
+    return 0 - 1; // '=' padding
 }
 
 fn fb_build_atlas(f: *FB) void {
-    f.*.glyphs.len = 0;
-    let ch: i32 = 32;
-    while (ch < 128) {
-        let row: i32 = 0;
-        while (row < 9) {
-            list.push[i64](&f.*.glyphs, font_row(ch, row) as i64);
-            row = row + 1;
-        }
-        ch = ch + 1;
-    }
-    // precompute per-cell coverage from the just-built bitmap rows
-    f.*.cov.len = 0;
-    let c2: i32 = 32;
-    while (c2 < 128) {
-        let r2: i32 = 0;
-        while (r2 < 9) {
-            let up: i32 = 0;
-            if (r2 > 0) { up = f.*.glyphs.data[(c2 - 32) * 9 + r2 - 1] as i32; }
-            let mid: i32 = f.*.glyphs.data[(c2 - 32) * 9 + r2] as i32;
-            let dn: i32 = 0;
-            if (r2 < 8) { dn = f.*.glyphs.data[(c2 - 32) * 9 + r2 + 1] as i32; }
-            let cl: i32 = 0;
-            while (cl < 5) {
-                list.push[i64](&f.*.cov, atlas_cov_at(up, mid, dn, cl) as i64);
-                cl = cl + 1;
+    f.*.fcov.len = 0;
+    let ci: i32 = 0;
+    let acc: i32 = 0;
+    let bits: i32 = 0;
+    while (ci < fa_chunk_count()) {
+        let s: []u8 = fa_chunk(ci);
+        let i: i32 = 0;
+        while (i < s.len) {
+            let v: i32 = fa_b64_val(s[i] as i32);
+            if (v >= 0) {
+                acc = (acc * 64) + v;
+                bits = bits + 6;
+                if (bits >= 8) {
+                    bits = bits - 8;
+                    list.push[u8](&f.*.fcov, ((acc >> bits) & 255) as u8);
+                    acc = acc & ((1 << bits) - 1);
+                }
             }
-            r2 = r2 + 1;
+            i = i + 1;
         }
-        c2 = c2 + 1;
+        ci = ci + 1;
     }
 }
 
@@ -115,35 +103,59 @@ fn shade(c: i64, q: i32) i64 {
 }
 
 fn fb_new(w: i32, h: i32) FB {
+    return fb_new_scaled(w, h, 1);
+}
+
+fn fb_new_scaled(w: i32, h: i32, scale: i32) FB {
+    if (scale < 1) { scale = 1; }
+    let pw: i32 = w * scale;
+    let ph: i32 = h * scale;
     let f: FB = FB{
-        .px = list.make[i64](w * h),
-        .zb = list.make[i64](w * h),
+        .px = list.make[i64](pw * ph),
+        .zb = list.make[i64](pw * ph),
         .w = w,
         .h = h,
+        .scale = scale,
         .cx0 = 0,
         .cy0 = 0,
         .cx1 = w,
         .cy1 = h,
-        .glyphs = list.make[i64](96 * 9),
-        .cov = list.make[i64](96 * 45),
+        .fcov = list.make[u8](fa_cov_len()),
         .aa_text = true,
     };
-    f.px.len = w * h;
-    f.zb.len = w * h;
+    f.px.len = pw * ph;
+    f.zb.len = pw * ph;
     fb_build_atlas(&f);
     return f;
 }
 
 fn fb_resize(f: *FB, w: i32, h: i32) void {
     if (f.*.w == w && f.*.h == h) { return; }
+    let pw: i32 = w * f.*.scale;
+    let ph: i32 = h * f.*.scale;
     list.free[i64](&f.*.px);
     list.free[i64](&f.*.zb);
-    f.*.px = list.make[i64](w * h);
-    f.*.zb = list.make[i64](w * h);
-    f.*.px.len = w * h;
-    f.*.zb.len = w * h;
+    f.*.px = list.make[i64](pw * ph);
+    f.*.zb = list.make[i64](pw * ph);
+    f.*.px.len = pw * ph;
+    f.*.zb.len = pw * ph;
     f.*.w = w;
     f.*.h = h;
+    fb_clip_reset(f);
+}
+
+fn fb_set_scale(f: *FB, scale: i32) void {
+    if (scale < 1) { scale = 1; }
+    if (f.*.scale == scale) { return; }
+    let pw: i32 = f.*.w * scale;
+    let ph: i32 = f.*.h * scale;
+    list.free[i64](&f.*.px);
+    list.free[i64](&f.*.zb);
+    f.*.px = list.make[i64](pw * ph);
+    f.*.zb = list.make[i64](pw * ph);
+    f.*.px.len = pw * ph;
+    f.*.zb.len = pw * ph;
+    f.*.scale = scale;
     fb_clip_reset(f);
 }
 
@@ -169,43 +181,142 @@ fn fb_upscale(dst: *FB, src: *FB, scale: i32) void {
 }
 
 fn fb_clip(f: *FB, x0: i32, y0: i32, x1: i32, y1: i32) void {
-    f.*.cx0 = x0;
-    f.*.cy0 = y0;
-    f.*.cx1 = x1;
-    f.*.cy1 = y1;
+    let s: i32 = f.*.scale;
+    f.*.cx0 = x0 * s;
+    f.*.cy0 = y0 * s;
+    f.*.cx1 = x1 * s;
+    f.*.cy1 = y1 * s;
     if (f.*.cx0 < 0) { f.*.cx0 = 0; }
     if (f.*.cy0 < 0) { f.*.cy0 = 0; }
-    if (f.*.cx1 > f.*.w) { f.*.cx1 = f.*.w; }
-    if (f.*.cy1 > f.*.h) { f.*.cy1 = f.*.h; }
+    if (f.*.cx1 > fb_pw(f)) { f.*.cx1 = fb_pw(f); }
+    if (f.*.cy1 > fb_ph(f)) { f.*.cy1 = fb_ph(f); }
 }
 
 fn fb_clip_reset(f: *FB) void {
-    fb_clip(f, 0, 0, f.*.w, f.*.h);
+    f.*.cx0 = 0;
+    f.*.cy0 = 0;
+    f.*.cx1 = fb_pw(f);
+    f.*.cy1 = fb_ph(f);
 }
 
 fn px_set(f: *FB, x: i32, y: i32, c: i64) void {
-    if (x < f.*.cx0 || x >= f.*.cx1 || y < f.*.cy0 || y >= f.*.cy1) { return; }
-    f.*.px.data[y * f.*.w + x] = c;
+    let s: i32 = f.*.scale;
+    let px: i32 = x * s;
+    let py: i32 = y * s;
+    // fast path: scale 1, single pixel
+    if (s == 1) {
+        if (px < f.*.cx0 || px >= f.*.cx1 || py < f.*.cy0 || py >= f.*.cy1) { return; }
+        f.*.px.data[py * fb_pw(f) + px] = c;
+        return;
+    }
+    // scale > 1: fill s×s block of physical pixels
+    let pw: i32 = fb_pw(f);
+    let yy: i32 = 0;
+    while (yy < s) {
+        let ry: i32 = py + yy;
+        if (ry >= f.*.cy0 && ry < f.*.cy1) {
+            let base: i32 = ry * pw;
+            let xx: i32 = 0;
+            while (xx < s) {
+                let rx: i32 = px + xx;
+                if (rx >= f.*.cx0 && rx < f.*.cx1) { f.*.px.data[base + rx] = c; }
+                xx = xx + 1;
+            }
+        }
+        yy = yy + 1;
+    }
 }
 
 fn px_blend(f: *FB, x: i32, y: i32, c: i64, alpha: i32) void {
-    if (x < f.*.cx0 || x >= f.*.cx1 || y < f.*.cy0 || y >= f.*.cy1) { return; }
-    let idx: i32 = y * f.*.w + x;
-    f.*.px.data[idx] = mix(c, f.*.px.data[idx], alpha);
+    let s: i32 = f.*.scale;
+    let px: i32 = x * s;
+    let py: i32 = y * s;
+    if (s == 1) {
+        if (px < f.*.cx0 || px >= f.*.cx1 || py < f.*.cy0 || py >= f.*.cy1) { return; }
+        let idx: i32 = py * fb_pw(f) + px;
+        f.*.px.data[idx] = mix(c, f.*.px.data[idx], alpha);
+        return;
+    }
+    let pw: i32 = fb_pw(f);
+    let yy: i32 = 0;
+    while (yy < s) {
+        let ry: i32 = py + yy;
+        if (ry >= f.*.cy0 && ry < f.*.cy1) {
+            let base: i32 = ry * pw;
+            let xx: i32 = 0;
+            while (xx < s) {
+                let rx: i32 = px + xx;
+                if (rx >= f.*.cx0 && rx < f.*.cx1) {
+                    f.*.px.data[base + rx] = mix(c, f.*.px.data[base + rx], alpha);
+                }
+                xx = xx + 1;
+            }
+        }
+        yy = yy + 1;
+    }
+}
+
+// Z-buffer access scaled to physical resolution. The 3D rasterizer works in
+// logical coordinates; each logical cell maps to a scale×scale physical block
+// that shares one z-value so depth tests are consistent within the cell.
+fn zb_get(f: *FB, x: i32, y: i32) i64 {
+    let s: i32 = f.*.scale;
+    return f.*.zb.data[(y * s) * fb_pw(f) + (x * s)];
+}
+
+fn zb_set(f: *FB, x: i32, y: i32, z: i64) void {
+    let s: i32 = f.*.scale;
+    let px: i32 = x * s;
+    let py: i32 = y * s;
+    if (s == 1) {
+        if (px < f.*.cx0 || px >= f.*.cx1 || py < f.*.cy0 || py >= f.*.cy1) { return; }
+        f.*.zb.data[py * fb_pw(f) + px] = z;
+        return;
+    }
+    let pw: i32 = fb_pw(f);
+    let yy: i32 = 0;
+    while (yy < s) {
+        let ry: i32 = py + yy;
+        if (ry >= f.*.cy0 && ry < f.*.cy1) {
+            let base: i32 = ry * pw;
+            let xx: i32 = 0;
+            while (xx < s) {
+                let rx: i32 = px + xx;
+                if (rx >= f.*.cx0 && rx < f.*.cx1) { f.*.zb.data[base + rx] = z; }
+                xx = xx + 1;
+            }
+        }
+        yy = yy + 1;
+    }
+}
+
+// Clear a logical rect of the z-buffer to a given value (used by vp_clear).
+fn zb_clear_rect(f: *FB, x: i32, y: i32, w: i32, h: i32, z: i64) void {
+    let yy: i32 = 0;
+    while (yy < h) {
+        let xx: i32 = 0;
+        while (xx < w) {
+            zb_set(f, x + xx, y + yy, z);
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
 }
 
 fn fill_rect(f: *FB, x: i32, y: i32, w: i32, h: i32, c: i64) void {
-    let x0: i32 = x;
-    let y0: i32 = y;
-    let x1: i32 = x + w;
-    let y1: i32 = y + h;
+    let s: i32 = f.*.scale;
+    let x0: i32 = x * s;
+    let y0: i32 = y * s;
+    let x1: i32 = (x + w) * s;
+    let y1: i32 = (y + h) * s;
     if (x0 < f.*.cx0) { x0 = f.*.cx0; }
     if (y0 < f.*.cy0) { y0 = f.*.cy0; }
     if (x1 > f.*.cx1) { x1 = f.*.cx1; }
     if (y1 > f.*.cy1) { y1 = f.*.cy1; }
+    let pw: i32 = fb_pw(f);
     let yy: i32 = y0;
     while (yy < y1) {
-        let base: i32 = yy * f.*.w;
+        let base: i32 = yy * pw;
         let xx: i32 = x0;
         while (xx + 4 <= x1) {
             f.*.px.data[base + xx] = c;
@@ -223,17 +334,19 @@ fn fill_rect(f: *FB, x: i32, y: i32, w: i32, h: i32, c: i64) void {
 }
 
 fn blend_rect(f: *FB, x: i32, y: i32, w: i32, h: i32, c: i64, alpha: i32) void {
-    let x0: i32 = x;
-    let y0: i32 = y;
-    let x1: i32 = x + w;
-    let y1: i32 = y + h;
+    let s: i32 = f.*.scale;
+    let x0: i32 = x * s;
+    let y0: i32 = y * s;
+    let x1: i32 = (x + w) * s;
+    let y1: i32 = (y + h) * s;
     if (x0 < f.*.cx0) { x0 = f.*.cx0; }
     if (y0 < f.*.cy0) { y0 = f.*.cy0; }
     if (x1 > f.*.cx1) { x1 = f.*.cx1; }
     if (y1 > f.*.cy1) { y1 = f.*.cy1; }
+    let pw: i32 = fb_pw(f);
     let yy: i32 = y0;
     while (yy < y1) {
-        let base: i32 = yy * f.*.w;
+        let base: i32 = yy * pw;
         let xx: i32 = x0;
         while (xx < x1) {
             f.*.px.data[base + xx] = mix(c, f.*.px.data[base + xx], alpha);
@@ -266,18 +379,54 @@ fn rr_clamp_radius(w: i32, h: i32, r: i32) i32 {
 }
 
 // Fill one r-sized corner box whose arc center is (cx,cy), covering the disc.
+// All inputs are LOGICAL; coordinates and radius are scaled to physical pixels
+// so the arc coverage is evaluated at physical resolution (smooth at HiDPI).
 fn rr_corner(f: *FB, bx: i32, by: i32, r: i32, cx: f64, cy: f64, c: i64) void {
-    let rf: f64 = r as f64;
-    let py: i32 = by;
-    while (py < by + r) {
-        let px: i32 = bx;
-        while (px < bx + r) {
-            let dx: f64 = (px as f64) + 0.5 - cx;
-            let dy: f64 = (py as f64) + 0.5 - cy;
+    let s: i32 = f.*.scale;
+    if (s == 1) {
+        let rf: f64 = r as f64;
+        let py: i32 = by;
+        while (py < by + r) {
+            let px: i32 = bx;
+            while (px < bx + r) {
+                let dx: f64 = (px as f64) + 0.5 - cx;
+                let dy: f64 = (py as f64) + 0.5 - cy;
+                let d: f64 = sqrt(dx * dx + dy * dy);
+                let cov: f64 = rf + 0.5 - d;
+                if (cov >= 1.0) { px_set(f, px, py, c); }
+                else if (cov > 0.0) { px_blend(f, px, py, c, (cov * 256.0) as i32); }
+                px = px + 1;
+            }
+            py = py + 1;
+        }
+        return;
+    }
+    // scaled path: iterate physical pixels, convert back to logical for coverage
+    let rf: f64 = (r * s) as f64;
+    let bxp: i32 = bx * s;
+    let byp: i32 = by * s;
+    let rs: i32 = r * s;
+    let cxs: f64 = cx * (s as f64);
+    let cys: f64 = cy * (s as f64);
+    let pw: i32 = fb_pw(f);
+    let py: i32 = byp;
+    while (py < byp + rs) {
+        let base: i32 = py * pw;
+        let px: i32 = bxp;
+        while (px < bxp + rs) {
+            let dx: f64 = (px as f64) + 0.5 - cxs;
+            let dy: f64 = (py as f64) + 0.5 - cys;
             let d: f64 = sqrt(dx * dx + dy * dy);
             let cov: f64 = rf + 0.5 - d;
-            if (cov >= 1.0) { px_set(f, px, py, c); }
-            else if (cov > 0.0) { px_blend(f, px, py, c, (cov * 256.0) as i32); }
+            if (cov >= 1.0) {
+                if (px >= f.*.cx0 && px < f.*.cx1 && py >= f.*.cy0 && py < f.*.cy1) {
+                    f.*.px.data[base + px] = c;
+                }
+            } else if (cov > 0.0) {
+                if (px >= f.*.cx0 && px < f.*.cx1 && py >= f.*.cy0 && py < f.*.cy1) {
+                    f.*.px.data[base + px] = mix(c, f.*.px.data[base + px], (cov * 256.0) as i32);
+                }
+            }
             px = px + 1;
         }
         py = py + 1;
@@ -299,19 +448,50 @@ fn fill_round_rect(f: *FB, x: i32, y: i32, w: i32, h: i32, r: i32, c: i64) void 
 
 // Translucent rounded fill (arc alpha scales with the base alpha).
 fn rr_corner_blend(f: *FB, bx: i32, by: i32, r: i32, cx: f64, cy: f64, c: i64, alpha: i32) void {
-    let rf: f64 = r as f64;
-    let py: i32 = by;
-    while (py < by + r) {
-        let px: i32 = bx;
-        while (px < bx + r) {
-            let dx: f64 = (px as f64) + 0.5 - cx;
-            let dy: f64 = (py as f64) + 0.5 - cy;
+    let s: i32 = f.*.scale;
+    if (s == 1) {
+        let rf: f64 = r as f64;
+        let py: i32 = by;
+        while (py < by + r) {
+            let px: i32 = bx;
+            while (px < bx + r) {
+                let dx: f64 = (px as f64) + 0.5 - cx;
+                let dy: f64 = (py as f64) + 0.5 - cy;
+                let d: f64 = sqrt(dx * dx + dy * dy);
+                let cov: f64 = rf + 0.5 - d;
+                if (cov > 0.0) {
+                    let a: i32 = alpha;
+                    if (cov < 1.0) { a = (cov * (alpha as f64)) as i32; }
+                    px_blend(f, px, py, c, a);
+                }
+                px = px + 1;
+            }
+            py = py + 1;
+        }
+        return;
+    }
+    let rf: f64 = (r * s) as f64;
+    let bxp: i32 = bx * s;
+    let byp: i32 = by * s;
+    let rs: i32 = r * s;
+    let cxs: f64 = cx * (s as f64);
+    let cys: f64 = cy * (s as f64);
+    let pw: i32 = fb_pw(f);
+    let py: i32 = byp;
+    while (py < byp + rs) {
+        let base: i32 = py * pw;
+        let px: i32 = bxp;
+        while (px < bxp + rs) {
+            let dx: f64 = (px as f64) + 0.5 - cxs;
+            let dy: f64 = (py as f64) + 0.5 - cys;
             let d: f64 = sqrt(dx * dx + dy * dy);
             let cov: f64 = rf + 0.5 - d;
             if (cov > 0.0) {
                 let a: i32 = alpha;
                 if (cov < 1.0) { a = (cov * (alpha as f64)) as i32; }
-                px_blend(f, px, py, c, a);
+                if (px >= f.*.cx0 && px < f.*.cx1 && py >= f.*.cy0 && py < f.*.cy1) {
+                    f.*.px.data[base + px] = mix(c, f.*.px.data[base + px], a);
+                }
             }
             px = px + 1;
         }
@@ -334,18 +514,47 @@ fn blend_round_rect(f: *FB, x: i32, y: i32, w: i32, h: i32, r: i32, c: i64, alph
 
 // 1px anti-aliased rounded border: straight edges plus arc rings.
 fn rr_ring(f: *FB, bx: i32, by: i32, r: i32, cx: f64, cy: f64, c: i64) void {
-    let rf: f64 = r as f64;
-    let py: i32 = by;
-    while (py < by + r) {
-        let px: i32 = bx;
-        while (px < bx + r) {
-            let dx: f64 = (px as f64) + 0.5 - cx;
-            let dy: f64 = (py as f64) + 0.5 - cy;
+    let s: i32 = f.*.scale;
+    if (s == 1) {
+        let rf: f64 = r as f64;
+        let py: i32 = by;
+        while (py < by + r) {
+            let px: i32 = bx;
+            while (px < bx + r) {
+                let dx: f64 = (px as f64) + 0.5 - cx;
+                let dy: f64 = (py as f64) + 0.5 - cy;
+                let d: f64 = sqrt(dx * dx + dy * dy);
+                let e: f64 = d - (rf - 0.5);
+                if (e < 0.0) { e = 0.0 - e; }
+                let cov: f64 = 1.0 - e;
+                if (cov > 0.0) { px_blend(f, px, py, c, (cov * 256.0) as i32); }
+                px = px + 1;
+            }
+            py = py + 1;
+        }
+        return;
+    }
+    let rf: f64 = (r * s) as f64;
+    let bxp: i32 = bx * s;
+    let byp: i32 = by * s;
+    let rs: i32 = r * s;
+    let cxs: f64 = cx * (s as f64);
+    let cys: f64 = cy * (s as f64);
+    let pw: i32 = fb_pw(f);
+    let py: i32 = byp;
+    while (py < byp + rs) {
+        let base: i32 = py * pw;
+        let px: i32 = bxp;
+        while (px < bxp + rs) {
+            let dx: f64 = (px as f64) + 0.5 - cxs;
+            let dy: f64 = (py as f64) + 0.5 - cys;
             let d: f64 = sqrt(dx * dx + dy * dy);
             let e: f64 = d - (rf - 0.5);
             if (e < 0.0) { e = 0.0 - e; }
             let cov: f64 = 1.0 - e;
-            if (cov > 0.0) { px_blend(f, px, py, c, (cov * 256.0) as i32); }
+            if (cov > 0.0 && px >= f.*.cx0 && px < f.*.cx1 && py >= f.*.cy0 && py < f.*.cy1) {
+                f.*.px.data[base + px] = mix(c, f.*.px.data[base + px], (cov * 256.0) as i32);
+            }
             px = px + 1;
         }
         py = py + 1;
@@ -382,12 +591,13 @@ fn vline(f: *FB, x: i32, y: i32, h: i32, c: i64) void {
     fill_rect(f, x, y, 1, h, c);
 }
 
-// Bresenham 2D line.
+// Bresenham 2D line (logical coordinates; pixels scaled internally).
 fn line2d(f: *FB, x0_: i32, y0_: i32, x1_: i32, y1_: i32, c: i64) void {
-    let x0: i32 = x0_;
-    let y0: i32 = y0_;
-    let x1: i32 = x1_;
-    let y1: i32 = y1_;
+    let s: i32 = f.*.scale;
+    let x0: i32 = x0_ * s;
+    let y0: i32 = y0_ * s;
+    let x1: i32 = x1_ * s;
+    let y1: i32 = y1_ * s;
     let dx: i32 = x1 - x0;
     if (dx < 0) { dx = 0 - dx; }
     let dy: i32 = y1 - y0;
@@ -398,9 +608,12 @@ fn line2d(f: *FB, x0_: i32, y0_: i32, x1_: i32, y1_: i32, c: i64) void {
     let sy: i32 = 1;
     if (y0 > y1) { sy = 0 - 1; }
     let err: i32 = dx + dy;
+    let pw: i32 = fb_pw(f);
     let running: bool = true;
     while (running) {
-        px_set(f, x0, y0, c);
+        if (x0 >= f.*.cx0 && x0 < f.*.cx1 && y0 >= f.*.cy0 && y0 < f.*.cy1) {
+            f.*.px.data[y0 * pw + x0] = c;
+        }
         if (x0 == x1 && y0 == y1) {
             running = false;
         } else {
@@ -418,130 +631,176 @@ fn line2d(f: *FB, x0_: i32, y0_: i32, x1_: i32, y1_: i32, c: i64) void {
 }
 
 // ── text ─────────────────────────────────────────────────────────────────────
+// Proportional anti-aliased text from the baked coverage atlas. `y` is the
+// TOP of the line box; the baseline sits at y + fa_ascent(face). Coverage is
+// 8-bit alpha baked at generation time, so rendering is deterministic.
 
-// One glyph row bitmask (atlas-backed; falls back to the generator switch).
-fn glyph_row_bits(f: *FB, ch: i32, row: i32) i32 {
-    if (row < 0 || row >= 9) { return 0; }
-    if (ch >= 32 && ch < 128 && f.*.glyphs.len >= 96 * 9) {
-        return f.*.glyphs.data[(ch - 32) * 9 + row] as i32;
-    }
-    return font_row(ch, row);
-}
-
-fn glyph_on(bits: i32, col: i32) i32 {
-    if (col < 0 || col > 4) { return 0; }
-    return (bits >> (4 - col)) & 1;
-}
-
-// Anti-aliased glyph blit: reads the precomputed scale2x coverage atlas, so
-// solid interiors are opaque set-pixels and only diagonal edges pay a blend.
-// Softens the stair-steps without going blurry (Section 3.11 look).
-fn draw_char_aa(f: *FB, x: i32, y: i32, ch: i32, c: i64) void {
-    let base: i32 = (ch - 32) * 45;
-    let row: i32 = 0;
-    while (row < 9) {
-        let rbase: i32 = base + row * 5;
-        let col: i32 = 0;
-        while (col < 5) {
-            let cov: i32 = f.*.cov.data[rbase + col] as i32;
-            if (cov >= 256) { px_set(f, x + col, y + row, c); }
-            else if (cov > 0) { px_blend(f, x + col, y + row, c, cov); }
-            col = col + 1;
+// Blit one glyph at pen position (x, line-top y); returns the pen advance.
+// At scale > 1 each coverage pixel becomes a scale×scale block so the
+// anti-aliased ramp is preserved at physical resolution.
+fn draw_glyph(f: *FB, x: i32, y: i32, face: i32, ch: i32, c: i64) i32 {
+    let g: i64 = fa_g(face, ch);
+    if (g == 0) { return fa_adv(face, ' ' as i32); }
+    let adv: i32 = (g & 63) as i32;
+    let gx: i32 = x + (((g >> 6) & 63) as i32) - 16;
+    let gy: i32 = y + (((g >> 12) & 63) as i32) - 8;
+    let gw: i32 = ((g >> 18) & 63) as i32;
+    let gh: i32 = ((g >> 24) & 63) as i32;
+    let off: i32 = (g >> 30) as i32;
+    let s: i32 = f.*.scale;
+    if (s == 1) {
+        let row: i32 = 0;
+        while (row < gh) {
+            let rbase: i32 = off + row * gw;
+            let col: i32 = 0;
+            while (col < gw) {
+                let cov: i32 = f.*.fcov.data[rbase + col] as i32;
+                if (cov >= 255) { px_set(f, gx + col, gy + row, c); }
+                else if (cov > 0) { px_blend(f, gx + col, gy + row, c, cov + 1); }
+                col = col + 1;
+            }
+            row = row + 1;
         }
-        row = row + 1;
+        return adv;
     }
-}
-
-fn draw_char(f: *FB, x: i32, y: i32, ch: i32, c: i64, scale: i32) void {
-    if (scale == 1 && f.*.aa_text && ch >= 32 && ch < 128 && f.*.cov.len >= 96 * 45) {
-        draw_char_aa(f, x, y, ch, c);
-        return;
-    }
-    // crisp path (also used for HiDPI scaled text and deterministic probes)
-    let base: i32 = (ch - 32) * 9;
-    let use_atlas: bool = ch >= 32 && ch < 128 && f.*.glyphs.len >= 96 * 9;
+    // scaled: replicate each coverage pixel into s×s physical block
+    let pw: i32 = fb_pw(f);
+    let gxp: i32 = gx * s;
+    let gyp: i32 = gy * s;
     let row: i32 = 0;
-    while (row < 9) {
-        let bits: i32 = 0;
-        if (use_atlas) { bits = f.*.glyphs.data[base + row] as i32; }
-        else { bits = font_row(ch, row); }
+    while (row < gh) {
+        let rbase: i32 = off + row * gw;
         let col: i32 = 0;
-        while (col < 5) {
-            if (((bits >> (4 - col)) & 1) == 1) {
-                if (scale == 1) {
-                    px_set(f, x + col, y + row, c);
-                } else {
-                    fill_rect(f, x + col * scale, y + row * scale, scale, scale, c);
+        while (col < gw) {
+            let cov: i32 = f.*.fcov.data[rbase + col] as i32;
+            if (cov > 0) {
+                let bx0: i32 = gxp + col * s;
+                let by0: i32 = gyp + row * s;
+                let a: i32 = cov + 1;
+                let yy: i32 = 0;
+                while (yy < s) {
+                    let ry: i32 = by0 + yy;
+                    if (ry >= f.*.cy0 && ry < f.*.cy1) {
+                        let db: i32 = ry * pw;
+                        let xx: i32 = 0;
+                        while (xx < s) {
+                            let rx: i32 = bx0 + xx;
+                            if (rx >= f.*.cx0 && rx < f.*.cx1) {
+                                if (cov >= 255) { f.*.px.data[db + rx] = c; }
+                                else { f.*.px.data[db + rx] = mix(c, f.*.px.data[db + rx], a); }
+                            }
+                            xx = xx + 1;
+                        }
+                    }
+                    yy = yy + 1;
                 }
             }
             col = col + 1;
         }
         row = row + 1;
     }
+    return adv;
 }
 
+fn draw_text_face(f: *FB, x: i32, y: i32, face: i32, s: []u8, c: i64) void {
+    let pen: i32 = x;
+    let i: i32 = 0;
+    while (i < s.len) {
+        pen = pen + draw_glyph(f, pen, y, face, s[i] as i32, c);
+        i = i + 1;
+    }
+}
+
+fn text_wf(face: i32, s: []u8) i32 {
+    let w: i32 = 0;
+    let i: i32 = 0;
+    while (i < s.len) {
+        w = w + fa_adv(face, s[i] as i32);
+        i = i + 1;
+    }
+    return w;
+}
+
+// Vertical offset that centers a face's line box in a row of height `h`.
+fn text_cy(face: i32, h: i32) i32 {
+    let o: i32 = (h - fa_line_h(face)) / 2;
+    if (o < 0 - 2) { o = 0 - 2; }
+    return o;
+}
+
+// Compatibility wrappers: the pre-atlas API drew the default face.
 fn draw_text(f: *FB, x: i32, y: i32, s: []u8, c: i64) void {
-    let i: i32 = 0;
-    while (i < s.len) {
-        draw_char(f, x + i * 6, y, s[i] as i32, c, 1);
-        i = i + 1;
-    }
-}
-
-fn draw_text_scaled(f: *FB, x: i32, y: i32, s: []u8, c: i64, scale: i32) void {
-    let i: i32 = 0;
-    while (i < s.len) {
-        draw_char(f, x + i * 6 * scale, y, s[i] as i32, c, scale);
-        i = i + 1;
-    }
+    draw_text_face(f, x, y, face_body(), s, c);
 }
 
 fn text_w(s: []u8) i32 {
-    return s.len * 6;
+    return text_wf(face_body(), s);
 }
 
-// Draw at most `maxw` pixels of text; overflow ends in a '.' so truncation is
-// visible and text never touches a border it shouldn't (Section 3.2).
-fn draw_text_max(f: *FB, x: i32, y: i32, s: []u8, c: i64, maxw: i32) void {
-    let maxc: i32 = maxw / 6;
-    if (maxc <= 0) { return; }
-    if (s.len <= maxc) {
-        draw_text(f, x, y, s, c);
+// Draw at most `maxw` pixels of text; overflow ends in an ellipsis so
+// truncation is visible and text never touches a border it shouldn't.
+fn draw_text_face_max(f: *FB, x: i32, y: i32, face: i32, s: []u8, c: i64, maxw: i32) void {
+    if (maxw <= 0) { return; }
+    if (text_wf(face, s) <= maxw) {
+        draw_text_face(f, x, y, face, s, c);
         return;
     }
+    let dot: i32 = fa_adv(face, '.' as i32);
+    let pen: i32 = x;
+    let lim: i32 = x + maxw - dot * 2;
     let i: i32 = 0;
-    while (i < maxc - 1) {
-        draw_char(f, x + i * 6, y, s[i] as i32, c, 1);
+    while (i < s.len) {
+        let ch: i32 = s[i] as i32;
+        if (pen + fa_adv(face, ch) > lim) {
+            pen = pen + draw_glyph(f, pen, y, face, '.' as i32, c);
+            pen = pen + draw_glyph(f, pen, y, face, '.' as i32, c);
+            return;
+        }
+        pen = pen + draw_glyph(f, pen, y, face, ch, c);
         i = i + 1;
     }
-    draw_char(f, x + i * 6, y, '.' as i32, c, 1);
+}
+
+fn draw_text_max(f: *FB, x: i32, y: i32, s: []u8, c: i64, maxw: i32) void {
+    draw_text_face_max(f, x, y, face_body(), s, c, maxw);
 }
 
 // draw integer as text; returns width drawn
-fn draw_int(f: *FB, x: i32, y: i32, v: i64, c: i64) i32 {
+fn draw_int_face(f: *FB, x: i32, y: i32, face: i32, v: i64, c: i64) i32 {
     let s: []u8 = _zag_i64_to_str(v);
-    draw_text(f, x, y, s, c);
-    return text_w(s);
+    draw_text_face(f, x, y, face, s, c);
+    let w: i32 = text_wf(face, s);
+    _zag_str_free(s);
+    return w;
+}
+
+fn draw_int(f: *FB, x: i32, y: i32, v: i64, c: i64) i32 {
+    return draw_int_face(f, x, y, face_body(), v, c);
 }
 
 // ── output ───────────────────────────────────────────────────────────────────
 
-// Raw dump for the display shim: w*h i64 (low 4 bytes = 0RGB), tight.
+// Raw dump for the display shim: pw*ph i64 (low 4 bytes = 0RGB), tight.
 fn fb_write_shm(f: *FB, path: []u8) void {
+    let pw: i32 = fb_pw(f);
+    let ph: i32 = fb_ph(f);
     let raw: *i8 = f.*.px.data as *i8;
-    let bytes: []u8 = raw[0..f.*.w * f.*.h * 8];
+    let bytes: []u8 = raw[0..pw * ph * 8];
     let rc: i32 = _zag_write_file(path, bytes);
     if (rc != 0) { _zag_eprintln("fb: /dev/shm write failed"); }
 }
 
 // Binary PPM dump: deliberately dependency-free and independent of X11.
 fn fb_write_ppm(f: *FB, path: []u8) void {
-    let header: []u8 = _zag_str_concat(_zag_str_concat(_zag_str_concat("P6\n", _zag_i64_to_str(f.*.w as i64)), " "), _zag_str_concat(_zag_i64_to_str(f.*.h as i64), "\n255\n"));
-    let out: list.ArrayList[u8] = list.make[u8](header.len + f.*.w * f.*.h * 3);
+    let pw: i32 = fb_pw(f);
+    let ph: i32 = fb_ph(f);
+    let npix: i32 = pw * ph;
+    let header: []u8 = _zag_str_concat(_zag_str_concat(_zag_str_concat("P6\n", _zag_i64_to_str(pw as i64)), " "), _zag_str_concat(_zag_i64_to_str(ph as i64), "\n255\n"));
+    let out: list.ArrayList[u8] = list.make[u8](header.len + npix * 3);
     let hi: i32 = 0;
     while (hi < header.len) { push_u8(&out, header[hi]); hi = hi + 1; }
     let i: i32 = 0;
-    while (i < f.*.w * f.*.h) {
+    while (i < npix) {
         let c: i64 = f.*.px.data[i];
         push_u8(&out, col_r(c) as u8);
         push_u8(&out, col_g(c) as u8);
@@ -575,10 +834,11 @@ fn fb_test_pattern(f: *FB) void {
     rect_outline(f, 0, 0, f.*.w, f.*.h, rgb(255, 0, 255));
 }
 
-// BMP screenshot (24-bit, bottom-up) for smoke verification.
+// BMP screenshot (24-bit, bottom-up) for smoke verification. Writes the
+// physical-resolution pixel buffer.
 fn fb_write_bmp(f: *FB, path: []u8) void {
-    let w: i32 = f.*.w;
-    let h: i32 = f.*.h;
+    let w: i32 = fb_pw(f);
+    let h: i32 = fb_ph(f);
     let row_bytes: i32 = w * 3;
     let pad: i32 = (4 - (row_bytes % 4)) % 4;
     let data_size: i32 = (row_bytes + pad) * h;

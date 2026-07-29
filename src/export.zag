@@ -7,10 +7,16 @@
 
 fn ex_text(out: *list.ArrayList[u8], text: []u8) void { ser_text(out, text); }
 fn ex_i(out: *list.ArrayList[u8], v: i64) void { ser_int(out, v); }
+fn ex_nl(out: *list.ArrayList[u8]) void {
+    // ser_int deliberately appends a token separator. Human-readable export
+    // lines should not retain that separator as trailing whitespace.
+    if (out.*.len > 0 && out.*.data[out.*.len - 1] == 32) { out.*.len = out.*.len - 1; }
+    ex_text(out, "\n");
+}
 
 fn export_bom(s: *Scene, path: []u8) bool {
     let out: list.ArrayList[u8] = list.make[u8](256);
-    ex_text(&out, "# Triton deterministic bill of materials\n");
+    ex_text(&out, "# PrismStudio deterministic bill of materials\n");
     let k: i32 = 0;
     while (k < kind_count()) {
         let count: i32 = 0;
@@ -25,7 +31,7 @@ fn export_bom(s: *Scene, path: []u8) bool {
 
 fn export_netlist(s: *Scene, path: []u8) bool {
     let out: list.ArrayList[u8] = list.make[u8](1024);
-    ex_text(&out, "# Triton netlist v1\n");
+    ex_text(&out, "# PrismStudio netlist v1\n");
     let i: i32 = 0;
     while (i < s.*.comps.len) {
         let c: Comp = s.*.comps.data[i];
@@ -51,13 +57,13 @@ fn ex_param(out: *list.ArrayList[u8], name_: []u8, p: PhysicalParam) void {
     ex_text(out, " units="); ex_text(out, p.units); ex_text(out, " class="); ex_text(out, evidence_class_name(p.confidence));
     ex_text(out, " source="); ex_text(out, p.source); ex_text(out, " version="); ex_text(out, p.source_version);
     ex_text(out, " date="); ex_text(out, p.date_); ex_text(out, " method="); ex_text(out, p.method);
-    ex_text(out, " uncertainty_x1000000="); ex_i(out, (p.uncertainty * 1000000.0) as i64); ex_text(out, "\n");
+    ex_text(out, " uncertainty_x1000000="); ex_i(out, (p.uncertainty * 1000000.0) as i64); ex_nl(out);
 }
 
 fn export_models(s: *Scene, path: []u8) bool {
     let out: list.ArrayList[u8] = list.make[u8](1024);
-    ex_text(&out, "# Triton device model manifest v1\nschema = "); ex_i(&out, s.*.model.schema_version as i64);
-    ex_text(&out, "\nid = "); ex_text(&out, s.*.model.id); ex_text(&out, "\n");
+    ex_text(&out, "# PrismStudio device model manifest v1\nschema = "); ex_i(&out, s.*.model.schema_version as i64); ex_nl(&out);
+    ex_text(&out, "id = "); ex_text(&out, s.*.model.id); ex_text(&out, "\n");
     ex_param(&out, "pitch_nm", s.*.model.pitch_nm); ex_param(&out, "group_index", s.*.model.group_index);
     ex_param(&out, "emitter_rate_ghz", s.*.model.emitter_rate_ghz); ex_param(&out, "chamber_rate_ghz", s.*.model.chamber_rate_ghz);
     ex_param(&out, "detector_rate_ghz", s.*.model.detector_rate_ghz);
@@ -86,7 +92,7 @@ fn export_models(s: *Scene, path: []u8) bool {
 
 fn export_report(s: *Scene, sim: *Sim, path: []u8) bool {
     let out: list.ArrayList[u8] = list.make[u8](512);
-    ex_text(&out, "# Triton verification report v1\nverification_level = software-simulation\nfabricated_hardware = false\nlaboratory_validated = false\n");
+    ex_text(&out, "# PrismStudio verification report v1\nverification_level = software-simulation\nfabricated_hardware = false\nlaboratory_validated = false\n");
     ex_text(&out, "model_complete = "); if (model_complete(s.*.model)) { ex_text(&out, "true\n"); } else { ex_text(&out, "false\n"); }
     ex_text(&out, "components = "); ex_i(&out, s.*.comps.len as i64); ex_text(&out, "\nguides = "); ex_i(&out, s.*.guides.len as i64);
     ex_text(&out, "\nderived_clock_mhz = "); ex_i(&out, (sim.*.clock_ghz * 1000.0) as i64); ex_text(&out, "\n");
@@ -97,7 +103,7 @@ fn export_report(s: *Scene, sim: *Sim, path: []u8) bool {
 fn export_trace(s: *Scene, sim: *Sim, path: []u8, steps: i32) bool {
     if (steps < 1 || steps > limit_trace_steps()) { return false; }
     let out: list.ArrayList[u8] = list.make[u8](1024);
-    ex_text(&out, "# Triton deterministic trace v1\nmode = ");
+    ex_text(&out, "# PrismStudio deterministic trace v1\nmode = ");
     if (sim.*.mode == SimMode.Functional) { ex_text(&out, "functional\n"); }
     else { ex_text(&out, "physical\n"); }
     sim_recompile(sim, s);

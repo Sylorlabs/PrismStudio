@@ -91,7 +91,7 @@ fn audit_redact(s: []u8) []u8 {
 }
 
 fn cap_load() i64 {
-    let raw: []u8 = _zag_getenv("TRITON_CAPS");
+    let raw: []u8 = _zag_getenv("PRISMSTUDIO_CAPS");
     if (_zag_strcmp(raw, "all") == 1) { return 255; }
     if (raw.len == 0) { return cap_read() | cap_inspect() | cap_simulate(); }
     let bits: i64 = 0;
@@ -116,10 +116,13 @@ fn audit_cpath(path: []u8) list.ArrayList[u8] {
     return b;
 }
 
+// Append-only audit writer. Runs on EVERY agent/MCP request in long-lived
+// servers, so it must leak nothing: every concat/redact/i64_to_str temporary
+// below is freed before return. getenv results are borrowed — never freed.
 fn audit_append(state: []u8, line: []u8, required: i64) void {
-    let path: []u8 = _zag_getenv("TRITON_AUDIT");
-    if (path.len == 0) { path = ".triton/audit.log"; }
-    let actor: []u8 = _zag_getenv("TRITON_ACTOR");
+    let path: []u8 = _zag_getenv("PRISMSTUDIO_AUDIT");
+    if (path.len == 0) { path = ".prismstudio/audit.log"; }
+    let actor: []u8 = _zag_getenv("PRISMSTUDIO_ACTOR");
     if (actor.len == 0) { actor = "local-agent"; }
     let safe_actor: []u8 = audit_redact(actor);
     let safe_line: []u8 = audit_redact(line);
@@ -127,9 +130,11 @@ fn audit_append(state: []u8, line: []u8, required: i64) void {
     let b: []u8 = _zag_str_concat(a, " state=");
     let c: []u8 = _zag_str_concat(b, state);
     let d: []u8 = _zag_str_concat(c, " required=");
-    let e: []u8 = _zag_str_concat(d, _zag_i64_to_str(required));
+    let req: []u8 = _zag_i64_to_str(required);
+    let e: []u8 = _zag_str_concat(d, req);
     let f: []u8 = _zag_str_concat(e, " request=");
-    let record: []u8 = _zag_str_concat(_zag_str_concat(f, safe_line), "\n");
+    let fl: []u8 = _zag_str_concat(f, safe_line);
+    let record: []u8 = _zag_str_concat(fl, "\n");
     let cp: list.ArrayList[u8] = audit_cpath(path);
     let fd: i64 = _zag_raw_syscall(2, cp.data as i64, 1089, 420, 0, 0, 0);
     if (fd >= 0) {
@@ -137,15 +142,39 @@ fn audit_append(state: []u8, line: []u8, required: i64) void {
         let _c: i64 = _zag_raw_syscall(3, fd, 0, 0, 0, 0, 0);
     }
     list.free[u8](&cp);
+    _zag_str_free(safe_actor);
+    _zag_str_free(safe_line);
+    _zag_str_free(a);
+    _zag_str_free(b);
+    _zag_str_free(c);
+    _zag_str_free(d);
+    _zag_str_free(req);
+    _zag_str_free(e);
+    _zag_str_free(f);
+    _zag_str_free(fl);
+    _zag_str_free(record);
 }
 
 fn audit_append_result(line: []u8, result: []u8, required: i64, rev: i64, affected: i32) void {
     let detail: []u8 = _zag_str_concat(line, " result=");
     let d2: []u8 = _zag_str_concat(detail, result);
     let d3: []u8 = _zag_str_concat(d2, " revision=");
-    let d4: []u8 = _zag_str_concat(d3, _zag_i64_to_str(rev));
+    let revs: []u8 = _zag_i64_to_str(rev);
+    let d4: []u8 = _zag_str_concat(d3, revs);
     let d5: []u8 = _zag_str_concat(d4, " affected_id=");
-    let d6: []u8 = _zag_str_concat(d5, _zag_i64_to_str(affected as i64));
+    let affs: []u8 = _zag_i64_to_str(affected as i64);
+    let d6: []u8 = _zag_str_concat(d5, affs);
     let d7: []u8 = _zag_str_concat(d6, " undo_token=");
-    audit_append("success", _zag_str_concat(d7, _zag_i64_to_str(rev)), required);
+    let d8: []u8 = _zag_str_concat(d7, revs);
+    audit_append("success", d8, required);
+    _zag_str_free(detail);
+    _zag_str_free(d2);
+    _zag_str_free(d3);
+    _zag_str_free(revs);
+    _zag_str_free(d4);
+    _zag_str_free(d5);
+    _zag_str_free(affs);
+    _zag_str_free(d6);
+    _zag_str_free(d7);
+    _zag_str_free(d8);
 }

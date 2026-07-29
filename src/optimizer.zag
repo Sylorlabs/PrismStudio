@@ -12,15 +12,24 @@
 @import("sim.zag")
 @import("components.zag")
 @import("math3d.zag")
+@import("editops.zag")
 
 // ── rewrite families (Section 20.2) ─────────────────────────────────────────
 fn opt_family_none() i32 { return 0; }
 fn opt_family_dead_path() i32 { return 1; }
 fn opt_family_const_collapse() i32 { return 2; }
+fn opt_family_cse() i32 { return 3; }
+fn opt_family_factoring() i32 { return 4; }
+fn opt_family_route_consolidation() i32 { return 5; }
+fn opt_family_placement_balance() i32 { return 6; }
 
 fn opt_family_name(f: i32) []u8 {
     if (f == 1) { return "dead-path elimination"; }
     if (f == 2) { return "constant-op collapse"; }
+    if (f == 3) { return "common-subexpression elimination"; }
+    if (f == 4) { return "operation factoring"; }
+    if (f == 5) { return "route consolidation"; }
+    if (f == 6) { return "placement/layer balancing"; }
     return "none";
 }
 
@@ -243,12 +252,26 @@ struct OptRelabel {
     new_op: i32,
 }
 
+// Exact post-rewrite guide snapshot. Paths are owned by the proposal. Keeping
+// endpoint and path edits together prevents a graph rewrite from ever leaving
+// geometrically stale guide endpoints.
+struct OptGuideEdit {
+    guide: Guide,
+}
+
+struct OptMove {
+    comp_id: i32,
+    new_origin: Vox,
+}
+
 struct OptProposal {
     family: i32,
     valid: bool,        // a verified, strictly-improving proposal exists
     equivalent: bool,   // passed output-equivalence verification
     removed: list.ArrayList[i32],           // component ids to delete (with guides)
     relabels: list.ArrayList[OptRelabel],   // chamber ops to relabel in place
+    guides: list.ArrayList[OptGuideEdit],   // exact endpoint/path replacements
+    moves: list.ArrayList[OptMove],         // component placement replacements
     before: OptCost,
     after: OptCost,
 }
@@ -258,6 +281,8 @@ fn opt_proposal_none() OptProposal {
         .family = 0, .valid = false, .equivalent = false,
         .removed = list.make[i32](4),
         .relabels = list.make[OptRelabel](4),
+        .guides = list.make[OptGuideEdit](4),
+        .moves = list.make[OptMove](4),
         .before = opt_cost_zero(), .after = opt_cost_zero(),
     };
 }
@@ -265,11 +290,56 @@ fn opt_proposal_none() OptProposal {
 fn opt_proposal_free(p: *OptProposal) void {
     list.free[i32](&p.*.removed);
     list.free[OptRelabel](&p.*.relabels);
+    let gi: i32 = 0;
+    while (gi < p.*.guides.len) {
+        list.free[Vox](&p.*.guides.data[gi].guide.path);
+        gi = gi + 1;
+    }
+    list.free[OptGuideEdit](&p.*.guides);
+    list.free[OptMove](&p.*.moves);
 }
 
-// Apply a proposal's edits (relabels first, then removals) to a scene in place.
+fn opt_replace_guide(s: *Scene, replacement: Guide) bool {
+    let gi: i32 = scene_guide_index(s, replacement.id);
+    if (gi < 0) { return false; }
+    let old: Guide = s.*.guides.data[gi];
+    port_use_add(s, old.from_c, old.from_p, 0 - 1);
+    port_use_add(s, old.to_c, old.to_p, 0 - 1);
+    list.free[Vox](&s.*.guides.data[gi].path);
+    s.*.guides.data[gi] = guide_clone(replacement);
+    port_use_add(s, replacement.from_c, replacement.from_p, 1);
+    port_use_add(s, replacement.to_c, replacement.to_p, 1);
+    s.*.guide_idx_dirty = true;
+    scene_mark_topo_guides(s);
+    return true;
+}
+
+// Apply a proposal's edits in dependency order: move bodies (which reroutes),
+// replace exact guide snapshots, relabel operations, then remove obsolete parts.
 fn opt_apply_edits(s: *Scene, removed: list.ArrayList[i32],
-                   relabels: list.ArrayList[OptRelabel]) void {
+                   relabels: list.ArrayList[OptRelabel],
+                   guides: list.ArrayList[OptGuideEdit],
+                   moves: list.ArrayList[OptMove]) void {
+    let mi: i32 = 0;
+    while (mi < moves.len) {
+        let ci0: i32 = scene_comp_index(s, moves.data[mi].comp_id);
+        if (ci0 >= 0) {
+            let one: list.ArrayList[i32] = list.make[i32](1);
+            list.push[i32](&one, moves.data[mi].comp_id);
+            let old: Vox = s.*.comps.data[ci0].origin;
+            let delta: Vox = vox(moves.data[mi].new_origin.x - old.x,
+                                 moves.data[mi].new_origin.y - old.y,
+                                 moves.data[mi].new_origin.z - old.z);
+            if (group_can_move(s, &one, delta) == 0) { group_move(s, &one, delta); }
+            list.free[i32](&one);
+        }
+        mi = mi + 1;
+    }
+    let gi: i32 = 0;
+    while (gi < guides.len) {
+        let _ok: bool = opt_replace_guide(s, guides.data[gi].guide);
+        gi = gi + 1;
+    }
     let ri: i32 = 0;
     while (ri < relabels.len) {
         let rl: OptRelabel = relabels.data[ri];
@@ -289,15 +359,19 @@ fn opt_apply_edits(s: *Scene, removed: list.ArrayList[i32],
 
 // Build an independent candidate scene with the proposal's edits applied.
 fn opt_build_candidate(s: *Scene, removed: list.ArrayList[i32],
-                       relabels: list.ArrayList[OptRelabel]) *Scene {
+                       relabels: list.ArrayList[OptRelabel],
+                       guides: list.ArrayList[OptGuideEdit],
+                       moves: list.ArrayList[OptMove]) *Scene {
     let cand: *Scene = scene_clone(s);
-    opt_apply_edits(cand, removed, relabels);
+    opt_apply_edits(cand, removed, relabels, guides, moves);
     return cand;
 }
 
 // True only if every component the proposal touches is still present in `s`.
 fn opt_edits_present(s: *Scene, removed: list.ArrayList[i32],
-                     relabels: list.ArrayList[OptRelabel]) bool {
+                     relabels: list.ArrayList[OptRelabel],
+                     guides: list.ArrayList[OptGuideEdit],
+                     moves: list.ArrayList[OptMove]) bool {
     let di: i32 = 0;
     while (di < removed.len) {
         if (scene_comp_index(s, removed.data[di]) < 0) { return false; }
@@ -307,6 +381,16 @@ fn opt_edits_present(s: *Scene, removed: list.ArrayList[i32],
     while (ri < relabels.len) {
         if (scene_comp_index(s, relabels.data[ri].comp_id) < 0) { return false; }
         ri = ri + 1;
+    }
+    let gi: i32 = 0;
+    while (gi < guides.len) {
+        if (scene_guide_index(s, guides.data[gi].guide.id) < 0) { return false; }
+        gi = gi + 1;
+    }
+    let mi: i32 = 0;
+    while (mi < moves.len) {
+        if (scene_comp_index(s, moves.data[mi].comp_id) < 0) { return false; }
+        mi = mi + 1;
     }
     return true;
 }
@@ -362,14 +446,363 @@ fn opt_gain_report(p: OptProposal) []u8 {
 // and a strict cost improvement. Returns the candidate's cost via `after`.
 fn opt_edits_win(s: *Scene, removed: list.ArrayList[i32],
                  relabels: list.ArrayList[OptRelabel], before: OptCost,
-                 after: *OptCost) bool {
-    let cand: *Scene = opt_build_candidate(s, removed, relabels);
+                 after: *OptCost, guides: list.ArrayList[OptGuideEdit],
+                 moves: list.ArrayList[OptMove]) bool {
+    let cand: *Scene = opt_build_candidate(s, removed, relabels, guides, moves);
     let equal: bool = opt_outputs_equal(s, cand, opt_horizon());
     after.* = opt_cost(cand);
     let ok: bool = equal && scene_validation_errors(cand) == 0 &&
         opt_cost_score(after.*) < opt_cost_score(before);
     scene_free(cand);
     return ok;
+}
+
+// Candidate discovery is deliberately separate from equivalence replay. The
+// foreground analyzer asks for proof immediately; the background engine first
+// records a structurally valid strict improvement, then proves it incrementally
+// with retained simulator state across idle slices.
+fn opt_edits_candidate(s: *Scene, removed: list.ArrayList[i32],
+                 relabels: list.ArrayList[OptRelabel], before: OptCost,
+                 after: *OptCost, guides: list.ArrayList[OptGuideEdit],
+                 moves: list.ArrayList[OptMove], prove: bool) bool {
+    let cand: *Scene = opt_build_candidate(s, removed, relabels, guides, moves);
+    after.* = opt_cost(cand);
+    let ok: bool = scene_validation_errors(cand) == 0 &&
+        opt_cost_score(after.*) < opt_cost_score(before);
+    if (ok && prove) { ok = opt_outputs_equal(s,cand,opt_horizon()); }
+    scene_free(cand);
+    return ok;
+}
+
+fn opt_input_same(s: *Scene, a: i32, b: i32, port: i32) bool {
+    let ag: i32 = opt_guide_into(s, a, port);
+    let bg: i32 = opt_guide_into(s, b, port);
+    if (ag < 0 || bg < 0) { return ag == bg; }
+    let ga: Guide = s.*.guides.data[ag];
+    let gb: Guide = s.*.guides.data[bg];
+    return ga.from_c == gb.from_c && ga.from_p == gb.from_p;
+}
+
+fn opt_retarget_guide(s: *Scene, g: Guide, from_c: i32, from_p: i32,
+                      to_c: i32, to_p: i32, out: *Guide) bool {
+    let fi: i32 = scene_comp_index(s, from_c);
+    let ti: i32 = scene_comp_index(s, to_c);
+    if (fi < 0 || ti < 0) { return false; }
+    let path: list.ArrayList[Vox] = list.make[Vox](32);
+    if (!route_guide(s, comp_port_attach(s.*.comps.data[fi], from_p),
+        comp_port_attach(s.*.comps.data[ti], to_p), &path)) {
+        list.free[Vox](&path); return false;
+    }
+    let steps: i32 = path.len - 1;
+    out.* = Guide{ .id = g.id, .from_c = from_c, .from_p = from_p,
+        .to_c = to_c, .to_p = to_p, .path = path,
+        .length_nm = (imax(0, steps) as f64) * s.*.model.pitch_nm.value,
+        .live = 0 };
+    return true;
+}
+
+fn opt_copy_guides(dst: *list.ArrayList[OptGuideEdit],
+                   src: list.ArrayList[OptGuideEdit]) void {
+    let i: i32 = 0;
+    while (i < src.len) {
+        list.push[OptGuideEdit](dst, OptGuideEdit{ .guide = guide_clone(src.data[i].guide) });
+        i = i + 1;
+    }
+}
+
+// Family 3: merge two chambers computing the same operation from the same
+// sources. Every consumer of the duplicate is rerouted to the canonical result,
+// then the duplicate is removed. The full trace oracle remains the proof.
+fn opt_region_has(region: list.ArrayList[i32], id: i32) bool {
+    if (region.len == 0) { return true; }
+    let i: i32 = 0;
+    while (i < region.len) { if (region.data[i] == id) { return true; } i = i + 1; }
+    return false;
+}
+
+fn opt_find_cse_region_mode(s: *Scene, p: *OptProposal, region: list.ArrayList[i32], prove: bool) bool {
+    let ai: i32 = 0;
+    while (ai < s.*.comps.len) {
+        let a: Comp = s.*.comps.data[ai];
+        if (a.kind == Kind.Chamber) {
+            let bi: i32 = ai + 1;
+            while (bi < s.*.comps.len) {
+                let b: Comp = s.*.comps.data[bi];
+                if ((opt_region_has(region,a.id) || opt_region_has(region,b.id)) &&
+                    b.kind == Kind.Chamber && a.logic_op == b.logic_op &&
+                    opt_input_same(s, a.id, b.id, 0) && opt_input_same(s, a.id, b.id, 1)) {
+                    let edits: list.ArrayList[OptGuideEdit] = list.make[OptGuideEdit](4);
+                    let ok: bool = true;
+                    let out_n: i32 = 0;
+                    let gi: i32 = 0;
+                    while (gi < s.*.guides.len && ok) {
+                        let g: Guide = s.*.guides.data[gi];
+                        if (g.from_c == b.id) {
+                            let ng: Guide = guide_clone(g);
+                            list.free[Vox](&ng.path);
+                            if (!opt_retarget_guide(s, g, a.id, g.from_p, g.to_c, g.to_p, &ng)) { ok = false; }
+                            else { list.push[OptGuideEdit](&edits, OptGuideEdit{ .guide = ng }); out_n = out_n + 1; }
+                        }
+                        gi = gi + 1;
+                    }
+                    if (ok && out_n > 0) {
+                        let rem: list.ArrayList[i32] = list.make[i32](1);
+                        let rel: list.ArrayList[OptRelabel] = list.make[OptRelabel](1);
+                        let mov: list.ArrayList[OptMove] = list.make[OptMove](1);
+                        list.push[i32](&rem, b.id);
+                        let after: OptCost = opt_cost_zero();
+                        if (opt_edits_candidate(s, rem, rel, p.*.before, &after, edits, mov, prove)) {
+                            p.*.family = opt_family_cse(); p.*.valid = true; p.*.equivalent = prove; p.*.after = after;
+                            list.push[i32](&p.*.removed, b.id); opt_copy_guides(&p.*.guides, edits);
+                            list.free[i32](&rem); list.free[OptRelabel](&rel); list.free[OptMove](&mov);
+                            let ef: i32 = 0; while (ef < edits.len) { list.free[Vox](&edits.data[ef].guide.path); ef = ef + 1; }
+                            list.free[OptGuideEdit](&edits); return true;
+                        }
+                        list.free[i32](&rem); list.free[OptRelabel](&rel); list.free[OptMove](&mov);
+                    }
+                    let ef2: i32 = 0; while (ef2 < edits.len) { list.free[Vox](&edits.data[ef2].guide.path); ef2 = ef2 + 1; }
+                    list.free[OptGuideEdit](&edits);
+                }
+                bi = bi + 1;
+            }
+        }
+        ai = ai + 1;
+    }
+    return false;
+}
+
+fn opt_find_cse_region(s: *Scene, p: *OptProposal, region: list.ArrayList[i32]) bool {
+    return opt_find_cse_region_mode(s,p,region,true);
+}
+
+fn opt_find_cse(s: *Scene, p: *OptProposal) bool {
+    let all: list.ArrayList[i32] = list.make[i32](1);
+    let ok: bool = opt_find_cse_region(s,p,all); list.free[i32](&all); return ok;
+}
+
+fn opt_other_mul_source(s: *Scene, mul: i32, common: i32) i32 {
+    let a: i32 = opt_guide_into(s, mul, 0); let b: i32 = opt_guide_into(s, mul, 1);
+    if (a < 0 || b < 0) { return 0 - 1; }
+    let sa: i32 = s.*.guides.data[a].from_c; let sb: i32 = s.*.guides.data[b].from_c;
+    if (sa == common && sb != common) { return sb; }
+    if (sb == common && sa != common) { return sa; }
+    return 0 - 1;
+}
+
+fn opt_mul_has_source(s: *Scene, mul: i32, source: i32) bool {
+    let a: i32 = opt_guide_into(s, mul, 0); let b: i32 = opt_guide_into(s, mul, 1);
+    return (a >= 0 && s.*.guides.data[a].from_c == source) ||
+           (b >= 0 && s.*.guides.data[b].from_c == source);
+}
+
+// Family 4: a*c + b*c -> (a+b)*c, reusing the first multiply and the add.
+fn opt_find_factoring_region_mode(s: *Scene, p: *OptProposal, region: list.ArrayList[i32], prove: bool) bool {
+    let oi: i32 = 0;
+    while (oi < s.*.comps.len) {
+        let outer: Comp = s.*.comps.data[oi];
+        if (outer.kind == Kind.Chamber && outer.logic_op == 3) {
+            let og0: i32 = opt_guide_into(s, outer.id, 0); let og1: i32 = opt_guide_into(s, outer.id, 1);
+            if (og0 >= 0 && og1 >= 0) {
+                let m1: i32 = s.*.guides.data[og0].from_c; let m2: i32 = s.*.guides.data[og1].from_c;
+                let m1i: i32 = scene_comp_index(s, m1); let m2i: i32 = scene_comp_index(s, m2);
+                if ((opt_region_has(region,outer.id) || opt_region_has(region,m1) || opt_region_has(region,m2)) &&
+                    m1i >= 0 && m2i >= 0 && s.*.comps.data[m1i].kind == Kind.Chamber &&
+                    s.*.comps.data[m2i].kind == Kind.Chamber && s.*.comps.data[m1i].logic_op == 5 &&
+                    s.*.comps.data[m2i].logic_op == 5 && opt_out_degree(s, m2) == 1) {
+                    let cands: list.ArrayList[i32] = list.make[i32](2);
+                    let a0: i32 = opt_guide_into(s, m1, 0); let a1: i32 = opt_guide_into(s, m1, 1);
+                    if (a0 >= 0) { list.push[i32](&cands, s.*.guides.data[a0].from_c); }
+                    if (a1 >= 0) { list.push[i32](&cands, s.*.guides.data[a1].from_c); }
+                    let ci: i32 = 0;
+                    while (ci < cands.len) {
+                        let common: i32 = cands.data[ci];
+                        let x: i32 = opt_other_mul_source(s, m1, common);
+                        let y: i32 = opt_other_mul_source(s, m2, common);
+                        if (x >= 0 && y >= 0 && opt_mul_has_source(s, m2, common)) {
+                            let edits: list.ArrayList[OptGuideEdit] = list.make[OptGuideEdit](2);
+                            let m1common_gi: i32 = a0;
+                            if (a0 >= 0 && s.*.guides.data[a0].from_c != common) { m1common_gi = a1; }
+                            let gmc: Guide = s.*.guides.data[m1common_gi];
+                            let ng1: Guide = guide_clone(gmc); list.free[Vox](&ng1.path);
+                            let gout: Guide = s.*.guides.data[og1];
+                            let ng2: Guide = guide_clone(gout); list.free[Vox](&ng2.path);
+                            let ok1: bool = opt_retarget_guide(s, gmc, y, 0, m1, gmc.to_p, &ng1);
+                            let ok2: bool = false;
+                            if (ok1) { ok2 = opt_retarget_guide(s, gout, common, 0, outer.id, gout.to_p, &ng2); }
+                            let ok: bool = ok1 && ok2;
+                            if (ok) {
+                                list.push[OptGuideEdit](&edits, OptGuideEdit{ .guide = ng1 });
+                                list.push[OptGuideEdit](&edits, OptGuideEdit{ .guide = ng2 });
+                                let rem: list.ArrayList[i32] = list.make[i32](1); list.push[i32](&rem, m2);
+                                let rel: list.ArrayList[OptRelabel] = list.make[OptRelabel](2);
+                                list.push[OptRelabel](&rel, OptRelabel{ .comp_id = m1, .new_op = 3 });
+                                list.push[OptRelabel](&rel, OptRelabel{ .comp_id = outer.id, .new_op = 5 });
+                                let mov: list.ArrayList[OptMove] = list.make[OptMove](1);
+                                let after: OptCost = opt_cost_zero();
+                                if (opt_edits_candidate(s, rem, rel, p.*.before, &after, edits, mov, prove)) {
+                                    p.*.family = opt_family_factoring(); p.*.valid = true; p.*.equivalent = prove; p.*.after = after;
+                                    list.push[i32](&p.*.removed, m2);
+                                    list.push[OptRelabel](&p.*.relabels, rel.data[0]); list.push[OptRelabel](&p.*.relabels, rel.data[1]);
+                                    opt_copy_guides(&p.*.guides, edits);
+                                    list.free[i32](&rem); list.free[OptRelabel](&rel); list.free[OptMove](&mov);
+                                    let ef: i32 = 0; while (ef < edits.len) { list.free[Vox](&edits.data[ef].guide.path); ef = ef + 1; }
+                                    list.free[OptGuideEdit](&edits); list.free[i32](&cands); return true;
+                                }
+                                list.free[i32](&rem); list.free[OptRelabel](&rel); list.free[OptMove](&mov);
+                            } else {
+                                if (ok1) { list.free[Vox](&ng1.path); }
+                                if (ok2) { list.free[Vox](&ng2.path); }
+                            }
+                            let ef2: i32 = 0; while (ef2 < edits.len) { list.free[Vox](&edits.data[ef2].guide.path); ef2 = ef2 + 1; }
+                            list.free[OptGuideEdit](&edits);
+                        }
+                        ci = ci + 1;
+                    }
+                    list.free[i32](&cands);
+                }
+            }
+        }
+        oi = oi + 1;
+    }
+    return false;
+}
+
+fn opt_find_factoring_region(s: *Scene, p: *OptProposal, region: list.ArrayList[i32]) bool {
+    return opt_find_factoring_region_mode(s,p,region,true);
+}
+
+fn opt_find_factoring(s: *Scene, p: *OptProposal) bool {
+    let all: list.ArrayList[i32] = list.make[i32](1);
+    let ok: bool = opt_find_factoring_region(s,p,all); list.free[i32](&all); return ok;
+}
+
+fn opt_find_route_consolidation_region_mode(s: *Scene, p: *OptProposal, region: list.ArrayList[i32], prove: bool) bool {
+    let sm: *Sim = sim_new(); sim_recompile(sm, s);
+    let clock: f64 = sm.*.clock_ghz; sim_free(sm);
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) {
+        let g: Guide = s.*.guides.data[gi];
+        if (!opt_region_has(region,g.from_c) && !opt_region_has(region,g.to_c)) { gi = gi + 1; continue; }
+        let ng: Guide = guide_clone(g); list.free[Vox](&ng.path);
+        if (opt_retarget_guide(s, g, g.from_c, g.from_p, g.to_c, g.to_p, &ng)) {
+            let old_delay: i32 = guide_delay_symbols_for_model(s, clock, g.length_nm);
+            let new_delay: i32 = guide_delay_symbols_for_model(s, clock, ng.length_nm);
+            if (ng.path.len < g.path.len && old_delay == new_delay) {
+                let edits: list.ArrayList[OptGuideEdit] = list.make[OptGuideEdit](1);
+                list.push[OptGuideEdit](&edits, OptGuideEdit{ .guide = ng });
+                let rem: list.ArrayList[i32] = list.make[i32](1);
+                let rel: list.ArrayList[OptRelabel] = list.make[OptRelabel](1);
+                let mov: list.ArrayList[OptMove] = list.make[OptMove](1);
+                let after: OptCost = opt_cost_zero();
+                if (opt_edits_candidate(s, rem, rel, p.*.before, &after, edits, mov, prove)) {
+                    p.*.family = opt_family_route_consolidation(); p.*.valid = true; p.*.equivalent = prove; p.*.after = after;
+                    opt_copy_guides(&p.*.guides, edits);
+                    list.free[i32](&rem); list.free[OptRelabel](&rel); list.free[OptMove](&mov);
+                    list.free[Vox](&edits.data[0].guide.path); list.free[OptGuideEdit](&edits); return true;
+                }
+                list.free[i32](&rem); list.free[OptRelabel](&rel); list.free[OptMove](&mov);
+                list.free[Vox](&edits.data[0].guide.path); list.free[OptGuideEdit](&edits);
+            } else { list.free[Vox](&ng.path); }
+        }
+        gi = gi + 1;
+    }
+    return false;
+}
+
+fn opt_find_route_consolidation_region(s: *Scene, p: *OptProposal, region: list.ArrayList[i32]) bool {
+    return opt_find_route_consolidation_region_mode(s,p,region,true);
+}
+
+fn opt_find_route_consolidation(s: *Scene, p: *OptProposal) bool {
+    let all: list.ArrayList[i32] = list.make[i32](1);
+    let ok: bool = opt_find_route_consolidation_region(s,p,all); list.free[i32](&all); return ok;
+}
+
+fn opt_find_placement_balance_region_window(s: *Scene, p: *OptProposal,
+        region: list.ArrayList[i32], prove: bool, dir_start: i32, dir_count: i32) bool {
+    let ci: i32 = 0;
+    while (ci < s.*.comps.len) {
+        let c: Comp = s.*.comps.data[ci];
+        if (c.kind == Kind.Chamber && opt_region_has(region,c.id)) {
+            let dirs: list.ArrayList[Vox] = list.make[Vox](12);
+            let dist: i32 = 1;
+            while (dist <= 3) {
+                list.push[Vox](&dirs, vox(dist,0,0)); list.push[Vox](&dirs, vox(0,0,dist));
+                list.push[Vox](&dirs, vox(0-dist,0,0)); list.push[Vox](&dirs, vox(0,0,0-dist));
+                dist = dist + 1;
+            }
+            let di: i32 = imax(0,dir_start);
+            let dir_end: i32 = imin(dirs.len,di + imax(1,dir_count));
+            while (di < dir_end) {
+                let cand: *Scene = scene_clone(s);
+                let one: list.ArrayList[i32] = list.make[i32](1); list.push[i32](&one, c.id);
+                if (group_can_move(cand, &one, dirs.data[di]) == 0) {
+                    if (prove) {
+                        group_move(cand, &one, dirs.data[di]);
+                    } else {
+                        // Background placement never launches an unbounded route
+                        // search inside an atomic slice. Move the footprint and
+                        // preserve authored paths, adjusting only their incident
+                        // endpoint; validation below rejects any path that is no
+                        // longer 6-connected or legal. A later direction/slice can
+                        // still win without changing unrelated manual routes.
+                        unmark_group(cand,&one);
+                        let moved_i: i32 = scene_comp_index(cand,c.id);
+                        cand.*.comps.data[moved_i].origin = vox_add(cand.*.comps.data[moved_i].origin,dirs.data[di]);
+                        mark_group(cand,&one);
+                        let eg: i32 = 0;
+                        while (eg < cand.*.guides.len) {
+                            let gp: *Guide = &cand.*.guides.data[eg];
+                            if (gp.*.from_c == c.id && gp.*.path.len > 0) {
+                                gp.*.path.data[0] = comp_port_attach(cand.*.comps.data[moved_i],gp.*.from_p);
+                            }
+                            if (gp.*.to_c == c.id && gp.*.path.len > 0) {
+                                gp.*.path.data[gp.*.path.len - 1] = comp_port_attach(cand.*.comps.data[moved_i],gp.*.to_p);
+                            }
+                            if (gp.*.from_c == c.id || gp.*.to_c == c.id) {
+                                gp.*.length_nm = (imax(0,gp.*.path.len - 1) as f64) * cand.*.model.pitch_nm.value;
+                            }
+                            eg = eg + 1;
+                        }
+                    }
+                    let after: OptCost = opt_cost(cand);
+                    let accepted: bool = scene_validation_errors(cand) == 0 &&
+                        opt_cost_score(after) < opt_cost_score(p.*.before);
+                    if (accepted && (!prove || opt_outputs_equal(s, cand, opt_horizon()))) {
+                        p.*.family = opt_family_placement_balance(); p.*.valid = true; p.*.equivalent = prove; p.*.after = after;
+                        list.push[OptMove](&p.*.moves, OptMove{ .comp_id = c.id,
+                            .new_origin = cand.*.comps.data[scene_comp_index(cand, c.id)].origin });
+                        let gi2: i32 = 0;
+                        while (gi2 < cand.*.guides.len) {
+                            let cg: Guide = cand.*.guides.data[gi2];
+                            if (cg.from_c == c.id || cg.to_c == c.id) {
+                                list.push[OptGuideEdit](&p.*.guides, OptGuideEdit{ .guide = guide_clone(cg) });
+                            }
+                            gi2 = gi2 + 1;
+                        }
+                        list.free[i32](&one); list.free[Vox](&dirs); scene_free(cand); return true;
+                    }
+                }
+                list.free[i32](&one); scene_free(cand); di = di + 1;
+            }
+            list.free[Vox](&dirs);
+        }
+        ci = ci + 1;
+    }
+    return false;
+}
+
+fn opt_find_placement_balance_region_mode(s: *Scene, p: *OptProposal, region: list.ArrayList[i32], prove: bool) bool {
+    return opt_find_placement_balance_region_window(s,p,region,prove,0,12);
+}
+
+fn opt_find_placement_balance_region(s: *Scene, p: *OptProposal, region: list.ArrayList[i32]) bool {
+    return opt_find_placement_balance_region_mode(s,p,region,true);
+}
+
+fn opt_find_placement_balance(s: *Scene, p: *OptProposal) bool {
+    let all: list.ArrayList[i32] = list.make[i32](1);
+    let ok: bool = opt_find_placement_balance_region(s,p,all); list.free[i32](&all); return ok;
 }
 
 // Observer entry point (Section 20.1): clones internally and NEVER mutates `s`.
@@ -385,7 +818,7 @@ fn opt_analyze(s: *Scene) OptProposal {
     opt_find_dead(s, &dead);
     if (dead.len > 0) {
         let after: OptCost = opt_cost_zero();
-        if (opt_edits_win(s, dead, empty_rl, p.before, &after)) {
+        if (opt_edits_win(s, dead, empty_rl, p.before, &after, p.guides, p.moves)) {
             p.family = opt_family_dead_path();
             p.equivalent = true; p.valid = true; p.after = after;
             let ci: i32 = 0;
@@ -401,7 +834,7 @@ fn opt_analyze(s: *Scene) OptProposal {
     opt_find_const_collapse(s, &crem, &crel);
     if (crem.len > 0) {
         let after2: OptCost = opt_cost_zero();
-        if (opt_edits_win(s, crem, crel, p.before, &after2)) {
+        if (opt_edits_win(s, crem, crel, p.before, &after2, p.guides, p.moves)) {
             p.family = opt_family_const_collapse();
             p.equivalent = true; p.valid = true; p.after = after2;
             let ki: i32 = 0;
@@ -413,8 +846,76 @@ fn opt_analyze(s: *Scene) OptProposal {
     list.free[i32](&crem);
     list.free[OptRelabel](&crel);
     list.free[OptRelabel](&empty_rl);
+    if (p.valid) { return p; }
+
+    if (opt_find_cse(s, &p)) { return p; }
+    if (opt_find_factoring(s, &p)) { return p; }
+    if (opt_find_route_consolidation(s, &p)) { return p; }
+    if (opt_find_placement_balance(s, &p)) { return p; }
     if (!p.valid) { p.after = p.before; }
     return p;
+}
+
+// One independently resumable family stage for the background work queue. The
+// foreground/test entry point above still finds the first win in one call; the
+// UI scheduler invokes exactly one stage per idle slice.
+fn opt_analyze_family_region_mode(s: *Scene, family: i32,
+                                  region: list.ArrayList[i32], prove: bool) OptProposal {
+    let p: OptProposal = opt_proposal_none(); p.before = opt_cost(s);
+    if (family == opt_family_dead_path()) {
+        let dead: list.ArrayList[i32] = list.make[i32](8);
+        let rel: list.ArrayList[OptRelabel] = list.make[OptRelabel](1);
+        opt_find_dead(s, &dead);
+        if (!prove && region.len > 0) {
+            let w: i32 = 0; let di: i32 = 0;
+            while (di < dead.len) {
+                if (opt_region_has(region,dead.data[di])) { dead.data[w] = dead.data[di]; w = w + 1; }
+                di = di + 1;
+            }
+            dead.len = w;
+        }
+        let after: OptCost = opt_cost_zero();
+        if (dead.len > 0 && opt_edits_candidate(s,dead,rel,p.before,&after,p.guides,p.moves,prove)) {
+            p.family = family; p.valid = true; p.equivalent = prove; p.after = after;
+            let i: i32 = 0; while (i < dead.len) { list.push[i32](&p.removed,dead.data[i]); i = i + 1; }
+        }
+        list.free[i32](&dead); list.free[OptRelabel](&rel);
+    } else if (family == opt_family_const_collapse()) {
+        let rem: list.ArrayList[i32] = list.make[i32](4);
+        let rel: list.ArrayList[OptRelabel] = list.make[OptRelabel](4);
+        opt_find_const_collapse(s,&rem,&rel);
+        if (!prove && region.len > 0) {
+            let w2: i32 = 0; let ci: i32 = 0;
+            while (ci < rem.len && ci < rel.len) {
+                if (opt_region_has(region,rem.data[ci]) || opt_region_has(region,rel.data[ci].comp_id)) {
+                    rem.data[w2] = rem.data[ci]; rel.data[w2] = rel.data[ci]; w2 = w2 + 1;
+                }
+                ci = ci + 1;
+            }
+            rem.len = w2; rel.len = w2;
+        }
+        let after: OptCost = opt_cost_zero();
+        if (rem.len > 0 && opt_edits_candidate(s,rem,rel,p.before,&after,p.guides,p.moves,prove)) {
+            p.family = family; p.valid = true; p.equivalent = prove; p.after = after;
+            let i: i32 = 0; while (i < rem.len) { list.push[i32](&p.removed,rem.data[i]); i = i + 1; }
+            let j: i32 = 0; while (j < rel.len) { list.push[OptRelabel](&p.relabels,rel.data[j]); j = j + 1; }
+        }
+        list.free[i32](&rem); list.free[OptRelabel](&rel);
+    } else if (family == opt_family_cse()) { let _x: bool = opt_find_cse_region_mode(s,&p,region,prove); }
+    else if (family == opt_family_factoring()) { let _x: bool = opt_find_factoring_region_mode(s,&p,region,prove); }
+    else if (family == opt_family_route_consolidation()) { let _x: bool = opt_find_route_consolidation_region_mode(s,&p,region,prove); }
+    else if (family == opt_family_placement_balance()) { let _x: bool = opt_find_placement_balance_region_mode(s,&p,region,prove); }
+    if (!p.valid) { p.after = p.before; }
+    return p;
+}
+
+fn opt_analyze_family_region(s: *Scene, family: i32, region: list.ArrayList[i32]) OptProposal {
+    return opt_analyze_family_region_mode(s,family,region,true);
+}
+
+fn opt_analyze_family(s: *Scene, family: i32) OptProposal {
+    let all: list.ArrayList[i32] = list.make[i32](1);
+    let p: OptProposal = opt_analyze_family_region(s,family,all); list.free[i32](&all); return p;
 }
 
 // Mutation entry point (Section 20.4). Re-verifies the proposal against the
@@ -426,9 +927,10 @@ fn opt_analyze(s: *Scene) OptProposal {
 // touched part still present, and the edit still output-equivalent and valid. The
 // app layer calls this before committing through the journaled/audited path.
 fn opt_verify(s: *Scene, p: *OptProposal) bool {
-    if (!p.*.valid || (p.*.removed.len == 0 && p.*.relabels.len == 0)) { return false; }
-    if (!opt_edits_present(s, p.*.removed, p.*.relabels)) { return false; }
-    let cand: *Scene = opt_build_candidate(s, p.*.removed, p.*.relabels);
+    if (!p.*.valid || (p.*.removed.len == 0 && p.*.relabels.len == 0 &&
+        p.*.guides.len == 0 && p.*.moves.len == 0)) { return false; }
+    if (!opt_edits_present(s, p.*.removed, p.*.relabels, p.*.guides, p.*.moves)) { return false; }
+    let cand: *Scene = opt_build_candidate(s, p.*.removed, p.*.relabels, p.*.guides, p.*.moves);
     let ok: bool = opt_outputs_equal(s, cand, opt_horizon()) &&
         scene_validation_errors(cand) == 0;
     scene_free(cand);
@@ -437,7 +939,7 @@ fn opt_verify(s: *Scene, p: *OptProposal) bool {
 
 fn opt_apply(s: *Scene, p: *OptProposal) bool {
     if (!opt_verify(s, p)) { return false; }
-    opt_apply_edits(s, p.*.removed, p.*.relabels);
+    opt_apply_edits(s, p.*.removed, p.*.relabels, p.*.guides, p.*.moves);
     return true;
 }
 
@@ -453,7 +955,14 @@ struct OptEngine {
     min_gain_pct: i32,
     family_dead_path: bool,
     family_const_collapse: bool,
+    family_cse: bool,
+    family_factoring: bool,
+    family_route: bool,
+    family_placement: bool,
     cpu_budget_pct: i32,
+    time_budget_ms: i32,
+    memory_budget_bytes: i64,
+    last_pass_ms: i64,
     quiet_start_hour: i32,
     quiet_end_hour: i32,
     has_pending: bool,
@@ -464,6 +973,20 @@ struct OptEngine {
     suspend_code: i32,   // 0 none, 1 equivalence failure, 2 proposal-cap, 3 apply failure
     last_rev: i64,       // scene render_rev at the last analysis (change key)
     rejected: list.ArrayList[i64],   // signatures of proposals the user ignored
+    work_ids: list.ArrayList[i32],   // affected component region + neighbors
+    work_family: i32,                // next independently resumable family stage
+    work_cursor: i32,                // next affected id inside the current family
+    work_subcursor: i32,             // bounded sub-candidate (placement direction)
+    work_active: bool,
+    work_slices: i64,
+    oracle_active: bool,          // retained proof state; never restarted per slice
+    oracle_step: i32,             // next symbol in the exact equivalence horizon
+    oracle_candidate: OptProposal,
+    oracle_scene: *Scene,
+    oracle_left: *Sim,
+    oracle_right: *Sim,
+    cpu_window_start_ms: i64,
+    cpu_used_ms: i64,
 }
 
 fn opt_engine_new() *OptEngine {
@@ -473,7 +996,14 @@ fn opt_engine_new() *OptEngine {
         .min_gain_pct = 1,
         .family_dead_path = true,
         .family_const_collapse = true,
+        .family_cse = true,
+        .family_factoring = true,
+        .family_route = true,
+        .family_placement = true,
         .cpu_budget_pct = 5,
+        .time_budget_ms = 8,
+        .memory_budget_bytes = 64 * 1024 * 1024,
+        .last_pass_ms = 0,
         .quiet_start_hour = 22,
         .quiet_end_hour = 7,
         .has_pending = false,
@@ -484,12 +1014,31 @@ fn opt_engine_new() *OptEngine {
         .suspend_code = 0,
         .last_rev = 0 - 1,
         .rejected = list.make[i64](8),
+        .work_ids = list.make[i32](16),
+        .work_family = 1,
+        .work_cursor = 0,
+        .work_subcursor = 0,
+        .work_active = false,
+        .work_slices = 0,
+        .oracle_active = false,
+        .oracle_step = 0,
+        .oracle_candidate = opt_proposal_none(),
+        .oracle_scene = scene_new(),
+        .oracle_left = sim_new(),
+        .oracle_right = sim_new(),
+        .cpu_window_start_ms = 0,
+        .cpu_used_ms = 0,
     });
 }
 
 fn opt_engine_free(e: *OptEngine) void {
     opt_proposal_free(&e.*.pending);
     list.free[i64](&e.*.rejected);
+    list.free[i32](&e.*.work_ids);
+    opt_proposal_free(&e.*.oracle_candidate);
+    scene_free(e.*.oracle_scene);
+    sim_free(e.*.oracle_left);
+    sim_free(e.*.oracle_right);
     _zag_free(e as *i8);
 }
 
@@ -504,6 +1053,20 @@ fn opt_proposal_sig(p: OptProposal) i64 {
         h = (h * 16777619 + (p.relabels.data[j].comp_id as i64) * 31 + (p.relabels.data[j].new_op as i64)) % 2147483647;
         j = j + 1;
     }
+    let g: i32 = 0;
+    while (g < p.guides.len) {
+        h = (h * 16777619 + (p.guides.data[g].guide.id as i64) * 31 +
+             (p.guides.data[g].guide.from_c as i64) * 7 + (p.guides.data[g].guide.to_c as i64)) % 2147483647;
+        g = g + 1;
+    }
+    let m: i32 = 0;
+    while (m < p.moves.len) {
+        h = (h * 16777619 + (p.moves.data[m].comp_id as i64) * 31 +
+             (p.moves.data[m].new_origin.x as i64) * 7 +
+             (p.moves.data[m].new_origin.y as i64) * 11 +
+             (p.moves.data[m].new_origin.z as i64) * 13) % 2147483647;
+        m = m + 1;
+    }
     return h;
 }
 
@@ -516,6 +1079,10 @@ fn opt_engine_rejected(e: *OptEngine, sig: i64) bool {
 fn opt_engine_family_enabled(e: *OptEngine, family: i32) bool {
     if (family == opt_family_dead_path()) { return e.*.family_dead_path; }
     if (family == opt_family_const_collapse()) { return e.*.family_const_collapse; }
+    if (family == opt_family_cse()) { return e.*.family_cse; }
+    if (family == opt_family_factoring()) { return e.*.family_factoring; }
+    if (family == opt_family_route_consolidation()) { return e.*.family_route; }
+    if (family == opt_family_placement_balance()) { return e.*.family_placement; }
     return false;
 }
 
@@ -539,8 +1106,78 @@ fn opt_cadence_frames(e: *OptEngine) i64 {
     return imax(30, 300 / clampi(e.*.cpu_budget_pct, 1, 20)) as i64;
 }
 
+// Host-pressure backoff.  The thresholds are policy values rather than device
+// claims: below 20% while discharging, or at/above 80 C, background speculative
+// work stops.  Missing sensors mean "unknown", not pressure.  The environment
+// override is an explicit test/admin control and never enables work that a real
+// sensor would otherwise suppress.
+fn opt_has_prefix(s: []u8, prefix: []u8) bool {
+    if (s.len < prefix.len) { return false; }
+    return _zag_strcmp(s[0..prefix.len], prefix) == 1;
+}
+
+fn opt_battery_pressure_at(base: []u8) bool {
+    let status: []u8 = _zag_read_file(_zag_str_concat(base, "/status"));
+    if (!opt_has_prefix(status, "Discharging")) { return false; }
+    let capacity: []u8 = _zag_read_file(_zag_str_concat(base, "/capacity"));
+    if (capacity.len == 0) { return false; }
+    let pct: i64 = _zag_str_to_i64(capacity);
+    return pct >= 0 && pct < 20;
+}
+
+fn opt_thermal_pressure() bool {
+    let i: i32 = 0;
+    while (i < 16) {
+        let p: []u8 = _zag_str_concat("/sys/class/thermal/thermal_zone", _zag_i64_to_str(i as i64));
+        let raw: []u8 = _zag_read_file(_zag_str_concat(p, "/temp"));
+        if (raw.len > 0 && _zag_str_to_i64(raw) >= 80000) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn opt_system_pressure() bool {
+    let forced: []u8 = _zag_getenv("PRISM_OPT_POWER_PRESSURE");
+    if (_zag_strcmp(forced, "1") == 1) { return true; }
+    if (opt_battery_pressure_at("/sys/class/power_supply/BAT0") ||
+        opt_battery_pressure_at("/sys/class/power_supply/BAT1")) { return true; }
+    return opt_thermal_pressure();
+}
+
 fn opt_engine_suspended(e: *OptEngine) bool { return e.*.suspended; }
 fn opt_engine_suspend_code(e: *OptEngine) i32 { return e.*.suspend_code; }
+
+// Conservative preflight for clone/simulation/candidate buffers. It deliberately
+// overestimates so a pass is refused before allocation when it cannot fit its
+// configured slice. Project-wide hard limits remain an independent ceiling.
+fn opt_estimated_pass_bytes(s: *Scene) i64 {
+    let points: i64 = 0;
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) {
+        points = points + (s.*.guides.data[gi].path.len as i64);
+        gi = gi + 1;
+    }
+    let node_state: i64 = 512 + (hist_len() as i64) * 4;
+    let guide_state: i64 = 512 + (limit_delay_symbols_max() as i64) * 4;
+    return 65536 + (s.*.comps.len as i64) * node_state * 2 +
+        (s.*.guides.len as i64) * guide_state * 2 + points * 64;
+}
+
+fn opt_budget_preflight(e: *OptEngine, s: *Scene) bool {
+    return e.*.time_budget_ms > 0 && e.*.memory_budget_bytes >= 65536 &&
+        opt_estimated_pass_bytes(s) <= e.*.memory_budget_bytes;
+}
+
+// Placement's atomic primitive owns one deep scene clone. Admit it only when a
+// conservative structural-work estimate fits the requested wall slice; larger
+// designs keep the family queued/skipped rather than discovering an overrun
+// after the clone. Route/oracle work is independently chunked elsewhere.
+fn opt_placement_atomic_safe(e: *OptEngine, s: *Scene) bool {
+    let units: i64 = s.*.comps.len + s.*.guides.len;
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) { units = units + s.*.guides.data[gi].path.len; gi = gi + 1; }
+    return units <= (e.*.time_budget_ms as i64) * 32;
+}
 
 // Watchdog: suspend the optimizer on any anomaly and report it rather than
 // degrading the app. Refuses all further work until explicitly resumed.
@@ -550,6 +1187,120 @@ fn opt_engine_note_anomaly(e: *OptEngine, code: i32) void {
     if (e.*.has_pending) { opt_engine_clear_pending(e); }
 }
 fn opt_engine_resume(e: *OptEngine) void { e.*.suspended = false; e.*.suspend_code = 0; }
+
+fn opt_work_push(e: *OptEngine, id: i32) void {
+    let i: i32 = 0; while (i < e.*.work_ids.len) { if (e.*.work_ids.data[i] == id) { return; } i = i + 1; }
+    list.push[i32](&e.*.work_ids,id);
+}
+
+fn opt_oracle_cancel(e: *OptEngine) void {
+    e.*.oracle_active = false; e.*.oracle_step = 0;
+    opt_proposal_free(&e.*.oracle_candidate);
+    e.*.oracle_candidate = opt_proposal_none();
+    scene_free(e.*.oracle_scene); e.*.oracle_scene = scene_new();
+    sim_free(e.*.oracle_left); e.*.oracle_left = sim_new();
+    sim_free(e.*.oracle_right); e.*.oracle_right = sim_new();
+}
+
+fn opt_oracle_start(e: *OptEngine, s: *Scene, p: OptProposal) bool {
+    opt_oracle_cancel(e);
+    if (!p.valid || p.equivalent || opt_detector_count(s) < 1) {
+        opt_proposal_free(&p); return false;
+    }
+    e.*.oracle_candidate = p;
+    scene_free(e.*.oracle_scene);
+    e.*.oracle_scene = opt_build_candidate(s,p.removed,p.relabels,p.guides,p.moves);
+    if (opt_detector_count(s) != opt_detector_count(e.*.oracle_scene) ||
+        scene_validation_errors(e.*.oracle_scene) != 0) {
+        opt_oracle_cancel(e); return false;
+    }
+    sim_recompile(e.*.oracle_left,s);
+    sim_recompile(e.*.oracle_right,e.*.oracle_scene);
+    if (!e.*.oracle_left.*.model_ok || !e.*.oracle_right.*.model_ok) {
+        opt_oracle_cancel(e); return false;
+    }
+    e.*.oracle_active = true; e.*.oracle_step = 0;
+    return true;
+}
+
+// Advances an exact proof without restarting either simulation. At most a
+// deterministic number of symbols proportional to the configured millisecond
+// slice is executed, and the monotonic deadline is checked after every symbol.
+// Returns -1 mismatch, 0 yielded, 1 complete and moves the proposal into `out`.
+fn opt_oracle_slice(e: *OptEngine, s: *Scene, started: i64,
+                    out: *OptProposal) i32 {
+    if (!e.*.oracle_active) { return 0 - 1; }
+    let quota: i32 = imax(1,e.*.time_budget_ms * 8);
+    let done: i32 = 0;
+    while (e.*.oracle_step < opt_horizon() && done < quota &&
+           _zag_clock_monotonic_ms() - started < (e.*.time_budget_ms as i64)) {
+        sim_step(e.*.oracle_left,s);
+        sim_step(e.*.oracle_right,e.*.oracle_scene);
+        let equal: bool = true;
+        let i: i32 = 0;
+        while (equal && i < e.*.oracle_left.*.nodes.len) {
+            let n: SNode = e.*.oracle_left.*.nodes.data[i];
+            if (n.kind == Kind.Detector) {
+                let bi: i32 = sim_node_index(e.*.oracle_right,n.comp_id);
+                if (bi < 0 || e.*.oracle_right.*.nodes.data[bi].out_t != n.out_t) { equal = false; }
+            }
+            i = i + 1;
+        }
+        if (!equal) { opt_oracle_cancel(e); return 0 - 1; }
+        e.*.oracle_step = e.*.oracle_step + 1; done = done + 1;
+    }
+    if (e.*.oracle_step < opt_horizon()) { return 0; }
+    out.* = e.*.oracle_candidate;
+    out.*.equivalent = true;
+    e.*.oracle_candidate = opt_proposal_none();
+    e.*.oracle_active = false; e.*.oracle_step = 0;
+    scene_free(e.*.oracle_scene); e.*.oracle_scene = scene_new();
+    sim_free(e.*.oracle_left); e.*.oracle_left = sim_new();
+    sim_free(e.*.oracle_right); e.*.oracle_right = sim_new();
+    return 1;
+}
+
+fn opt_engine_begin_work(e: *OptEngine, s: *Scene) void {
+    if (e.*.oracle_active) { opt_oracle_cancel(e); }
+    e.*.work_ids.len = 0;
+    if (s.*.opt_full_dirty || s.*.opt_dirty_ids.len == 0) {
+        let i: i32 = 0; while (i < s.*.comps.len) { opt_work_push(e,s.*.comps.data[i].id); i = i + 1; }
+    } else {
+        let i: i32 = 0; while (i < s.*.opt_dirty_ids.len) { opt_work_push(e,s.*.opt_dirty_ids.data[i]); i = i + 1; }
+        // Connectivity neighbors form the smallest safe optical region: local
+        // rewrites may consume or redirect one hop beyond the directly edited id.
+        let gi: i32 = 0; while (gi < s.*.guides.len) {
+            let g: Guide = s.*.guides.data[gi];
+            let k: i32 = 0; let touched: bool = false;
+            while (k < s.*.opt_dirty_ids.len) {
+                if (g.from_c == s.*.opt_dirty_ids.data[k] || g.to_c == s.*.opt_dirty_ids.data[k]) { touched = true; }
+                k = k + 1;
+            }
+            if (touched) { opt_work_push(e,g.from_c); opt_work_push(e,g.to_c); }
+            gi = gi + 1;
+        }
+    }
+    scene_opt_dirty_clear(s);
+    e.*.work_family = 1; e.*.work_cursor = 0; e.*.work_subcursor = 0;
+    e.*.work_active = true; e.*.last_rev = s.*.render_rev;
+}
+
+fn opt_work_advance(e: *OptEngine) void {
+    e.*.work_subcursor = 0;
+    e.*.work_cursor = e.*.work_cursor + 1;
+    if (e.*.work_ids.len == 0 || e.*.work_cursor >= e.*.work_ids.len) {
+        e.*.work_cursor = 0; e.*.work_family = e.*.work_family + 1;
+    }
+    if (e.*.work_family > 6) { e.*.work_active = false; }
+}
+
+fn opt_cpu_slice_allowed(e: *OptEngine, now: i64) bool {
+    if (e.*.cpu_window_start_ms == 0 || now - e.*.cpu_window_start_ms >= 1000) {
+        e.*.cpu_window_start_ms = now; e.*.cpu_used_ms = 0;
+    }
+    let allowance: i64 = imax(1,clampi(e.*.cpu_budget_pct,1,20) * 10) as i64;
+    return e.*.cpu_used_ms < allowance;
+}
 
 // Backoff predicate (Sections 20.5/20.6): the optimizer runs only when idle — off
 // the UI and simulation critical paths. Any interaction, active simulation, open
@@ -566,9 +1317,69 @@ fn opt_should_run(enabled: bool, suspended: bool, moving: bool, dragging: bool,
 // never applies. A too-large proposal count trips the watchdog.
 fn opt_engine_refresh_keyed(e: *OptEngine, s: *Scene) bool {
     if (!e.*.enabled || e.*.suspended) { return false; }
-    if (s.*.render_rev == e.*.last_rev) { return false; }   // change key: no work
-    e.*.last_rev = s.*.render_rev;
-    let p: OptProposal = opt_analyze(s);
+    if (e.*.has_pending && s.*.render_rev == e.*.last_rev) { return false; }
+    if (s.*.render_rev != e.*.last_rev || !e.*.work_active) {
+        if (s.*.render_rev == e.*.last_rev) { return false; }
+        opt_engine_begin_work(e,s);
+    }
+    if (!opt_budget_preflight(e, s)) { opt_engine_note_anomaly(e, 4); return false; }
+    let started: i64 = _zag_clock_monotonic_ms();
+    if (!opt_cpu_slice_allowed(e,started)) { return false; }
+    let family: i32 = e.*.work_family;
+    e.*.work_slices = e.*.work_slices + 1;
+    let p: OptProposal = opt_proposal_none();
+    let proof: i32 = 0;
+    if (e.*.oracle_active) {
+        proof = opt_oracle_slice(e,s,started,&p);
+    } else if (!opt_engine_family_enabled(e,family)) {
+        opt_work_advance(e);
+    } else {
+        let region: list.ArrayList[i32] = list.make[i32](1);
+        if (e.*.work_cursor >= 0 && e.*.work_cursor < e.*.work_ids.len) {
+            list.push[i32](&region,e.*.work_ids.data[e.*.work_cursor]);
+        }
+        let candidate: OptProposal = opt_proposal_none();
+        if (family == opt_family_placement_balance()) {
+            candidate.before = opt_cost(s);
+            let placement_applicable: bool = false;
+            if (region.len == 1) {
+                let pci: i32 = scene_comp_index(s,region.data[0]);
+                placement_applicable = pci >= 0 && s.*.comps.data[pci].kind == Kind.Chamber;
+            }
+            if (placement_applicable && opt_placement_atomic_safe(e,s)) {
+                let _placement: bool = opt_find_placement_balance_region_window(
+                    s,&candidate,region,false,e.*.work_subcursor,1);
+            } else {
+                // No direction can apply to this id, or the required clone is
+                // larger than the configured atomic slice permits.
+                e.*.work_subcursor = 11;
+            }
+        } else {
+            candidate = opt_analyze_family_region_mode(s,family,region,false);
+        }
+        list.free[i32](&region);
+        if (!candidate.valid || opt_gain_percent(candidate) < e.*.min_gain_pct ||
+            opt_engine_rejected(e,opt_proposal_sig(candidate))) {
+            opt_proposal_free(&candidate);
+            if (family == opt_family_placement_balance() && e.*.work_subcursor < 11) {
+                e.*.work_subcursor = e.*.work_subcursor + 1;
+            } else { opt_work_advance(e); }
+        } else if (opt_oracle_start(e,s,candidate)) {
+            proof = opt_oracle_slice(e,s,started,&p);
+        } else {
+            opt_work_advance(e);
+        }
+    }
+    e.*.last_pass_ms = _zag_clock_monotonic_ms() - started;
+    e.*.cpu_used_ms = e.*.cpu_used_ms + e.*.last_pass_ms;
+    if (e.*.last_pass_ms > (e.*.time_budget_ms as i64)) {
+        opt_proposal_free(&p);
+        opt_engine_note_anomaly(e, 5);
+        return false;
+    }
+    if (proof == 0 && e.*.oracle_active) { return false; } // retained proof resumes next idle slice
+    if (proof < 0 && e.*.oracle_active == false) { opt_work_advance(e); }
+    if (proof > 0) { opt_work_advance(e); }
     if (p.valid && !opt_engine_family_enabled(e, p.family)) {
         opt_proposal_free(&p);
         if (e.*.has_pending) { opt_engine_clear_pending(e); return true; }
@@ -671,6 +1482,279 @@ fn opt_engine_apply_pending(e: *OptEngine, s: *Scene) bool {
 fn opt_engine_ignore_pending(e: *OptEngine) void {
     if (e.*.has_pending) { list.push[i64](&e.*.rejected, opt_proposal_sig(e.*.pending)); }
     opt_engine_clear_pending(e);
+}
+
+// Project-keyed campaign sidecar. It preserves the change key and rejected
+// proposal signatures across close/reopen without placing optimizer state in
+// project semantics. A sidecar for different project bytes is ignored.
+fn opt_campaign_save(e: *OptEngine, path: []u8, project_key: i64) bool {
+    let out: []u8 = _zag_str_concat("optcampaign 4 ", _zag_i64_to_str(project_key));
+    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.last_rev));
+    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.rejected.len as i64));
+    let i: i32 = 0;
+    while (i < e.*.rejected.len) {
+        out = _zag_str_concat(out, " ");
+        out = _zag_str_concat(out, _zag_i64_to_str(e.*.rejected.data[i]));
+        i = i + 1;
+    }
+    let active: i64 = 0; if (e.*.work_active) { active = 1; }
+    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(active));
+    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.work_family as i64));
+    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.work_cursor as i64));
+    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.work_subcursor as i64));
+    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.work_ids.len as i64));
+    let wi: i32 = 0;
+    while (wi < e.*.work_ids.len) {
+        out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.work_ids.data[wi] as i64));
+        wi = wi + 1;
+    }
+    out = _zag_str_concat(out, "\n");
+    return _zag_write_file(path, out) == 0;
+}
+
+fn opt_campaign_load(e: *OptEngine, path: []u8, project_key: i64) bool {
+    let raw: []u8 = _zag_read_file(path);
+    if (raw.len < 15 || raw.len > 65536) { return false; }
+    let prefix: []u8 = "optcampaign 4 ";
+    let version: i32 = 4;
+    if (raw.len < prefix.len || _zag_strcmp(raw[0..prefix.len], prefix) != 1) {
+        prefix = "optcampaign 3 "; version = 3;
+        if (raw.len < prefix.len || _zag_strcmp(raw[0..prefix.len], prefix) != 1) {
+            prefix = "optcampaign 2 "; version = 2;
+            if (raw.len < prefix.len || _zag_strcmp(raw[0..prefix.len], prefix) != 1) {
+                prefix = "optcampaign 1 "; version = 1;
+                if (raw.len < prefix.len || _zag_strcmp(raw[0..prefix.len], prefix) != 1) { return false; }
+            }
+        }
+    }
+    let vals: list.ArrayList[i64] = list.make[i64](16);
+    let pos: i32 = prefix.len;
+    while (pos < raw.len) {
+        while (pos < raw.len && ((raw[pos] as i32) == 32 || (raw[pos] as i32) == 10)) { pos = pos + 1; }
+        let st: i32 = pos;
+        while (pos < raw.len && (raw[pos] as i32) != 32 && (raw[pos] as i32) != 10) { pos = pos + 1; }
+        if (pos > st) { list.push[i64](&vals, _zag_str_to_i64(raw[st..pos])); }
+    }
+    if (vals.len < 3 || vals.data[0] != project_key || vals.data[2] < 0 || vals.data[2] > 1024) {
+        list.free[i64](&vals); return false;
+    }
+    let base: i32 = 3 + (vals.data[2] as i32);
+    if (version == 1 && vals.len != base) { list.free[i64](&vals); return false; }
+    if (version == 2 && (vals.len < base + 3 || vals.data[base + 2] < 0 || vals.data[base + 2] > 4096 ||
+        vals.len != base + 3 + (vals.data[base + 2] as i32))) { list.free[i64](&vals); return false; }
+    if (version == 3 && (vals.len < base + 4 || vals.data[base + 3] < 0 || vals.data[base + 3] > 4096 ||
+        vals.len != base + 4 + (vals.data[base + 3] as i32))) { list.free[i64](&vals); return false; }
+    if (version == 4 && (vals.len < base + 5 || vals.data[base + 4] < 0 || vals.data[base + 4] > 4096 ||
+        vals.len != base + 5 + (vals.data[base + 4] as i32))) { list.free[i64](&vals); return false; }
+    e.*.last_rev = vals.data[1];
+    e.*.rejected.len = 0;
+    let i: i32 = 0;
+    while (i < vals.data[2]) { list.push[i64](&e.*.rejected, vals.data[3 + i]); i = i + 1; }
+    if (version >= 2) {
+        e.*.work_active = vals.data[base] != 0;
+        e.*.work_family = clampi(vals.data[base + 1] as i32,1,6);
+        e.*.work_cursor = 0;
+        let count_at: i32 = base + 2;
+        if (version == 3) { e.*.work_cursor = imax(0,vals.data[base + 2] as i32); count_at = base + 3; }
+        e.*.work_subcursor = 0;
+        if (version == 4) {
+            e.*.work_cursor = imax(0,vals.data[base + 2] as i32);
+            e.*.work_subcursor = clampi(vals.data[base + 3] as i32,0,11); count_at = base + 4;
+        }
+        e.*.work_ids.len = 0;
+        let wi: i32 = 0; while (wi < vals.data[count_at]) {
+            list.push[i32](&e.*.work_ids,vals.data[count_at + 1 + wi] as i32); wi = wi + 1;
+        }
+        if (e.*.work_ids.len > 0 && e.*.work_cursor >= e.*.work_ids.len) { e.*.work_cursor = 0; }
+    }
+    list.free[i64](&vals);
+    return true;
+}
+
+fn opt_ck_i64(out: *[]u8, v: i64) void {
+    out.* = _zag_str_concat(out.*, " ");
+    out.* = _zag_str_concat(out.*, _zag_i64_to_str(v));
+}
+
+fn opt_ck_sim(out: *[]u8, sm: *Sim) void {
+    opt_ck_i64(out,sm.*.symbol);
+    opt_ck_i64(out,sm.*.nodes.len as i64);
+    let ni: i32 = 0;
+    while (ni < sm.*.nodes.len) {
+        let n: SNode = sm.*.nodes.data[ni];
+        opt_ck_i64(out,n.comp_id as i64); opt_ck_i64(out,n.out_t as i64);
+        opt_ck_i64(out,n.prev_t as i64); ni = ni + 1;
+    }
+    opt_ck_i64(out,sm.*.sguides.len as i64);
+    let gi: i32 = 0;
+    while (gi < sm.*.sguides.len) {
+        let g: SGuide = sm.*.sguides.data[gi];
+        opt_ck_i64(out,g.guide_id as i64); opt_ck_i64(out,g.head as i64);
+        opt_ck_i64(out,g.arrived as i64); opt_ck_i64(out,g.ring.len as i64);
+        let ri: i32 = 0;
+        while (ri < g.ring.len) { opt_ck_i64(out,g.ring.data[ri] as i64); ri = ri + 1; }
+        gi = gi + 1;
+    }
+}
+
+// Exact in-progress proof checkpoint. Histories are observability-only and do
+// not feed sim_step; future dynamics require symbol, node out/prev, and guide
+// delay rings/head. The tentative graph patch is included so reopen performs no
+// candidate rediscovery or replay of already-proven symbols.
+fn opt_proof_save(e: *OptEngine, path: []u8, project_key: i64) bool {
+    let out: []u8 = "optproof 1"; opt_ck_i64(&out,project_key);
+    if (!e.*.oracle_active) { opt_ck_i64(&out,0); out = _zag_str_concat(out,"\n"); return _zag_write_file(path,out) == 0; }
+    opt_ck_i64(&out,1); opt_ck_i64(&out,e.*.oracle_step as i64);
+    let p: OptProposal = e.*.oracle_candidate; opt_ck_i64(&out,p.family as i64);
+    opt_ck_i64(&out,p.removed.len as i64);
+    let i: i32 = 0; while (i < p.removed.len) { opt_ck_i64(&out,p.removed.data[i] as i64); i = i + 1; }
+    opt_ck_i64(&out,p.relabels.len as i64);
+    let r: i32 = 0; while (r < p.relabels.len) {
+        opt_ck_i64(&out,p.relabels.data[r].comp_id as i64);
+        opt_ck_i64(&out,p.relabels.data[r].new_op as i64); r = r + 1;
+    }
+    opt_ck_i64(&out,p.moves.len as i64);
+    let m: i32 = 0; while (m < p.moves.len) {
+        let mv: OptMove = p.moves.data[m]; opt_ck_i64(&out,mv.comp_id as i64);
+        opt_ck_i64(&out,mv.new_origin.x as i64); opt_ck_i64(&out,mv.new_origin.y as i64);
+        opt_ck_i64(&out,mv.new_origin.z as i64); m = m + 1;
+    }
+    opt_ck_i64(&out,p.guides.len as i64);
+    let g: i32 = 0; while (g < p.guides.len) {
+        let gd: Guide = p.guides.data[g].guide;
+        opt_ck_i64(&out,gd.id as i64); opt_ck_i64(&out,gd.from_c as i64);
+        opt_ck_i64(&out,gd.from_p as i64); opt_ck_i64(&out,gd.to_c as i64);
+        opt_ck_i64(&out,gd.to_p as i64); opt_ck_i64(&out,gd.path.len as i64);
+        let vi: i32 = 0; while (vi < gd.path.len) {
+            opt_ck_i64(&out,gd.path.data[vi].x as i64); opt_ck_i64(&out,gd.path.data[vi].y as i64);
+            opt_ck_i64(&out,gd.path.data[vi].z as i64); vi = vi + 1;
+        }
+        g = g + 1;
+    }
+    opt_ck_sim(&out,e.*.oracle_left); opt_ck_sim(&out,e.*.oracle_right);
+    out = _zag_str_concat(out,"\n"); return _zag_write_file(path,out) == 0;
+}
+
+fn opt_ck_vals(raw: []u8, prefix: []u8) list.ArrayList[i64] {
+    let vals: list.ArrayList[i64] = list.make[i64](64);
+    if (raw.len < prefix.len || _zag_strcmp(raw[0..prefix.len],prefix) != 1) { return vals; }
+    let pos: i32 = prefix.len;
+    while (pos < raw.len) {
+        while (pos < raw.len && ((raw[pos] as i32) == 32 || (raw[pos] as i32) == 10)) { pos = pos + 1; }
+        let st: i32 = pos;
+        while (pos < raw.len && (raw[pos] as i32) != 32 && (raw[pos] as i32) != 10) { pos = pos + 1; }
+        if (pos > st) { list.push[i64](&vals,_zag_str_to_i64(raw[st..pos])); }
+    }
+    return vals;
+}
+
+fn opt_ck_take(vals: list.ArrayList[i64], pos: *i32, out: *i64) bool {
+    if (pos.* < 0 || pos.* >= vals.len) { return false; }
+    out.* = vals.data[pos.*]; pos.* = pos.* + 1; return true;
+}
+
+fn opt_ck_restore_sim(sm: *Sim, vals: list.ArrayList[i64], pos: *i32) bool {
+    let v: i64 = 0; if (!opt_ck_take(vals,pos,&v)) { return false; } sm.*.symbol = v;
+    if (!opt_ck_take(vals,pos,&v) || v != sm.*.nodes.len) { return false; }
+    let ni: i32 = 0; while (ni < sm.*.nodes.len) {
+        let id: i64 = 0; let outv: i64 = 0; let prev: i64 = 0;
+        if (!opt_ck_take(vals,pos,&id) || !opt_ck_take(vals,pos,&outv) || !opt_ck_take(vals,pos,&prev)) { return false; }
+        let idx: i32 = sim_node_index(sm,id as i32); if (idx < 0) { return false; }
+        sm.*.nodes.data[idx].out_t = outv as i32; sm.*.nodes.data[idx].prev_t = prev as i32; ni = ni + 1;
+    }
+    if (!opt_ck_take(vals,pos,&v) || v != sm.*.sguides.len) { return false; }
+    let gi: i32 = 0; while (gi < sm.*.sguides.len) {
+        let id2: i64 = 0; let head: i64 = 0; let arrived: i64 = 0; let rn: i64 = 0;
+        if (!opt_ck_take(vals,pos,&id2) || !opt_ck_take(vals,pos,&head) ||
+            !opt_ck_take(vals,pos,&arrived) || !opt_ck_take(vals,pos,&rn)) { return false; }
+        let found: i32 = 0 - 1; let sj: i32 = 0;
+        while (sj < sm.*.sguides.len) { if (sm.*.sguides.data[sj].guide_id == id2) { found = sj; } sj = sj + 1; }
+        if (found < 0 || rn != sm.*.sguides.data[found].ring.len) { return false; }
+        sm.*.sguides.data[found].head = head as i32; sm.*.sguides.data[found].arrived = arrived as i32;
+        let ri: i32 = 0; while (ri < rn) {
+            let rv: i64 = 0; if (!opt_ck_take(vals,pos,&rv)) { return false; }
+            sm.*.sguides.data[found].ring.data[ri] = rv as i32; ri = ri + 1;
+        }
+        gi = gi + 1;
+    }
+    return true;
+}
+
+fn opt_proof_load(e: *OptEngine, path: []u8, project_key: i64, s: *Scene) bool {
+    let raw: []u8 = _zag_read_file(path);
+    if (raw.len < 12 || raw.len > 16 * 1024 * 1024) { return false; }
+    let vals: list.ArrayList[i64] = opt_ck_vals(raw,"optproof 1");
+    let pos: i32 = 0; let key: i64 = 0; let active: i64 = 0;
+    if (!opt_ck_take(vals,&pos,&key) || !opt_ck_take(vals,&pos,&active) || key != project_key) {
+        list.free[i64](&vals); return false;
+    }
+    if (active == 0) { list.free[i64](&vals); return true; }
+    let step: i64 = 0; let family: i64 = 0; let n: i64 = 0;
+    if (!opt_ck_take(vals,&pos,&step) || !opt_ck_take(vals,&pos,&family) ||
+        step < 0 || step >= opt_horizon()) { list.free[i64](&vals); return false; }
+    let p: OptProposal = opt_proposal_none(); p.family = family as i32; p.valid = true;
+    if (!opt_ck_take(vals,&pos,&n) || n < 0 || n > 4096) { opt_proposal_free(&p); list.free[i64](&vals); return false; }
+    let i: i32 = 0; while (i < n) { let v: i64 = 0; if (!opt_ck_take(vals,&pos,&v)) { opt_proposal_free(&p); list.free[i64](&vals); return false; } list.push[i32](&p.removed,v as i32); i = i + 1; }
+    if (!opt_ck_take(vals,&pos,&n) || n < 0 || n > 4096) { opt_proposal_free(&p); list.free[i64](&vals); return false; }
+    let r: i32 = 0; while (r < n) {
+        let id: i64 = 0; let op: i64 = 0;
+        if (!opt_ck_take(vals,&pos,&id) || !opt_ck_take(vals,&pos,&op)) { opt_proposal_free(&p); list.free[i64](&vals); return false; }
+        list.push[OptRelabel](&p.relabels,OptRelabel{ .comp_id=id as i32, .new_op=op as i32 }); r = r + 1;
+    }
+    if (!opt_ck_take(vals,&pos,&n) || n < 0 || n > 4096) { opt_proposal_free(&p); list.free[i64](&vals); return false; }
+    let m: i32 = 0; while (m < n) {
+        let id2: i64=0; let x:i64=0; let y:i64=0; let z:i64=0;
+        if (!opt_ck_take(vals,&pos,&id2) || !opt_ck_take(vals,&pos,&x) ||
+            !opt_ck_take(vals,&pos,&y) || !opt_ck_take(vals,&pos,&z)) { opt_proposal_free(&p); list.free[i64](&vals); return false; }
+        list.push[OptMove](&p.moves,OptMove{ .comp_id=id2 as i32, .new_origin=vox(x as i32,y as i32,z as i32) }); m=m+1;
+    }
+    if (!opt_ck_take(vals,&pos,&n) || n < 0 || n > 4096) { opt_proposal_free(&p); list.free[i64](&vals); return false; }
+    let g: i32 = 0; while (g < n) {
+        let id3:i64=0; let fc:i64=0; let fp:i64=0; let tc:i64=0; let tp:i64=0; let pn:i64=0;
+        if (!opt_ck_take(vals,&pos,&id3) || !opt_ck_take(vals,&pos,&fc) || !opt_ck_take(vals,&pos,&fp) ||
+            !opt_ck_take(vals,&pos,&tc) || !opt_ck_take(vals,&pos,&tp) || !opt_ck_take(vals,&pos,&pn) ||
+            pn < 1 || pn > limit_route_search_nodes()) { opt_proposal_free(&p); list.free[i64](&vals); return false; }
+        let pathv: list.ArrayList[Vox] = list.make[Vox](pn as i32);
+        let vi:i32=0; while (vi < pn) {
+            let vx:i64=0; let vy:i64=0; let vz:i64=0;
+            if (!opt_ck_take(vals,&pos,&vx) || !opt_ck_take(vals,&pos,&vy) || !opt_ck_take(vals,&pos,&vz)) {
+                list.free[Vox](&pathv); opt_proposal_free(&p); list.free[i64](&vals); return false;
+            }
+            list.push[Vox](&pathv,vox(vx as i32,vy as i32,vz as i32)); vi=vi+1;
+        }
+        list.push[OptGuideEdit](&p.guides,OptGuideEdit{ .guide=Guide{ .id=id3 as i32,
+            .from_c=fc as i32,.from_p=fp as i32,.to_c=tc as i32,.to_p=tp as i32,
+            .path=pathv,.length_nm=(imax(0,(pn as i32)-1) as f64)*s.*.model.pitch_nm.value,.live=0 } }); g=g+1;
+    }
+    p.before = opt_cost(s);
+    opt_oracle_cancel(e); e.*.oracle_candidate = p;
+    scene_free(e.*.oracle_scene); e.*.oracle_scene = opt_build_candidate(s,p.removed,p.relabels,p.guides,p.moves);
+    p.after = opt_cost(e.*.oracle_scene); e.*.oracle_candidate.after = p.after;
+    if (scene_validation_errors(e.*.oracle_scene) != 0 ||
+        opt_cost_score(p.after) >= opt_cost_score(p.before)) { opt_oracle_cancel(e); list.free[i64](&vals); return false; }
+    sim_recompile(e.*.oracle_left,s); sim_recompile(e.*.oracle_right,e.*.oracle_scene);
+    let ok: bool = e.*.oracle_left.*.model_ok && e.*.oracle_right.*.model_ok &&
+        opt_ck_restore_sim(e.*.oracle_left,vals,&pos) && opt_ck_restore_sim(e.*.oracle_right,vals,&pos) &&
+        pos == vals.len;
+    if (!ok) { opt_oracle_cancel(e); list.free[i64](&vals); return false; }
+    e.*.oracle_step = step as i32; e.*.oracle_active = true;
+    list.free[i64](&vals); return true;
+}
+
+fn opt_campaign_save_full(e: *OptEngine, path: []u8, project_key: i64) bool {
+    return opt_campaign_save(e,path,project_key) &&
+        opt_proof_save(e,_zag_str_concat(path,".proof"),project_key);
+}
+
+fn opt_campaign_load_full(e: *OptEngine, path: []u8, project_key: i64, s: *Scene) bool {
+    if (!opt_campaign_load(e,path,project_key)) { return false; }
+    let proof_path: []u8 = _zag_str_concat(path,".proof");
+    let raw: []u8 = _zag_read_file(proof_path);
+    if (raw.len == 0) { return true; }
+    // A corrupt/stale proof never crosses project identity and never poisons the
+    // queue: retain the family cursor and safely rediscover within that family.
+    let _proof_ok: bool = opt_proof_load(e,proof_path,project_key,s);
+    return true;
 }
 
 fn opt_engine_pending_family(e: *OptEngine) i32 {

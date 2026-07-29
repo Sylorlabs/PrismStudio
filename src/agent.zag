@@ -32,6 +32,7 @@ extern fn _zag_read_fd(fd: i64, buf: *i8, n: i64) i64;
 @import("capability.zag")
 @import("export.zag")
 @import("limits.zag")
+@import("process_stack.zag")
 
 struct Tok {
     off: i32,
@@ -64,7 +65,7 @@ fn tok_eq(line: []u8, t: Tok, lit: []u8) bool {
     return true;
 }
 
-// Agent file access is opt-in confined by TRITON_PROJECT_ROOT.  Paths must be
+// Agent file access is opt-in confined by PRISMSTUDIO_PROJECT_ROOT.  Paths must be
 // absolute, below that root, and lexically free of parent-directory segments.
 // The OS remains the final authority; this guard prevents obvious traversal
 // before any read or write is attempted.
@@ -82,7 +83,7 @@ fn path_has_parent_segment(path: []u8) bool {
 }
 
 fn path_under_root(path: []u8) bool {
-    let root: []u8 = _zag_getenv("TRITON_PROJECT_ROOT");
+    let root: []u8 = _zag_getenv("PRISMSTUDIO_PROJECT_ROOT");
     if (root.len == 0) { return true; }
     if (path.len == 0 || (path[0] as i32) != 47 || path_has_parent_segment(path)) { return false; }
     let n: i32 = root.len;
@@ -98,7 +99,7 @@ fn path_under_root(path: []u8) bool {
 
 fn agent_path_allowed(path: []u8) bool {
     if (path_under_root(path)) { return true; }
-    agent_err("E_PATH_OUTSIDE_ROOT path must remain inside TRITON_PROJECT_ROOT");
+    agent_err("E_PATH_OUTSIDE_ROOT path must remain inside PRISMSTUDIO_PROJECT_ROOT");
     return false;
 }
 
@@ -175,7 +176,7 @@ fn tok_i64(line: []u8, t: Tok) i64 {
 
 fn agent_help() void {
     agent_ok0();
-    _zag_println("# triton agent commands");
+    _zag_println("# PrismStudio agent commands");
     _zag_println("ping | help | capabilities | quit");
     _zag_println("new | demo | open <file.zpa> | save <file.zpa> | list_files");
     _zag_println("place <kind> <x> <y> <z> [rot] | place_here <kind> [rot] | place_on <kind> <plate> <lx> <lz> [rot]");
@@ -183,33 +184,36 @@ fn agent_help() void {
     _zag_println("can_place <kind> <x> <y> <z> [rot] | list | get <id> | select <id>");
     _zag_println("undo | redo | view | pick | open [file.zpa] | save [file.zpa]  (default: live session)");
     _zag_println("sim step [n] | sim reset | sim state | sim mode functional|physical | render <out.bmp>");
-    _zag_println("status | coords | power | perf | kinds");
+    _zag_println("camera <x> <y> <z> | render_at <out.bmp> <x> <y> <z>");
+    _zag_println("status | coords | stack [y] | power | perf | kinds");
     _zag_println("flash import <program.fir> | flash verify");
     _zag_println("ui list | ui screenshot <out.bmp> | ui activate <stable-id>");
+    _zag_println("optimizer apply|accept | optimizer decline|ignore | optimizer details");
     _zag_println("model status | model migrate <version>");
     _zag_println("export <prefix>  (writes BOM, netlist, models, report)");
     _zag_println("trace <out.trace> <steps>  (deterministic engine trace)");
     _zag_println("diagnostics <out.txt>  (metadata only; excludes scene contents)");
+    _zag_println("details | logs [n] | audit | uilog [n]");
     _zag_println("test engine | test smoke | build");
-    _zag_println("TRITON_GRANT may narrow grants: project= session= ops= path= expires_after_ms=");
-    _zag_println("TRITON_ALLOW_OPS and TRITON_DENY_OPS accept operation classes; deny wins");
+    _zag_println("PRISMSTUDIO_GRANT may narrow grants: project= session= ops= path= expires_after_ms=");
+    _zag_println("PRISMSTUDIO_ALLOW_OPS and PRISMSTUDIO_DENY_OPS accept operation classes; deny wins");
     _zag_println("kinds: plate chamber soh emitter detector");
     agent_dot();
 }
 
 fn agent_capabilities(a: *App) void {
     agent_ok0();
-    _zag_println("protocol triton-agent-1");
+    _zag_println("protocol prismstudio-agent-1");
     _zag_print("capability_bits "); _zag_println(_zag_i64_to_str(cap_load()));
-    _zag_println("mutation_idempotency TRITON_IDEMPOTENCY");
-    _zag_println("revision_precondition TRITON_EXPECT_REV");
+    _zag_println("mutation_idempotency PRISMSTUDIO_IDEMPOTENCY");
+    _zag_println("revision_precondition PRISMSTUDIO_EXPECT_REV");
     _zag_print("revision "); _zag_println(_zag_i64_to_str(a.*.session_rev));
     _zag_print("max_request_bytes "); _zag_println(_zag_i64_to_str(limit_agent_request_bytes() as i64));
-    if (_zag_getenv("TRITON_PROJECT_ROOT").len > 0) { _zag_println("project_root_scope enabled"); }
+    if (_zag_getenv("PRISMSTUDIO_PROJECT_ROOT").len > 0) { _zag_println("project_root_scope enabled"); }
     else { _zag_println("project_root_scope disabled"); }
-    if (_zag_getenv("TRITON_GRANT").len > 0) { _zag_println("scoped_grant enabled"); }
+    if (_zag_getenv("PRISMSTUDIO_GRANT").len > 0) { _zag_println("scoped_grant enabled"); }
     else { _zag_println("scoped_grant disabled"); }
-    if (_zag_getenv("TRITON_ALLOW_OPS").len > 0 || _zag_getenv("TRITON_DENY_OPS").len > 0) {
+    if (_zag_getenv("PRISMSTUDIO_ALLOW_OPS").len > 0 || _zag_getenv("PRISMSTUDIO_DENY_OPS").len > 0) {
         _zag_println("user_rules enabled");
     } else {
         _zag_println("user_rules disabled");
@@ -256,6 +260,12 @@ fn agent_is_mutation(line: []u8, toks: *list.ArrayList[Tok]) bool {
         tok_eq(line, verb, "disconnect") || tok_eq(line, verb, "reroute") ||
         tok_eq(line, verb, "close") ||
         tok_eq(line, verb, "save") || tok_eq(line, verb, "open")) { return true; }
+    if (tok_eq(line, verb, "optimizer") && toks.*.len >= 2 &&
+        (tok_eq(line, list.get[Tok](toks, 1), "apply") ||
+         tok_eq(line, list.get[Tok](toks, 1), "accept") ||
+         tok_eq(line, list.get[Tok](toks, 1), "decline") ||
+         tok_eq(line, list.get[Tok](toks, 1), "ignore") ||
+         tok_eq(line, list.get[Tok](toks, 1), "details"))) { return true; }
     if (tok_eq(line, verb, "ui") && toks.*.len >= 2 &&
         tok_eq(line, list.get[Tok](toks, 1), "activate")) { return true; }
     if (tok_eq(line, verb, "model") && toks.*.len >= 2 &&
@@ -348,10 +358,10 @@ fn agent_path_under_scope(path: []u8, scope: []u8) bool {
 }
 
 fn agent_scoped_grant_allowed(line: []u8, toks: *list.ArrayList[Tok], required: i64) bool {
-    let raw: []u8 = _zag_getenv("TRITON_GRANT");
+    let raw: []u8 = _zag_getenv("PRISMSTUDIO_GRANT");
     if (raw.len == 0) { return true; }
     let project: []u8 = agent_field_value(raw, "project");
-    if (project.len > 0 && _zag_strcmp(project, _zag_getenv("TRITON_PROJECT_ROOT")) != 1) {
+    if (project.len > 0 && _zag_strcmp(project, _zag_getenv("PRISMSTUDIO_PROJECT_ROOT")) != 1) {
         agent_err("E_GRANT_SCOPE project mismatch");
         return false;
     }
@@ -388,7 +398,7 @@ fn agent_user_rule_matches(env_name: []u8, required: i64) bool {
 }
 
 fn agent_revision_precondition(a: *App) bool {
-    let raw: []u8 = _zag_getenv("TRITON_EXPECT_REV");
+    let raw: []u8 = _zag_getenv("PRISMSTUDIO_EXPECT_REV");
     if (raw.len == 0 && a.*.request_expected_rev < 0) { return true; }
     let expected: i64 = a.*.request_expected_rev;
     if (expected < 0) { expected = _zag_str_to_i64(raw); }
@@ -414,7 +424,7 @@ fn agent_idempotency_key_valid(key: []u8) bool {
 }
 
 fn agent_idempotency_prepare(a: *App) i32 {
-    let key: []u8 = _zag_getenv("TRITON_IDEMPOTENCY");
+    let key: []u8 = _zag_getenv("PRISMSTUDIO_IDEMPOTENCY");
     if (a.*.request_enveloped) { key = a.*.request_idempotency; }
     if (key.len == 0) {
         agent_err("E_IDEMPOTENCY_REQUIRED use request <key> <revision> <command>");
@@ -495,6 +505,43 @@ fn agent_coords(a: *App) void {
             pi = pi + 1;
         }
         i = i + 1;
+    }
+    agent_dot();
+}
+
+// Print the pinned process-stack contract.  This is intentionally an
+// inspection-only view: an agent gets exact Y-layer rules and provenance
+// without being allowed to invent material thicknesses for an uncharacterized
+// process.
+fn agent_process_stack(a: *App, only_y: i32) void {
+    let m: DeviceModel = a.*.scene.*.model;
+    agent_ok0();
+    _zag_print("process_stack schema=");
+    _zag_print(_zag_i64_to_str(process_stack_schema_version() as i64));
+    _zag_print(" model=");
+    _zag_println(m.id);
+    let i: i32 = 0;
+    while (i < process_layer_count()) {
+        let layer: ProcessLayer = process_layer_at(i);
+        if (only_y < 0 || only_y == layer.y) {
+            _zag_print("Y "); _zag_print(_zag_i64_to_str(layer.y as i64));
+            _zag_print(" role="); _zag_print(process_layer_role_name(layer.role));
+            _zag_print(" material="); _zag_print(layer.material);
+            _zag_print(" thickness=");
+            if (layer.thickness_nm.known) {
+                _zag_print(fmt_f1(layer.thickness_nm.value));
+                _zag_print(" "); _zag_print(layer.thickness_nm.units);
+            } else { _zag_print("Unknown"); }
+            // PhysicalParam carries the authoritative user-visible evidence
+            // class; do not duplicate it through a separate enum string path.
+            _zag_print(" evidence="); _zag_print(evidence_class_name(layer.thickness_nm.confidence));
+            _zag_print(" allows="); _zag_println(process_layer_content_summary(layer));
+        }
+        i = i + 1;
+    }
+    if (only_y >= process_layer_count()) {
+        _zag_print("Y "); _zag_print(_zag_i64_to_str(only_y as i64));
+        _zag_println(" unavailable: no defined process layer");
     }
     agent_dot();
 }
@@ -832,6 +879,55 @@ fn agent_ui_activate(a: *App, id: i64) void {
     agent_mutation_ok(a, "UI element activated", 0 - 1);
 }
 
+fn agent_optimizer_open(a: *App) void {
+    if (!a.*.opt_open) {
+        app_action(a, cmd_optimizer());
+        app_frame(a, 0.0);
+    }
+}
+
+fn agent_optimizer_apply(a: *App) void {
+    agent_optimizer_open(a);
+    if (!a.*.opt.*.has_pending) {
+        agent_err("optimizer: no pending proposal");
+        return;
+    }
+    if (opt_apply_gui(a)) {
+        a.*.opt_open = false;
+        a.*.opt_details = false;
+        a.*.opt_previewed = false;
+        session_after_edit(a);
+        agent_mutation_ok(a, "optimizer proposal applied", 0 - 1);
+        return;
+    }
+    agent_err("optimizer: proposal stale or invalid");
+}
+
+fn agent_optimizer_decline(a: *App) void {
+    agent_optimizer_open(a);
+    if (!a.*.opt.*.has_pending) {
+        agent_err("optimizer: no pending proposal");
+        return;
+    }
+    opt_engine_ignore_pending(a.*.opt);
+    a.*.opt_open = false;
+    a.*.opt_details = false;
+    session_after_edit(a);
+    agent_mutation_ok(a, "optimizer proposal declined", 0 - 1);
+}
+
+fn agent_optimizer_details(a: *App) void {
+    agent_optimizer_open(a);
+    if (!a.*.opt.*.has_pending) {
+        agent_err("optimizer: no pending proposal");
+        return;
+    }
+    a.*.opt_details = !a.*.opt_details;
+    if (a.*.opt_details) { a.*.opt_previewed = true; }
+    session_after_edit(a);
+    agent_mutation_ok(a, "optimizer details toggled", 0 - 1);
+}
+
 fn agent_model(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     if (toks.*.len < 2 || tok_eq(line, list.get[Tok](toks, 1), "status")) {
         agent_ok0();
@@ -863,8 +959,13 @@ fn agent_model(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
 }
 
 fn agent_diagnostics(a: *App, path: []u8) void {
-    let s0: []u8 = "triton_diagnostics_v1\nscene_contents=excluded_by_default\n";
-    let s1: []u8 = _zag_str_concat(s0, "protocol=triton-agent-1\nrevision=");
+    _zag_write_file(path, _zag_str_concat(agent_details_text(a), "\n"));
+    agent_ok1("diagnostics written");
+}
+
+fn agent_details_text(a: *App) []u8 {
+    let s0: []u8 = "prismstudio_diagnostics_v1\nscene_contents=excluded_by_default\n";
+    let s1: []u8 = _zag_str_concat(s0, "protocol=prismstudio-agent-1\nrevision=");
     let s2: []u8 = _zag_str_concat(s1, _zag_i64_to_str(a.*.session_rev));
     let s3: []u8 = _zag_str_concat(s2, "\ncomponents=");
     let s4: []u8 = _zag_str_concat(s3, _zag_i64_to_str(a.*.scene.*.comps.len as i64));
@@ -873,9 +974,60 @@ fn agent_diagnostics(a: *App, path: []u8) void {
     let s7: []u8 = _zag_str_concat(s6, "\ncapability_bits=");
     let s8: []u8 = _zag_str_concat(s7, _zag_i64_to_str(cap_load()));
     let s9: []u8 = _zag_str_concat(s8, "\nmax_request_bytes=");
-    let s10: []u8 = _zag_str_concat(s9, _zag_i64_to_str(limit_agent_request_bytes() as i64));
-    _zag_write_file(path, _zag_str_concat(s10, "\n"));
-    agent_ok1("diagnostics written");
+    return _zag_str_concat(s9, _zag_i64_to_str(limit_agent_request_bytes() as i64));
+}
+
+fn agent_details(a: *App) void {
+    agent_ok1(agent_details_text(a));
+}
+
+fn agent_audit_path() []u8 {
+    let path: []u8 = _zag_getenv("PRISMSTUDIO_AUDIT");
+    if (path.len == 0) { path = ".prismstudio/audit.log"; }
+    return path;
+}
+
+fn agent_logs(a: *App, lines: i32) void {
+    let raw: []u8 = _zag_read_file(agent_audit_path());
+    if (raw.len == 0) {
+        agent_ok1("no audit log");
+        return;
+    }
+    if (lines <= 0) { agent_ok1(raw); return; }
+    let end: i32 = raw.len;
+    if (raw[raw.len - 1] == 10) { end = end - 1; }
+    let seen: i32 = 0;
+    let i: i32 = end;
+    let start: i32 = 0;
+    while (i > 0 && seen < lines) {
+        i = i - 1;
+        if (raw[i] == 10) {
+            seen = seen + 1;
+            if (seen == lines) { start = i + 1; break; }
+        }
+    }
+    let out: []u8 = raw[start..end];
+    let label: []u8 = _zag_str_concat(_zag_str_concat("audit lines=", _zag_i64_to_str(lines as i64)), "\n");
+    let body: []u8 = _zag_str_concat(label, out);
+    agent_ok1(body);
+}
+
+fn agent_uilog(a: *App, lines: i32) void {
+    if (a.*.log.len == 0) {
+        agent_ok1("no ui log");
+        return;
+    }
+    let start: i32 = 0;
+    if (lines > 0 && lines < a.*.log.len) { start = a.*.log.len - lines; }
+    let i: i32 = start;
+    let body: []u8 = "";
+    while (i < a.*.log.len) {
+        if (i > start) { body = _zag_str_concat(body, "\n"); }
+        body = _zag_str_concat(body, list.get[[]u8](a.*.log, i));
+        i = i + 1;
+    }
+    let label: []u8 = _zag_str_concat(_zag_str_concat("ui log lines=", _zag_i64_to_str((a.*.log.len - start) as i64)), "\n");
+    agent_ok1(_zag_str_concat(label, body));
 }
 
 fn agent_check_device_model_version(path: []u8) bool {
@@ -909,7 +1061,7 @@ fn agent_test(cmd: []u8) void {
     if (_zag_strcmp(cmd, "engine") == 1) {
         rc = _zag_exec_cmd("./probe/engine_test >/dev/null 2>&1");
     } else if (_zag_strcmp(cmd, "smoke") == 1) {
-        rc = _zag_exec_cmd("./zagpa --smoke /tmp/triton_smoke.bmp >/dev/null 2>&1");
+        rc = _zag_exec_cmd("./zagpa --smoke /tmp/prismstudio_smoke.bmp >/dev/null 2>&1");
     } else if (_zag_strcmp(cmd, "build") == 1) {
         rc = _zag_exec_cmd("./build.sh >/dev/null 2>&1");
     } else {
@@ -930,8 +1082,12 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     let required: i64 = cap_inspect();
     if (tok_eq(line, verb, "sim")) { required = cap_simulate(); }
     if (tok_eq(line, verb, "render")) { required = cap_export(); }
+    if (tok_eq(line, verb, "render_at")) { required = cap_export(); }
     if (tok_eq(line, verb, "export")) { required = cap_export(); }
     if (tok_eq(line, verb, "diagnostics")) { required = cap_export(); }
+    if (tok_eq(line, verb, "details")) { required = cap_read(); }
+    if (tok_eq(line, verb, "logs") || tok_eq(line, verb, "audit")) { required = cap_read(); }
+    if (tok_eq(line, verb, "uilog")) { required = cap_read(); }
     if (tok_eq(line, verb, "ui") && toks.*.len >= 2 &&
         tok_eq(line, list.get[Tok](toks, 1), "screenshot")) { required = cap_export(); }
     if (tok_eq(line, verb, "ui") && toks.*.len >= 2 &&
@@ -941,6 +1097,12 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     if (tok_eq(line, verb, "trace")) { required = cap_export(); }
     if (tok_eq(line, verb, "save")) { required = cap_save(); }
     if (tok_eq(line, verb, "test") || tok_eq(line, verb, "build")) { required = cap_execute(); }
+    if (tok_eq(line, verb, "optimizer") && toks.*.len >= 2 &&
+        (tok_eq(line, list.get[Tok](toks, 1), "apply") ||
+         tok_eq(line, list.get[Tok](toks, 1), "accept") ||
+         tok_eq(line, list.get[Tok](toks, 1), "decline") ||
+         tok_eq(line, list.get[Tok](toks, 1), "ignore") ||
+         tok_eq(line, list.get[Tok](toks, 1), "details"))) { required = cap_edit(); }
     if (tok_eq(line, verb, "new") || tok_eq(line, verb, "demo") ||
         tok_eq(line, verb, "place") || tok_eq(line, verb, "place_here") ||
         tok_eq(line, verb, "place_on") || tok_eq(line, verb, "route") ||
@@ -954,12 +1116,12 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     a.*.request_command = line;
     a.*.request_required = required;
     audit_append("request", line, required);
-    if (agent_user_rule_matches("TRITON_DENY_OPS", required)) {
+    if (agent_user_rule_matches("PRISMSTUDIO_DENY_OPS", required)) {
         audit_append("rule-denied", line, required);
         agent_err("E_RULE_DENIED operation class denied by user rule");
         return;
     }
-    if (!cap_allowed(required) && !agent_user_rule_matches("TRITON_ALLOW_OPS", required)) {
+    if (!cap_allowed(required) && !agent_user_rule_matches("PRISMSTUDIO_ALLOW_OPS", required)) {
         audit_append("denied", line, required);
         agent_err("E_CAP_DENIED explicit capability grant required");
         return;
@@ -1000,6 +1162,30 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     }
     if (tok_eq(line, verb, "view")) {
         session_agent_view();
+        return;
+    }
+    if (tok_eq(line, verb, "camera")) {
+        if (toks.*.len < 4) { agent_err("usage: camera <x> <y> <z>"); return; }
+        let cx: i64 = tok_i64(line, list.get[Tok](toks, 1));
+        let cy: i64 = tok_i64(line, list.get[Tok](toks, 2));
+        let cz: i64 = tok_i64(line, list.get[Tok](toks, 3));
+        app_camera_teleport(a, cx as f64, cy as f64, cz as f64);
+        let msgc: []u8 = _zag_str_concat("camera x=", _zag_i64_to_str(cx));
+        let msgc2: []u8 = _zag_str_concat(msgc, " y=");
+        let msgc3: []u8 = _zag_str_concat(msgc2, _zag_i64_to_str(cy));
+        let msgc4: []u8 = _zag_str_concat(msgc3, " z=");
+        agent_ok1(_zag_str_concat(msgc4, _zag_i64_to_str(cz)));
+        return;
+    }
+    if (tok_eq(line, verb, "render_at")) {
+        if (toks.*.len < 5) { agent_err("usage: render_at <out.bmp> <x> <y> <z>"); return; }
+        let rpath: []u8 = tok_slice(line, list.get[Tok](toks, 1));
+        if (!agent_path_allowed(rpath)) { return; }
+        let rx: i64 = tok_i64(line, list.get[Tok](toks, 2));
+        let ry: i64 = tok_i64(line, list.get[Tok](toks, 3));
+        let rz: i64 = tok_i64(line, list.get[Tok](toks, 4));
+        app_camera_teleport(a, rx as f64, ry as f64, rz as f64);
+        agent_render(a, rpath);
         return;
     }
     if (tok_eq(line, verb, "pick")) {
@@ -1293,6 +1479,24 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         agent_diagnostics(a, path);
         return;
     }
+    if (tok_eq(line, verb, "details")) {
+        agent_details(a);
+        return;
+    }
+    if (tok_eq(line, verb, "logs") || tok_eq(line, verb, "audit")) {
+        let lines: i32 = 0;
+        if (toks.*.len >= 2) { lines = tok_i64(line, list.get[Tok](toks, 1)) as i32; }
+        if (lines < 0) { agent_err("usage: logs [nonnegative n]"); return; }
+        agent_logs(a, lines);
+        return;
+    }
+    if (tok_eq(line, verb, "uilog")) {
+        let lines: i32 = 0;
+        if (toks.*.len >= 2) { lines = tok_i64(line, list.get[Tok](toks, 1)) as i32; }
+        if (lines < 0) { agent_err("usage: uilog [nonnegative n]"); return; }
+        agent_uilog(a, lines);
+        return;
+    }
     if (tok_eq(line, verb, "sim")) {
         if (toks.*.len < 2) { agent_err("usage: sim step|reset|state [n]"); return; }
         let sub: Tok = list.get[Tok](toks, 1);
@@ -1382,6 +1586,12 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         agent_coords(a);
         return;
     }
+    if (tok_eq(line, verb, "stack")) {
+        let y: i32 = 0 - 1;
+        if (toks.*.len >= 2) { y = tok_i64(line, list.get[Tok](toks, 1)) as i32; }
+        agent_process_stack(a, y);
+        return;
+    }
     if (tok_eq(line, verb, "power")) {
         agent_power(a);
         return;
@@ -1409,6 +1619,14 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
             agent_ui_activate(a, tok_i64(line, list.get[Tok](toks, 2))); return;
         }
         agent_err("ui: use list, screenshot, or activate"); return;
+    }
+    if (tok_eq(line, verb, "optimizer")) {
+        if (toks.*.len < 2) { agent_err("usage: optimizer apply|accept|decline|ignore|details"); return; }
+        let sub: Tok = list.get[Tok](toks, 1);
+        if (tok_eq(line, sub, "apply") || tok_eq(line, sub, "accept")) { agent_optimizer_apply(a); return; }
+        if (tok_eq(line, sub, "decline") || tok_eq(line, sub, "ignore")) { agent_optimizer_decline(a); return; }
+        if (tok_eq(line, sub, "details")) { agent_optimizer_details(a); return; }
+        agent_err("optimizer: use apply, accept, decline, ignore, or details"); return;
     }
     if (tok_eq(line, verb, "model")) { agent_model(a, line, toks); return; }
     agent_err("unknown command (try help)");
@@ -1460,10 +1678,10 @@ fn agent_preview(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     }
 }
 
-// A cancel sentinel: presence of a readable, non-empty /tmp/triton_cancel requests
+// A cancel sentinel: presence of a readable, non-empty /tmp/prismstudio_cancel requests
 // cancellation. Checked at step boundaries so cancellation is always safe.
 fn agent_cancel_requested() bool {
-    let c: []u8 = _zag_read_file("/tmp/triton_cancel");
+    let c: []u8 = _zag_read_file("/tmp/prismstudio_cancel");
     return c.len > 0;
 }
 
@@ -1624,7 +1842,7 @@ fn agent_run_script(a: *App, path: []u8) void {
 fn run_agent(script: []u8, once: []u8) i32 {
     let a: *App = app_new(800, 600);
     session_bind(a);
-    _zag_println("OK ready triton-agent-1");
+    _zag_println("OK ready prismstudio-agent-1");
     agent_flush();
 
     if (once.len > 0) {

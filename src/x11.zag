@@ -176,6 +176,13 @@ struct X11 {
     pixmap_bpp: i32,
     scanline_pad: i32,
     max_req_bytes: i64,
+    // Core X11 screen geometry. The millimetre dimensions are server-reported
+    // and may describe the whole desktop rather than the monitor containing
+    // our window; callers can inspect `valid` on x11_display_density().
+    screen_px_w: i32,
+    screen_px_h: i32,
+    screen_mm_w: i32,
+    screen_mm_h: i32,
     // our objects
     wid: i64,
     gcid: i64,
@@ -192,6 +199,7 @@ struct X11 {
     mods: i32,     // bit0 shift, bit1 ctrl, bit2 alt
     wheel: i32,    // accumulated this frame
     keys: list.ArrayList[i32],
+    keys_down: list.ArrayList[i32], // persistent translated key state
     win_w: i32,
     win_h: i32,
     should_close: bool,
@@ -219,6 +227,59 @@ struct X11 {
     // a resize or expose since the last present means the next upload must be
     // the whole frame (dirty-region present cannot rely on stale window pixels)
     needs_full: bool,
+}
+
+// Display-density facts kept separate from UI policy. `scale` is a conservative
+// recommendation rounded to quarter steps (1.00, 1.25, ... 3.00), suitable for
+// native-resolution layout/rasterization. It must not be implemented by
+// nearest-neighbour enlargement of an already-rendered framebuffer.
+//
+// Source 1 means the dimensions came from the core X11 Setup screen record.
+// These are safe and dependency-free, but screen-wide rather than RandR-output
+// specific. Source 0 is the explicit 96 DPI fallback used when the server's
+// physical dimensions are missing or implausible.
+struct X11DisplayDensity {
+    pixel_w: i32,
+    pixel_h: i32,
+    mm_w: i32,
+    mm_h: i32,
+    dpi_x: f64,
+    dpi_y: f64,
+    dpi: f64,
+    scale: f64,
+    source: i32,
+    valid: bool,
+}
+
+fn x11_display_density(x: *X11) X11DisplayDensity {
+    let dx: f64 = 96.0;
+    let dy: f64 = 96.0;
+    let source: i32 = 0;
+    let valid: bool = false;
+    if (x.*.screen_px_w > 0 && x.*.screen_px_h > 0 &&
+        x.*.screen_mm_w > 0 && x.*.screen_mm_h > 0) {
+        let sx: f64 = (x.*.screen_px_w as f64) * 25.4 / (x.*.screen_mm_w as f64);
+        let sy: f64 = (x.*.screen_px_h as f64) * 25.4 / (x.*.screen_mm_h as f64);
+        // Some X servers publish placeholder millimetre dimensions. Reject
+        // clearly implausible values rather than silently producing a wild UI.
+        if (sx >= 50.0 && sx <= 400.0 && sy >= 50.0 && sy <= 400.0) {
+            dx = sx;
+            dy = sy;
+            source = 1;
+            valid = true;
+        }
+    }
+    let dpi: f64 = (dx + dy) * 0.5;
+    let quarters: i32 = ((dpi / 96.0) * 4.0 + 0.5) as i32;
+    if (quarters < 4) { quarters = 4; }
+    if (quarters > 12) { quarters = 12; }
+    return X11DisplayDensity{
+        .pixel_w = x.*.screen_px_w, .pixel_h = x.*.screen_px_h,
+        .mm_w = x.*.screen_mm_w, .mm_h = x.*.screen_mm_h,
+        .dpi_x = dx, .dpi_y = dy, .dpi = dpi,
+        .scale = (quarters as f64) / 4.0,
+        .source = source, .valid = valid,
+    };
 }
 
 fn x_rid(x: *X11) i64 {
@@ -416,12 +477,15 @@ fn x11_connect(w: i32, h: i32, title: []u8) *X11 {
         .root = 0, .root_visual = 0, .root_depth = 24,
         .pixmap_bpp = 32, .scanline_pad = 32,
         .max_req_bytes = 16384,
+        .screen_px_w = 0, .screen_px_h = 0,
+        .screen_mm_w = 0, .screen_mm_h = 0,
         .wid = 0, .gcid = 0,
         .wm_protocols = 0, .wm_delete = 0,
         .min_kc = 8, .ksyms_per = 0,
         .keymap = list.make[i64](8),
         .mx = 0, .my = 0, .btn = 0, .mods = 0, .wheel = 0,
         .keys = list.make[i32](8),
+        .keys_down = list.make[i32](128),
         .win_w = w, .win_h = h,
         .should_close = false,
         .focused = false,
@@ -437,6 +501,7 @@ fn x11_connect(w: i32, h: i32, title: []u8) *X11 {
         .needs_full = true,
     });
     x.*.evt.len = 32;
+    x.*.keys_down.len = 128;
 
     let disp: i32 = x_display_num();
     let reply: list.ArrayList[u8] = list.make[u8](1024);
@@ -481,6 +546,10 @@ fn x11_connect(w: i32, h: i32, title: []u8) *X11 {
         return x;
     }
     x.*.root = rd32(&reply, screen_off);
+    x.*.screen_px_w = rd16(&reply, screen_off + 20);
+    x.*.screen_px_h = rd16(&reply, screen_off + 22);
+    x.*.screen_mm_w = rd16(&reply, screen_off + 24);
+    x.*.screen_mm_h = rd16(&reply, screen_off + 26);
     x.*.root_visual = rd32(&reply, screen_off + 32);
     x.*.root_depth = rd8(&reply, screen_off + 38);
     let fi: i32 = 0;
@@ -511,8 +580,9 @@ fn x11_connect(w: i32, h: i32, title: []u8) *X11 {
     xw32(req, x.*.root_visual);
     xw32(req, 2 + 2048);            // CWBackPixel | CWEventMask
     xw32(req, 1052688);             // back pixel 0x101010
-    // KeyPress|ButtonPress|ButtonRelease|PointerMotion|Exposure|StructureNotify
-    xw32(req, 1 + 4 + 8 + 64 + 32768 + 131072);
+    // KeyPress|KeyRelease|ButtonPress|ButtonRelease|PointerMotion|
+    // Exposure|StructureNotify|FocusChange
+    xw32(req, 1 + 2 + 4 + 8 + 64 + 32768 + 131072 + 2097152);
     if (!x_send(x)) { return x; }
 
     // ── window title (WM_NAME) ──
@@ -617,7 +687,7 @@ fn x_shm_query_version(x: *X11, opcode: i32) bool {
 }
 
 fn x_shm_enabled() bool {
-    let v: []u8 = _zag_getenv("TRITON_SHM");
+    let v: []u8 = _zag_getenv("PRISMSTUDIO_SHM");
     return _zag_strcmp(v, "1") == 1;
 }
 
@@ -879,7 +949,16 @@ fn x_handle_event(x: *X11) void {
     if (kind == 2) {                   // KeyPress
         if (synthetic) { x.*.synth_seen = x.*.synth_seen | 1; }
         let code: i32 = x_key_code(x, rd8(e, 1));
-        if (code != 0) { list.push[i32](&x.*.keys, code); }
+        if (code != 0) {
+            list.push[i32](&x.*.keys, code);
+            if (code < x.*.keys_down.len) { x.*.keys_down.data[code] = 1; }
+        }
+        x_update_mods(x, rd16(e, 28));
+        return;
+    }
+    if (kind == 3) {                   // KeyRelease
+        let code: i32 = x_key_code(x, rd8(e, 1));
+        if (code > 0 && code < x.*.keys_down.len) { x.*.keys_down.data[code] = 0; }
         x_update_mods(x, rd16(e, 28));
         return;
     }
@@ -936,6 +1015,16 @@ fn x_handle_event(x: *X11) void {
         if (synthetic) { x.*.synth_seen = x.*.synth_seen | 8; }
         let atom: i64 = rd32(e, 12);
         if (atom == x.*.wm_delete) { x.*.should_close = true; }
+        return;
+    }
+    if (kind == 10) {                  // FocusOut: never leave movement stuck
+        x.*.focused = false;
+        let ki: i32 = 0;
+        while (ki < x.*.keys_down.len) {
+            x.*.keys_down.data[ki] = 0;
+            ki = ki + 1;
+        }
+        x.*.mods = 0;
         return;
     }
     if (kind == 12) { x.*.needs_full = true; return; }   // Expose: repaint the window

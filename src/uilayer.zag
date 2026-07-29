@@ -56,16 +56,27 @@ fn ps_capture(f: *FB, r: Rect, ps: *PanelSurface, hash: i64) void {
         ps.*.px = list.make[i64](need);
     }
     ps.*.px.len = need;
+    let s: i32 = f.*.scale;
+    let pw: i32 = fb_pw(f);
     let row: i32 = 0;
     while (row < r.h) {
         let sy: i32 = r.y + row;
         if (sy >= 0 && sy < f.*.h) {
-            let src: i32 = sy * f.*.w + r.x;
             let dst: i32 = row * r.w;
-            let xx: i32 = 0;
-            while (xx < r.w) {
-                ps.*.px.data[dst + xx] = f.*.px.data[src + xx];
-                xx = xx + 1;
+            if (s == 1) {
+                let src: i32 = sy * pw + r.x;
+                let xx: i32 = 0;
+                while (xx < r.w) {
+                    ps.*.px.data[dst + xx] = f.*.px.data[src + xx];
+                    xx = xx + 1;
+                }
+            } else {
+                let xx: i32 = 0;
+                while (xx < r.w) {
+                    let pidx: i32 = (sy * s) * pw + (r.x + xx) * s;
+                    ps.*.px.data[dst + xx] = f.*.px.data[pidx];
+                    xx = xx + 1;
+                }
             }
         }
         row = row + 1;
@@ -82,23 +93,33 @@ fn ps_capture(f: *FB, r: Rect, ps: *PanelSurface, hash: i64) void {
 // Blit the cached surface back — one draw-list command per panel, whole rows
 // batched per scanline.
 fn ps_blit(f: *FB, ps: *PanelSurface) void {
+    let s: i32 = f.*.scale;
     let row: i32 = 0;
     while (row < ps.*.h) {
         let dy: i32 = ps.*.y + row;
         if (dy >= 0 && dy < f.*.h) {
-            let dst: i32 = dy * f.*.w + ps.*.x;
-            let src: i32 = row * ps.*.w;
-            let xx: i32 = 0;
-            while (xx + 4 <= ps.*.w) {
-                f.*.px.data[dst + xx] = ps.*.px.data[src + xx];
-                f.*.px.data[dst + xx + 1] = ps.*.px.data[src + xx + 1];
-                f.*.px.data[dst + xx + 2] = ps.*.px.data[src + xx + 2];
-                f.*.px.data[dst + xx + 3] = ps.*.px.data[src + xx + 3];
-                xx = xx + 4;
-            }
-            while (xx < ps.*.w) {
-                f.*.px.data[dst + xx] = ps.*.px.data[src + xx];
-                xx = xx + 1;
+            if (s == 1) {
+                let dst: i32 = dy * fb_pw(f) + ps.*.x;
+                let src: i32 = row * ps.*.w;
+                let xx: i32 = 0;
+                while (xx + 4 <= ps.*.w) {
+                    f.*.px.data[dst + xx] = ps.*.px.data[src + xx];
+                    f.*.px.data[dst + xx + 1] = ps.*.px.data[src + xx + 1];
+                    f.*.px.data[dst + xx + 2] = ps.*.px.data[src + xx + 2];
+                    f.*.px.data[dst + xx + 3] = ps.*.px.data[src + xx + 3];
+                    xx = xx + 4;
+                }
+                while (xx < ps.*.w) {
+                    f.*.px.data[dst + xx] = ps.*.px.data[src + xx];
+                    xx = xx + 1;
+                }
+            } else {
+                let src: i32 = row * ps.*.w;
+                let xx: i32 = 0;
+                while (xx < ps.*.w) {
+                    px_set(f, ps.*.x + xx, dy, ps.*.px.data[src + xx]);
+                    xx = xx + 1;
+                }
             }
         }
         row = row + 1;

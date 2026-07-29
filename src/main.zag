@@ -18,6 +18,10 @@
 @import("mcp.zag")
 @import("session.zag")
 @import("gpu_rt.zag")
+@import("gpu_isa_display.zag")
+@import("gpu_backend.zag")
+@import("std:gpu")
+@import("std:linux_gpu_isolation")
 
 fn fb_path() []u8 { return "/dev/shm/zagpa_fb.bin"; }
 
@@ -92,6 +96,16 @@ fn parse_ints(line: []u8, out: *list.ArrayList[i64]) void {
 
 fn run_smoke(out_path: []u8) i32 {
     let a: *App = app_new(1440, 900);
+    // `--scale N` renders the same logical layout into an N× physical buffer,
+    // which is how the HiDPI present path works at runtime. Useful for
+    // eyeballing that arcs/text stay smooth instead of being upscaled.
+    let sc: i32 = arg_i_after("--scale", 1);
+    if (sc < 1) { sc = 1; }
+    if (sc > 3) { sc = 3; }
+    if (sc > 1) {
+        a.*.ui_scale = sc;
+        fb_set_scale(&a.*.f, sc);
+    }
     app_action_demo(a);
     sel_set(a, 4);   // a chamber, exercises the inspector + scope
 
@@ -122,6 +136,48 @@ fn run_smoke(out_path: []u8) i32 {
     print_i64(a.*.sim.*.symbol);
     _zag_print("smoke: frame_ms=");
     print_i64(a.*.frame_ms);
+    return 0;
+}
+
+fn run_gpu_virtual_display(out_path: []u8, w: i32, h: i32) i32 {
+    if(w<64||h<64||w>1024||h>1024){_zag_eprintln("gpu-virtual-display: dimensions outside 64..1024");return 1;}
+    let d:GpuIsaDisplay=gpu_isa_display_open("examples/gpu_fill_kernel.zgk",w,h);
+    let frame:FB=fb_new(w,h);
+    if(!d.ok||!gpu_isa_display_begin(&d)){_zag_eprintln("gpu-virtual-display: VM initialization failed");return 1;}
+    let y:i32=0;let ok:bool=true;
+    while(y<h&&ok){ok=gpu_isa_display_fill(&d,y*w,w,rgb(8,12,20));y=y+1;}
+    let by:i32=0;
+    while(by<h&&ok){let bx:i32=0;while(bx<w&&ok){
+        let bw:i32=32;if(bx+bw>w){bw=w-bx;}let bh:i32=24;if(by+bh>h){bh=h-by;}
+        if(((bx/32)+(by/24))%2==0){ok=gpu_isa_display_fill_rect(&d,bx,by,bw,bh,rgb(32+(bx%160),48+(by%160),190));}
+        bx=bx+32;
+    }by=by+24;}
+    if(!ok||!gpu_isa_display_end(&d)||!gpu_isa_display_present(&d,&frame)){_zag_eprintln("gpu-virtual-display: execution failed");return 1;}
+    fb_write_bmp(&frame,out_path);
+    _zag_print("gpu-virtual-display: wrote ");_zag_println(out_path);
+    _zag_print("gpu-virtual-display: submissions=");_zag_println(_zag_i64_to_str(d.queue.submissions));
+    _zag_print("gpu-virtual-display: decoded_instructions=");_zag_println(_zag_i64_to_str(d.queue.instructions));
+    return 0;
+}
+
+fn run_gpu_virtual_shadow(out_path: []u8, w: i32, h: i32) i32 {
+    if(w<320||h<240||w>1024||h>1024){_zag_eprintln("gpu-virtual-shadow: dimensions outside 320..1024");return 1;}
+    _zag_eprintln("gpu-virtual-shadow: initializing CPU oracle");
+    let a:*App=app_new(w,h);
+    _zag_eprintln("gpu-virtual-shadow: loading reference design");
+    app_action_demo(a);
+    _zag_eprintln("gpu-virtual-shadow: rendering CPU oracle");
+    app_frame(a,0.016);
+    _zag_eprintln("gpu-virtual-shadow: executing compiler-ISA shadow");
+    let d:GpuIsaDisplay=gpu_isa_display_open("examples/gpu_fill_kernel.zgk",w,h);
+    let candidate:FB=fb_new(w,h);
+    let ok:bool=d.ok&&gpu_isa_display_begin(&d)&&gpu_isa_display_upload_frame(&d,&a.*.f)&&
+        gpu_isa_display_end(&d)&&gpu_isa_display_present(&d,&candidate)&&gpu_isa_display_equal(&a.*.f,&candidate);
+    if(!ok){_zag_eprintln("gpu-virtual-shadow: full-frame comparison failed");return 1;}
+    fb_write_bmp(&candidate,out_path);
+    _zag_print("gpu-virtual-shadow: wrote ");_zag_println(out_path);
+    _zag_print("gpu-virtual-shadow: submissions=");_zag_println(_zag_i64_to_str(d.queue.submissions));
+    _zag_print("gpu-virtual-shadow: decoded_instructions=");_zag_println(_zag_i64_to_str(d.queue.instructions));
     return 0;
 }
 
@@ -194,7 +250,7 @@ fn run_interactive() i32 {
 fn app_title(a: *App) []u8 {
     let base: []u8 = a.*.file_;
     if (a.*.dirty) { base = _zag_str_concat(a.*.file_, " *"); }
-    return _zag_str_concat(base, " - Triton");
+    return _zag_str_concat(base, " - PrismStudio");
 }
 
 // Report the GPU the pure-Zag DRM runtime detects (real device query, no
@@ -222,8 +278,96 @@ fn run_gpu_info() i32 {
     _zag_print("  memory clock  : ");
     _zag_print(_zag_i64_to_str(g.memory_clock_khz / 1000));
     _zag_println(" MHz");
+    _zag_print("  GFX IP/rings  : ");
+    _zag_print(_zag_i64_to_str(g.gfx_ip_major as i64)); _zag_print(".");
+    _zag_print(_zag_i64_to_str(g.gfx_ip_minor as i64)); _zag_print(" / ");
+    _zag_println(_zag_i64_to_str(g.gfx_rings));
+    _zag_print("  compute IP/rings: ");
+    _zag_print(_zag_i64_to_str(g.compute_ip_major as i64)); _zag_print(".");
+    _zag_print(_zag_i64_to_str(g.compute_ip_minor as i64)); _zag_print(" / ");
+    _zag_println(_zag_i64_to_str(g.compute_rings));
+    _zag_print("  MEC/SDMA firmware: ");
+    _zag_print(_zag_i64_to_str(g.fw_mec_ver)); _zag_print(" / ");
+    _zag_println(_zag_i64_to_str(g.fw_sdma_ver));
+    _zag_print("  VRAM total/usable: ");
+    _zag_print(_zag_i64_to_str(g.vram_total)); _zag_print(" / ");
+    _zag_println(_zag_i64_to_str(g.vram_usable));
+    _zag_print("  GTT total/usable : ");
+    _zag_print(_zag_i64_to_str(g.gtt_total)); _zag_print(" / ");
+    _zag_println(_zag_i64_to_str(g.gtt_usable));
+    _zag_print("  RAS enabled mask : ");
+    _zag_println(_zag_i64_to_str(g.ras_enabled));
+    _zag_print("  last VM fault query/status: ");
+    if (g.fault_query_ok) {
+        _zag_print(_zag_i64_to_str(g.fault_addr)); _zag_print(" / ");
+        _zag_println(_zag_i64_to_str(g.fault_status));
+    } else { _zag_println("unavailable"); }
     gpu_close(&g);
     return 0;
+}
+
+fn gpu_file_hash(path:[]u8) i64 {
+    let raw:[]u8=_zag_read_file(path);if(raw.len<0){return 0;}return gfxvm_hash(raw);
+}
+
+// Read-only certification status. This fingerprints the exact live tuple and
+// explains why automatic use is denied; it never allocates a BO or submits work.
+fn run_gpu_cert_status() i32 {
+    let g:Gpu=gpu_open();
+    if(!g.ok){_zag_println("gpu-cert: denied code=10 reason=no AMDGPU render node next=use CPU or virtual ISA execution");return 0;}
+    let root:[]u8=_zag_str_concat("/sys/class/drm/renderD",_zag_i64_to_str(g.render_minor as i64));
+    root=_zag_str_concat(root,"/device");let iso:LinuxGpuIsolation=linux_gpu_isolation_probe(root);
+    let kh:i64=(gpu_file_hash("examples/gpu_fill_kernel.zgk")*3+
+        gpu_file_hash("examples/gpu_depth_kernel.zgk")*5+gpu_file_hash("examples/gpu_blend_kernel.zgk")*7)%4294967296;
+    let t:ZagGpuTuple=ZagGpuTuple{.device=g.device_id,.gfx_ip=(g.gfx_ip_major as i64)*100+(g.gfx_ip_minor as i64),
+        .gfx_discovery=g.gfx_ip_discovery,.gfx_rings=g.gfx_rings,
+        .compute_ip=(g.compute_ip_major as i64)*100+(g.compute_ip_minor as i64),
+        .compute_discovery=g.compute_ip_discovery,.compute_rings=g.compute_rings,
+        .mec_firmware=g.fw_mec_ver,.sdma_firmware=g.fw_sdma_ver,.kernel=kh,
+        .compiler=gpu_file_hash("../zag/zag-poc/znc"),.runtime=gpu_file_hash("zagpa")};
+    let c:ZagGpuCertification=ZagGpuCertification{.tuple=t,.reset_isolated=iso.destructive_test_safe,
+        .memory_sync_verified=false,.kernel_log_clean=false,.fills=0,.ownership_transfers=0,
+        .dispatches=0,.soak_seconds=0,.mismatches=0,.timeouts=0,.resets=0,.faults=0,.leaks=0};
+    let b:ZagGpuBenefit=ZagGpuBenefit{.samples=0,.cpu_ns=0,.gpu_ns=0,.representative=false,.raw_samples_retained=false};
+    let d:ZagGpuDecision=zag_gpu_auto_decide(t,c,b,200);
+    let req:ZagGpuExecutionRequest=ZagGpuExecutionRequest{.tier=zag_gpu_tier_physical_bounded(),
+        .display_bound=true,.reset_isolated=iso.destructive_test_safe,
+        .process_isolation=iso.process_cleaner,.driver_recovery=false,
+        .compiler_proved_straight_line=true,.manifest_verified=kh!=0,
+        .workgroups=1,.instructions=59,.writable_bytes=4,.deadline_ms=50,
+        .allow_shared_display_override=false,.acknowledge_reset_or_system_hang=false};
+    let containment:ZagGpuDecision=zag_gpu_execution_decide(req);
+    _zag_print("gpu-cert: tuple device=");_zag_print(_zag_i64_to_str(t.device));
+    _zag_print(" gfx_ip=");_zag_print(_zag_i64_to_str(t.gfx_ip));
+    _zag_print(" gfx_discovery=");_zag_print(_zag_i64_to_str(t.gfx_discovery));
+    _zag_print(" gfx_rings=");_zag_print(_zag_i64_to_str(t.gfx_rings));
+    _zag_print(" compute_ip=");_zag_print(_zag_i64_to_str(t.compute_ip));
+    _zag_print(" compute_discovery=");_zag_print(_zag_i64_to_str(t.compute_discovery));
+    _zag_print(" compute_rings=");_zag_print(_zag_i64_to_str(t.compute_rings));
+    _zag_print(" mec=");_zag_print(_zag_i64_to_str(t.mec_firmware));
+    _zag_print(" sdma=");_zag_print(_zag_i64_to_str(t.sdma_firmware));_zag_print(" kernels=");_zag_print(_zag_i64_to_str(t.kernel));
+    _zag_print(" compiler=");_zag_print(_zag_i64_to_str(t.compiler));_zag_print(" runtime=");_zag_println(_zag_i64_to_str(t.runtime));
+    _zag_print("gpu-cert: isolation=");_zag_print(linux_gpu_isolation_name(iso.level));
+    _zag_print(" auto=");if(d.allowed){_zag_println("allowed");}else{_zag_print("denied code=");_zag_println(_zag_i64_to_str(d.code as i64));}
+    _zag_print("gpu-cert: reason=");_zag_println(d.reason);_zag_print("gpu-cert: next=");_zag_println(d.next_action);
+    _zag_print("gpu-cert: physical-containment=");if(containment.allowed){_zag_println("admitted");}else{
+        _zag_print("denied code=");_zag_println(_zag_i64_to_str(containment.code as i64));}
+    _zag_print("gpu-cert: containment-reason=");_zag_println(containment.reason);
+    gpu_close(&g);return 0;
+}
+
+fn run_gpu_backend_status()i32{
+    let name:[]u8=arg_after("--gpu-backend-status",_zag_getenv("PRISM_GPU_BACKEND"));
+    let status:PrismGpuBackendStatus=prism_gpu_backend_resolve(name);
+    _zag_print("gpu-backend: requested=");_zag_print(zag_gpu_backend_name(status.requested));
+    _zag_print(" selected=");_zag_print(zag_gpu_backend_name(status.choice.selected));
+    _zag_print(" ok=");_zag_print(_zag_i64_to_str(status.choice.ok as i64));
+    _zag_print(" code=");_zag_println(_zag_i64_to_str(status.choice.code as i64));
+    _zag_print("gpu-backend: reason=");_zag_println(status.choice.reason);
+    _zag_print("gpu-backend: drm_probed=");_zag_print(_zag_i64_to_str(status.drm_probed as i64));
+    _zag_print(" render_minor=");_zag_print(_zag_i64_to_str(status.render_minor as i64));
+    _zag_print(" isolation=");_zag_println(linux_gpu_isolation_name(status.isolation_level));
+    if(!status.choice.ok){return 1;}return 0;
 }
 
 fn run_x11() i32 {
@@ -238,10 +382,30 @@ fn run_x11() i32 {
         _zag_eprintln("no X server available; try --pipe or --smoke");
         return 1;
     }
+    // Start from the server-reported display density. The current compositor
+    // accepts integral UI scales; the X11 boundary retains the measured
+    // quarter-step recommendation so native fractional rasterization can use
+    // the same source of truth without another protocol change.
+    let density: X11DisplayDensity = x11_display_density(x);
+    if (density.scale >= 2.75) { a.*.ui_scale = 3; }
+    else if (density.scale >= 1.75) { a.*.ui_scale = 2; }
+    // A large low-DPI desktop still needs a legible CAD workspace.  The
+    // original density-only rule rendered the 5x9 face at its smallest size
+    // on common 2K displays, making controls and design feedback unreadable.
+    // Keep the logical canvas compact enough for a useful working scale while
+    // preserving the explicit Settings override for users who prefer 1x.
+    else if (x.*.win_w >= 1900 || x.*.win_h >= 1100) { a.*.ui_scale = 2; }
+    else { a.*.ui_scale = 1; }
     a.*.title_dirty = false;
 
-    a.*.inp.w = x.*.win_w;
-    a.*.inp.h = x.*.win_h;
+    // Physical-resolution rendering: the FB buffer is physical-sized
+    // (logical_w * scale × logical_h * scale) but all drawing uses logical
+    // coordinates. No separate upscale pass — primitives scale internally.
+    let uscale0: i32 = a.*.ui_scale;
+    a.*.inp.w = x.*.win_w / uscale0;
+    a.*.inp.h = x.*.win_h / uscale0;
+    fb_resize(&a.*.f, a.*.inp.w, a.*.inp.h);
+    fb_set_scale(&a.*.f, uscale0);
     app_frame(a, 0.016);
     if (arg_has("--test-pattern")) { fb_test_pattern(&a.*.f); }
     if (arg_has("--dump-frame")) {
@@ -253,19 +417,22 @@ fn run_x11() i32 {
         _zag_println("ui: renderer=cpu backend=x11");
         _zag_print("ui: window_width="); _zag_println(_zag_i64_to_str(x.*.win_w as i64));
         _zag_print("ui: window_height="); _zag_println(_zag_i64_to_str(x.*.win_h as i64));
-        _zag_print("ui: framebuffer_width="); _zag_println(_zag_i64_to_str(a.*.f.w as i64));
-        _zag_print("ui: framebuffer_height="); _zag_println(_zag_i64_to_str(a.*.f.h as i64));
+        _zag_print("ui: framebuffer_width="); _zag_println(_zag_i64_to_str(fb_pw(&a.*.f) as i64));
+        _zag_print("ui: framebuffer_height="); _zag_println(_zag_i64_to_str(fb_ph(&a.*.f) as i64));
+        _zag_print("ui: logical_width="); _zag_println(_zag_i64_to_str(a.*.f.w as i64));
+        _zag_print("ui: logical_height="); _zag_println(_zag_i64_to_str(a.*.f.h as i64));
         _zag_print("ui: bytes_per_pixel="); _zag_println(_zag_i64_to_str((x.*.pixmap_bpp / 8) as i64));
-        _zag_print("ui: stride="); _zag_println(_zag_i64_to_str((a.*.f.w * (x.*.pixmap_bpp / 8)) as i64));
+        _zag_print("ui: stride="); _zag_println(_zag_i64_to_str((fb_pw(&a.*.f) * (x.*.pixmap_bpp / 8)) as i64));
         _zag_print("ui: depth="); _zag_println(_zag_i64_to_str(x.*.root_depth as i64));
         _zag_print("ui: bits_per_pixel="); _zag_println(_zag_i64_to_str(x.*.pixmap_bpp as i64));
         _zag_print("ui: scanline_pad="); _zag_println(_zag_i64_to_str(x.*.scanline_pad as i64));
-        _zag_println("ui: pixel_format=0x00RRGGBB scale=1");
+        _zag_print("ui: display_dpi="); _zag_println(_zag_i64_to_str(density.dpi as i64));
+        _zag_print("ui: density_source="); _zag_println(_zag_i64_to_str(density.source as i64));
+        _zag_print("ui: scale="); _zag_println(_zag_i64_to_str(a.*.ui_scale as i64));
+        _zag_println("ui: pixel_format=0x00RRGGBB");
     }
-    x11_put_frame(x, a.*.f.px.data, a.*.f.w, a.*.f.h);
+    x11_put_frame(x, a.*.f.px.data, fb_pw(&a.*.f), fb_ph(&a.*.f));
     x11_pump(x);
-
-    let phys: FB = fb_new(1, 1);   // physical present buffer, used only when scaled
 
     let last_ms: i64 = _zag_clock_monotonic_ms();
     let running: bool = true;
@@ -279,6 +446,7 @@ fn run_x11() i32 {
             let uscale: i32 = a.*.ui_scale;
             if (uscale < 1) { uscale = 1; }
             if (uscale > 3) { uscale = 3; }
+            a.*.ui_scale = uscale;
             let inp: *Input = &a.*.inp;
             inp.*.prev_btn = inp.*.btn;
             inp.*.mx = x.*.mx / uscale;
@@ -291,6 +459,16 @@ fn run_x11() i32 {
             while (k < x.*.keys.len) {
                 list.push[i32](&inp.*.keys, list.get[i32](x.*.keys, k));
                 k = k + 1;
+            }
+            if (inp.*.keys_down.len < 128) {
+                list.free[i32](&inp.*.keys_down);
+                inp.*.keys_down = list.make[i32](128);
+                inp.*.keys_down.len = 128;
+            }
+            let kd: i32 = 0;
+            while (kd < 128) {
+                inp.*.keys_down.data[kd] = x.*.keys_down.data[kd];
+                kd = kd + 1;
             }
             inp.*.w = x.*.win_w / uscale;
             inp.*.h = x.*.win_h / uscale;
@@ -305,6 +483,20 @@ fn run_x11() i32 {
             session_tick(a);
 
             let t0: i64 = _zag_clock_monotonic_ms();
+            // Detect a ui_scale change from a command during this frame and
+            // re-allocate the FB at the new physical resolution before drawing.
+            if (a.*.ui_scale != uscale) {
+                uscale = a.*.ui_scale;
+                if (uscale < 1) { uscale = 1; }
+                if (uscale > 3) { uscale = 3; }
+                a.*.ui_scale = uscale;
+                a.*.inp.w = x.*.win_w / uscale;
+                a.*.inp.h = x.*.win_h / uscale;
+                fb_resize(&a.*.f, a.*.inp.w, a.*.inp.h);
+                fb_set_scale(&a.*.f, uscale);
+                a.*.present_full = true;
+                a.*.present_none = false;
+            }
             app_frame(a, dt);
             if (arg_has("--test-pattern")) { fb_test_pattern(&a.*.f); a.*.present_full = true; a.*.present_none = false; }
             // a resize/expose since last present forces a whole-frame upload
@@ -315,26 +507,23 @@ fn run_x11() i32 {
             }
             // Dirty-region present: upload only what changed. A static frame
             // uploads nothing; orbiting uploads just the viewport; cached panels
-            // are skipped. HiDPI scaling still presents the whole frame.
-            if (uscale > 1) {
-                if (!a.*.present_none) {
-                    fb_resize(&phys, x.*.win_w, x.*.win_h);
-                    fb_upscale(&phys, &a.*.f, uscale);
-                    x11_put_frame(x, phys.px.data, phys.w, phys.h);
-                }
-            } else if (a.*.present_full) {
-                x11_put_frame(x, a.*.f.px.data, a.*.f.w, a.*.f.h);
+            // are skipped. The FB is already at physical resolution (logical *
+            // scale), so no separate upscale pass is needed.
+            let pw: i32 = fb_pw(&a.*.f);
+            let ph: i32 = fb_ph(&a.*.f);
+            if (a.*.present_full) {
+                x11_put_frame(x, a.*.f.px.data, pw, ph);
             } else if (!a.*.present_none) {
-                let px0: i32 = a.*.present_x0;
-                let py0: i32 = a.*.present_y0;
-                let px1: i32 = a.*.present_x1;
-                let py1: i32 = a.*.present_y1;
+                let px0: i32 = a.*.present_x0 * uscale;
+                let py0: i32 = a.*.present_y0 * uscale;
+                let px1: i32 = a.*.present_x1 * uscale;
+                let py1: i32 = a.*.present_y1 * uscale;
                 if (px0 < 0) { px0 = 0; }
                 if (py0 < 0) { py0 = 0; }
-                if (px1 > a.*.f.w) { px1 = a.*.f.w; }
-                if (py1 > a.*.f.h) { py1 = a.*.f.h; }
+                if (px1 > pw) { px1 = pw; }
+                if (py1 > ph) { py1 = ph; }
                 if (px1 > px0 && py1 > py0) {
-                    x11_put_frame_rect(x, a.*.f.px.data, a.*.f.w, a.*.f.h,
+                    x11_put_frame_rect(x, a.*.f.px.data, pw, ph,
                                        px0, py0, px1 - px0, py1 - py0);
                 }
             }
@@ -361,9 +550,9 @@ fn run_x11_capture(path: []u8, w: i32, h: i32) i32 {
         return 1;
     }
     let a: *App = app_new(w, h);
-    if (_zag_getenv("TRITON_SESSION").len > 0) { session_bind(a); }
+    if (_zag_getenv("PRISMSTUDIO_SESSION").len > 0) { session_bind(a); }
     else { app_action_demo(a); }
-    let x: *X11 = x11_connect(w, h, "Triton capture");
+    let x: *X11 = x11_connect(w, h, "PrismStudio capture");
     if (!x.*.ok) { return 1; }
     a.*.inp.w = w; a.*.inp.h = h;
     let frame_ms: i64 = 0;
@@ -515,11 +704,25 @@ fn main() i32 {
             return run_x11_selftest();
         }
         if (_zag_strcmp(arg, "--x11-capture") == 1) {
-            return run_x11_capture(arg_after("--x11-capture", "/tmp/triton-x11.bmp"),
+            return run_x11_capture(arg_after("--x11-capture", "/tmp/prismstudio-x11.bmp"),
                 arg_i_after("--width", 1280), arg_i_after("--height", 800));
         }
         if (_zag_strcmp(arg, "--gpu-info") == 1) {
             return run_gpu_info();
+        }
+        if (_zag_strcmp(arg, "--gpu-cert-status") == 1) {
+            return run_gpu_cert_status();
+        }
+        if (_zag_strcmp(arg, "--gpu-backend-status") == 1) {
+            return run_gpu_backend_status();
+        }
+        if (_zag_strcmp(arg, "--gpu-virtual-display") == 1) {
+            return run_gpu_virtual_display(arg_after("--gpu-virtual-display","/tmp/prism-zag-vgpu.bmp"),
+                arg_i_after("--width",640),arg_i_after("--height",360));
+        }
+        if (_zag_strcmp(arg, "--gpu-virtual-shadow") == 1) {
+            return run_gpu_virtual_shadow(arg_after("--gpu-virtual-shadow","/tmp/prism-zag-vgpu-shadow.bmp"),
+                arg_i_after("--width",640),arg_i_after("--height",360));
         }
         if (_zag_strcmp(arg, "--mcp") == 1) {
             return run_mcp();

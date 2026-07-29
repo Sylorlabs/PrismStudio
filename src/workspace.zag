@@ -4,122 +4,124 @@
 
 @import("../std/list.zag") as list
 @import("app.zag")
+@import("commands.zag")
+@import("strutil.zag")
 @import("sim_region.zag")
 @import("demo.zag")
 @import("capability.zag")
-
-fn fmt_i(v: i64) []u8 {
-    return _zag_i64_to_str(v);
-}
-
-// One-decimal float formatter for provenance/inspector readouts.
-fn fmt_f1(v: f64) []u8 {
-    let neg: bool = v < 0.0;
-    let av: f64 = v;
-    if (neg) { av = 0.0 - av; }
-    let ip: i64 = av as i64;
-    let dp: i64 = ((av - (ip as f64)) * 10.0 + 0.5) as i64;
-    if (dp >= 10) { ip = ip + 1; dp = 0; }
-    let s: []u8 = _zag_str_concat(_zag_str_concat(_zag_i64_to_str(ip), "."), _zag_i64_to_str(dp));
-    if (neg) { s = _zag_str_concat("-", s); }
-    return s;
-}
+@import("process_stack.zag")
 
 // Draw a physical parameter's full provenance (value/units, class + uncertainty,
 // source + date). Returns the next y. Unknown params render as such, never faked.
+// Every built string is freed after its draw (draw_text retains nothing).
 fn draw_provenance(f: *FB, x: i32, y: i32, label: []u8, p: PhysicalParam) i32 {
+    let dy: i32 = text_cy(face_dense(), row_h());
     if (!p.known) {
-        draw_text(f, x, y, _zag_str_concat(label, " Unknown / Not characterized"), th_warning());
-        return y + 14;
+        let u: []u8 = s2(label, " Unknown / Not characterized");
+        draw_text_face(f, x, y + dy, face_dense(), u, th_warning());
+        _zag_str_free(u);
+        return y + row_h();
     }
-    let v: []u8 = _zag_str_concat(_zag_str_concat(_zag_str_concat(label, " "), fmt_f1(p.value)),
-                                  _zag_str_concat(" ", p.units));
-    draw_text(f, x, y, v, th_text());
-    let cls: []u8 = _zag_str_concat("[", _zag_str_concat(evidence_class_name(p.confidence), "]"));
+    let f1: []u8 = fmt_f1(p.value);
+    let v: []u8 = s5(label, " ", f1, " ", p.units);
+    _zag_str_free(f1);
+    draw_text_face(f, x, y + dy, face_dense(), v, th_text());
+    _zag_str_free(v);
+    let en: []u8 = evidence_class_name(p.confidence);
+    let cls: []u8 = s3("[", en, "]");
     if (p.uncertainty > 0.0) {
-        cls = _zag_str_concat(_zag_str_concat("±", _zag_str_concat(fmt_f1(p.uncertainty), " ")), cls);
+        let fu: []u8 = fmt_f1(p.uncertainty);
+        let us: []u8 = s3("±", fu, " ");
+        _zag_str_free(fu);
+        let c2: []u8 = s2(us, cls);
+        _zag_str_free(us);
+        _zag_str_free(cls);
+        cls = c2;
     }
-    draw_text(f, x, y + 12, cls, th_text_dim());
-    let sd: []u8 = p.source;
-    if (p.date_.len > 0) { sd = _zag_str_concat(_zag_str_concat(p.source, " · "), p.date_); }
-    draw_text(f, x, y + 24, sd, th_text_dim());
-    return y + 38;
+    draw_text_face(f, x, y + row_h() + dy, face_dense(), cls, th_text_dim());
+    _zag_str_free(cls);
+    if (p.date_.len > 0) {
+        let sd: []u8 = s3(p.source, " · ", p.date_);
+        draw_text_face(f, x, y + row_h() * 2 + dy, face_dense(), sd, th_text_dim());
+        _zag_str_free(sd);
+    } else {
+        draw_text_face(f, x, y + row_h() * 2 + dy, face_dense(), p.source, th_text_dim());
+    }
+    return y + row_h() * 3;
 }
 
 // ── command dispatch (menus + shortcuts route here) ───────────────────────────
-// 1 new / 2 open / 3 save / 4 save-as / 5 quit
-// 10 undo / 11 redo / 12 duplicate / 13 delete / 14 deselect
-// 20 frame-sel / 21 frame-all / 22 top / 23 front / 24 right / 25 perspective
-// 30 shortcuts / 31 demo design / 32 canonical Flash reference PCU
+// Command codes are named in commands.zag. Do not add bare integer comparisons
+// here: `if (code == 7)` is a rejected shortcut (see commands.zag header).
 
 fn app_action(a: *App, code: i32) void {
     a.*.menu = 0 - 1;
-    if (code == 1) { app_new_design(a); }
-    if (code == 2) { app_show_open(a); }
-    if (code == 3) { app_save(a); }
-    if (code == 4) { app_show_saveas(a); }
-    if (code == 5) { a.*.quit = true; }
-    if (code == 10) { app_undo(a); }
-    if (code == 11) { app_redo(a); }
-    if (code == 12) { app_duplicate(a); }
-    if (code == 13) { app_delete_selection(a); }
-    if (code == 14) { sel_clear(a); }
-    if (code == 15) { app_copy(a); }
-    if (code == 16) { app_paste(a); }
-    if (code == 17) { app_group_selection(a); }
-    if (code == 18) { app_ungroup_selection(a); }
-    if (code == 19) { app_begin_rename(a, sel_primary(a)); }
-    if (code == 20) { app_frame_selected(a); }
-    if (code == 21) { app_frame_all(a); }
-    if (code == 22) {
-        a.*.cam.yaw = 0.0 - 1.5707963;
+    if (code == cmd_new()) { app_new_design(a); }
+    if (code == cmd_open()) { app_show_open(a); }
+    if (code == cmd_save()) { app_save(a); }
+    if (code == cmd_save_as()) { app_show_saveas(a); }
+    if (code == cmd_quit()) { a.*.quit = true; }
+    if (code == cmd_undo()) { app_undo(a); }
+    if (code == cmd_redo()) { app_redo(a); }
+    if (code == cmd_duplicate()) { app_duplicate(a); }
+    if (code == cmd_delete()) { app_delete_selection(a); }
+    if (code == cmd_deselect()) { sel_clear(a); }
+    if (code == cmd_copy()) { app_copy(a); }
+    if (code == cmd_paste()) { app_paste(a); }
+    if (code == cmd_group()) { app_group_selection(a); }
+    if (code == cmd_ungroup()) { app_ungroup_selection(a); }
+    if (code == cmd_rename()) { app_begin_rename(a, sel_primary(a)); }
+    if (code == cmd_frame_selected()) { app_frame_selected(a); }
+    if (code == cmd_frame_all()) { app_frame_all(a); }
+    if (code == cmd_view_top()) {
+        a.*.cam.yaw = 0.0 - pi_half();
         a.*.cam.pitch = 1.51;
     }
-    if (code == 23) {
-        a.*.cam.yaw = 0.0 - 1.5707963;
+    if (code == cmd_view_front()) {
+        a.*.cam.yaw = 0.0 - pi_half();
         a.*.cam.pitch = 0.06;
     }
-    if (code == 24) {
+    if (code == cmd_view_right()) {
         a.*.cam.yaw = 0.0;
         a.*.cam.pitch = 0.06;
     }
-    if (code == 25) {
+    if (code == cmd_view_perspective()) {
         a.*.cam.yaw = 0.9;
         a.*.cam.pitch = 0.62;
     }
-    if (code == 26) {
+    if (code == cmd_toggle_ortho()) {
         a.*.cam.ortho = !a.*.cam.ortho;
         scene_mark_render(a.*.scene);   // projection change invalidates the tile cache
     }
-    if (code == 27) { a.*.ui_scale = (a.*.ui_scale % 3) + 1; }   // cycle 1x/2x/3x
-    if (code == 28) { app_reset_view(a); }
-    if (code == 29) {
+    if (code == cmd_cycle_ui_scale()) { a.*.ui_scale = (a.*.ui_scale % 3) + 1; }   // cycle 1x/2x/3x
+    if (code == cmd_reset_view()) { app_reset_view(a); }
+    if (code == cmd_section_view()) {
         a.*.sect_on = !a.*.sect_on;
         scene_mark_render(a.*.scene);
         if (a.*.sect_on) { app_log(a, "section view on ([ / ] adjust level)"); }
     }
-    if (code == 30) { a.*.modal = modal_keys(); }
-    if (code == 31) { app_action_demo(a); }
-    if (code == 49) { a.*.model_open = true; }
+    if (code == cmd_shortcuts()) { a.*.modal = modal_keys(); }
+    if (code == cmd_demo()) { app_action_demo(a); }
+    if (code == cmd_model_provenance()) { a.*.model_open = true; a.*.flash_open = false; }
     // This is deliberately a first-class visible command rather than an
     // undocumented file path: the canonical Flash PCU is the reproducible
     // reference design users can inspect, run, modify, save, and reopen.
-    if (code == 32) { app_open_file(a, "examples/flash_photonic_massive.zpa"); }
-    if (code == 34) { app_show_recovery(a); }
-    if (code == 40) { a.*.tool = tool_select(); }
-    if (code == 41) { a.*.tool = tool_route(); a.*.route_c = 0 - 1; }
-    if (code == 42) { a.*.sim.*.playing = !a.*.sim.*.playing; }
-    if (code == 43) { a.*.opt_open = true; a.*.settings_open = false; a.*.opt_previewed = false; a.*.opt_details = false; }
-    if (code == 44) { a.*.settings_open = true; a.*.opt_open = false; }
-    if (code == 45) { a.*.palette_open = true; a.*.palette_text.len = 0; a.*.palette_sel = 0; }
-    if (code == 46) { a.*.tool = tool_measure(); a.*.measure_n = 0; }
-    if (code == 47) { a.*.inp.reduced_motion = !a.*.inp.reduced_motion; }
-    if (code == 48) { a.*.snap_obj = !a.*.snap_obj; }
-    if (code == 49) { a.*.flash_open = true; a.*.settings_open = false; a.*.opt_open = false; }
-    if (code >= 50 && code < 50 + kind_count()) { a.*.tool = tool_place_base() + (code - 50); }
-    // jump to object (Section 3.6): palette codes 1000+idx select and frame
-    if (code >= 1000 && code - 1000 < a.*.scene.*.comps.len) {
-        sel_set(a, a.*.scene.*.comps.data[code - 1000].id);
+    if (code == cmd_open_flash_reference()) { app_open_file(a, "examples/flash_photonic_massive.zpa"); }
+    if (code == cmd_recover_autosave()) { app_show_recovery(a); }
+    if (code == cmd_tool_select()) { a.*.tool = tool_select(); }
+    if (code == cmd_tool_route()) { a.*.tool = tool_route(); a.*.route_c = 0 - 1; }
+    if (code == cmd_sim_play_toggle()) { a.*.sim.*.playing = !a.*.sim.*.playing; }
+    if (code == cmd_optimizer()) { a.*.opt_open = true; a.*.settings_open = false; a.*.opt_previewed = false; a.*.opt_details = false; }
+    if (code == cmd_settings()) { a.*.settings_open = true; a.*.opt_open = false; }
+    if (code == cmd_palette()) { a.*.palette_open = true; a.*.palette_text.len = 0; a.*.palette_sel = 0; }
+    if (code == cmd_tool_measure()) { a.*.tool = tool_measure(); a.*.measure_n = 0; }
+    if (code == cmd_toggle_reduced_motion()) { a.*.inp.reduced_motion = !a.*.inp.reduced_motion; }
+    if (code == cmd_toggle_object_snap()) { a.*.snap_obj = !a.*.snap_obj; }
+    if (code == cmd_flash_workspace()) { a.*.flash_open = true; a.*.model_open = false; a.*.settings_open = false; a.*.opt_open = false; }
+    if (code >= cmd_place_base() && code < cmd_place_base() + kind_count()) { a.*.tool = tool_place_base() + (code - cmd_place_base()); }
+    // jump to object (Section 3.6): palette codes cmd_palette_jump_base()+idx select and frame
+    if (code >= cmd_palette_jump_base() && code - cmd_palette_jump_base() < a.*.scene.*.comps.len) {
+        sel_set(a, a.*.scene.*.comps.data[code - cmd_palette_jump_base()].id);
         app_frame_selected(a);
     }
 }
@@ -143,48 +145,49 @@ struct PCmd {
 
 fn palette_commands(out: *list.ArrayList[PCmd]) void {
     out.*.len = 0;
-    list.push[PCmd](out, PCmd{ .label = "New Project", .hint = "Ctrl+N", .code = 1 });
-    list.push[PCmd](out, PCmd{ .label = "Open Project...", .hint = "Ctrl+O", .code = 2 });
-    list.push[PCmd](out, PCmd{ .label = "Save", .hint = "Ctrl+S", .code = 3 });
-    list.push[PCmd](out, PCmd{ .label = "Save As...", .hint = "Ctrl+Shift+S", .code = 4 });
-    list.push[PCmd](out, PCmd{ .label = "Undo", .hint = "Ctrl+Z", .code = 10 });
-    list.push[PCmd](out, PCmd{ .label = "Redo", .hint = "Ctrl+Y", .code = 11 });
-    list.push[PCmd](out, PCmd{ .label = "Duplicate Selection", .hint = "Shift+D", .code = 12 });
-    list.push[PCmd](out, PCmd{ .label = "Copy", .hint = "Ctrl+C", .code = 15 });
-    list.push[PCmd](out, PCmd{ .label = "Paste", .hint = "Ctrl+V", .code = 16 });
-    list.push[PCmd](out, PCmd{ .label = "Delete Selection", .hint = "X", .code = 13 });
-    list.push[PCmd](out, PCmd{ .label = "Deselect All", .hint = "Esc", .code = 14 });
-    list.push[PCmd](out, PCmd{ .label = "Frame Selected", .hint = "F", .code = 20 });
-    list.push[PCmd](out, PCmd{ .label = "Frame All", .hint = "Home", .code = 21 });
-    list.push[PCmd](out, PCmd{ .label = "View: Top", .hint = "", .code = 22 });
-    list.push[PCmd](out, PCmd{ .label = "View: Front", .hint = "", .code = 23 });
-    list.push[PCmd](out, PCmd{ .label = "View: Right", .hint = "", .code = 24 });
-    list.push[PCmd](out, PCmd{ .label = "View: Perspective", .hint = "", .code = 25 });
-    list.push[PCmd](out, PCmd{ .label = "View: Toggle Orthographic", .hint = "", .code = 26 });
-    list.push[PCmd](out, PCmd{ .label = "View: Reset", .hint = "", .code = 28 });
-    list.push[PCmd](out, PCmd{ .label = "View: Toggle Section View", .hint = "", .code = 29 });
-    list.push[PCmd](out, PCmd{ .label = "Cycle HiDPI Scale", .hint = "", .code = 27 });
-    list.push[PCmd](out, PCmd{ .label = "Tool: Select", .hint = "Q", .code = 40 });
-    list.push[PCmd](out, PCmd{ .label = "Tool: Route Waveguide", .hint = "E", .code = 41 });
-    list.push[PCmd](out, PCmd{ .label = "Tool: Measure", .hint = "M", .code = 46 });
-    list.push[PCmd](out, PCmd{ .label = "Group Selection", .hint = "Ctrl+G", .code = 17 });
-    list.push[PCmd](out, PCmd{ .label = "Ungroup Selection", .hint = "Ctrl+Shift+G", .code = 18 });
-    list.push[PCmd](out, PCmd{ .label = "Rename Selection", .hint = "F2", .code = 19 });
-    list.push[PCmd](out, PCmd{ .label = "Toggle Reduced Motion", .hint = "", .code = 47 });
-    list.push[PCmd](out, PCmd{ .label = "Toggle Object Snapping", .hint = "", .code = 48 });
-    list.push[PCmd](out, PCmd{ .label = "Toggle Simulation", .hint = "Space", .code = 42 });
-    list.push[PCmd](out, PCmd{ .label = "Open Optimizer", .hint = "Alt+O", .code = 43 });
-    list.push[PCmd](out, PCmd{ .label = "Open Settings", .hint = "Alt+S", .code = 44 });
-    list.push[PCmd](out, PCmd{ .label = "Flash FIR Workspace", .hint = "", .code = 49 });
+    list.push[PCmd](out, PCmd{ .label = "New Project", .hint = "Ctrl+N", .code = cmd_new() });
+    list.push[PCmd](out, PCmd{ .label = "Open Project...", .hint = "Ctrl+O", .code = cmd_open() });
+    list.push[PCmd](out, PCmd{ .label = "Save", .hint = "Ctrl+S", .code = cmd_save() });
+    list.push[PCmd](out, PCmd{ .label = "Save As...", .hint = "Ctrl+Shift+S", .code = cmd_save_as() });
+    list.push[PCmd](out, PCmd{ .label = "Undo", .hint = "Ctrl+Z", .code = cmd_undo() });
+    list.push[PCmd](out, PCmd{ .label = "Redo", .hint = "Ctrl+Y", .code = cmd_redo() });
+    list.push[PCmd](out, PCmd{ .label = "Duplicate Selection", .hint = "Shift+D", .code = cmd_duplicate() });
+    list.push[PCmd](out, PCmd{ .label = "Copy", .hint = "Ctrl+C", .code = cmd_copy() });
+    list.push[PCmd](out, PCmd{ .label = "Paste", .hint = "Ctrl+V", .code = cmd_paste() });
+    list.push[PCmd](out, PCmd{ .label = "Delete Selection", .hint = "X", .code = cmd_delete() });
+    list.push[PCmd](out, PCmd{ .label = "Deselect All", .hint = "Esc", .code = cmd_deselect() });
+    list.push[PCmd](out, PCmd{ .label = "Frame Selected", .hint = "F", .code = cmd_frame_selected() });
+    list.push[PCmd](out, PCmd{ .label = "Frame All", .hint = "Home", .code = cmd_frame_all() });
+    list.push[PCmd](out, PCmd{ .label = "View: Top", .hint = "", .code = cmd_view_top() });
+    list.push[PCmd](out, PCmd{ .label = "View: Front", .hint = "", .code = cmd_view_front() });
+    list.push[PCmd](out, PCmd{ .label = "View: Right", .hint = "", .code = cmd_view_right() });
+    list.push[PCmd](out, PCmd{ .label = "View: Perspective", .hint = "", .code = cmd_view_perspective() });
+    list.push[PCmd](out, PCmd{ .label = "View: Toggle Orthographic", .hint = "", .code = cmd_toggle_ortho() });
+    list.push[PCmd](out, PCmd{ .label = "View: Reset", .hint = "", .code = cmd_reset_view() });
+    list.push[PCmd](out, PCmd{ .label = "View: Toggle Section View", .hint = "", .code = cmd_section_view() });
+    list.push[PCmd](out, PCmd{ .label = "Cycle HiDPI Scale", .hint = "", .code = cmd_cycle_ui_scale() });
+    list.push[PCmd](out, PCmd{ .label = "Tool: Select", .hint = "Q", .code = cmd_tool_select() });
+    list.push[PCmd](out, PCmd{ .label = "Tool: Route Waveguide", .hint = "E", .code = cmd_tool_route() });
+    list.push[PCmd](out, PCmd{ .label = "Tool: Measure", .hint = "M", .code = cmd_tool_measure() });
+    list.push[PCmd](out, PCmd{ .label = "Group Selection", .hint = "Ctrl+G", .code = cmd_group() });
+    list.push[PCmd](out, PCmd{ .label = "Ungroup Selection", .hint = "Ctrl+Shift+G", .code = cmd_ungroup() });
+    list.push[PCmd](out, PCmd{ .label = "Rename Selection", .hint = "F2", .code = cmd_rename() });
+    list.push[PCmd](out, PCmd{ .label = "Toggle Reduced Motion", .hint = "", .code = cmd_toggle_reduced_motion() });
+    list.push[PCmd](out, PCmd{ .label = "Toggle Object Snapping", .hint = "", .code = cmd_toggle_object_snap() });
+    list.push[PCmd](out, PCmd{ .label = "Toggle Simulation", .hint = "Space", .code = cmd_sim_play_toggle() });
+    list.push[PCmd](out, PCmd{ .label = "Open Optimizer", .hint = "Alt+O", .code = cmd_optimizer() });
+    list.push[PCmd](out, PCmd{ .label = "Open Settings", .hint = "Alt+S", .code = cmd_settings() });
+    list.push[PCmd](out, PCmd{ .label = "Physical Model & Provenance", .hint = "", .code = cmd_model_provenance() });
+    list.push[PCmd](out, PCmd{ .label = "Flash FIR Workspace", .hint = "", .code = cmd_flash_workspace() });
     let ki: i32 = 0;
     while (ki < kind_count()) {
-        list.push[PCmd](out, PCmd{ .label = _zag_str_concat("Place: ", kind_name(kind_at(ki))),
-                                   .hint = "", .code = 50 + ki });
+        list.push[PCmd](out, PCmd{ .label = kind_place_label(kind_at(ki)),
+                                   .hint = "", .code = cmd_place_base() + ki });
         ki = ki + 1;
     }
-    list.push[PCmd](out, PCmd{ .label = "Load Demo Design", .hint = "F1", .code = 31 });
-    list.push[PCmd](out, PCmd{ .label = "Open Reference Flash PCU", .hint = "", .code = 32 });
-    list.push[PCmd](out, PCmd{ .label = "Keyboard Shortcuts", .hint = "", .code = 30 });
+    list.push[PCmd](out, PCmd{ .label = "Load Demo Design", .hint = "F1", .code = cmd_demo() });
+    list.push[PCmd](out, PCmd{ .label = "Open Reference Flash PCU", .hint = "", .code = cmd_open_flash_reference() });
+    list.push[PCmd](out, PCmd{ .label = "Keyboard Shortcuts", .hint = "", .code = cmd_shortcuts() });
 }
 
 fn ascii_lower(c: u8) u8 {
@@ -209,15 +212,23 @@ fn pcmd_match(label: []u8, q: []u8) bool {
     return false;
 }
 
+// Rebuilds the filtered palette list. Dynamic "Go to:" labels are heap strings
+// owned by a.*.palette_scratch: this function frees the previous generation on
+// entry, so the PCmd label pointers it hands out stay valid until the next
+// call. Do not build heap labels anywhere else in the palette path (static
+// labels only, see kind_place_label).
 fn palette_filtered(a: *App, out: *list.ArrayList[PCmd]) void {
+    free_str_list(&a.*.palette_scratch);
     let all: list.ArrayList[PCmd] = list.make[PCmd](40);
     palette_commands(&all);
     // jump to object (Section 3.6): one dynamic entry per placed part
     let jc: i32 = 0;
     while (jc < a.*.scene.*.comps.len) {
+        let gl: []u8 = s2("Go to: ", a.*.scene.*.comps.data[jc].name_);
+        list.push[[]u8](&a.*.palette_scratch, gl);
         list.push[PCmd](&all, PCmd{
-            .label = _zag_str_concat("Go to: ", a.*.scene.*.comps.data[jc].name_),
-            .hint = "", .code = 1000 + jc });
+            .label = gl,
+            .hint = "", .code = cmd_palette_jump_base() + jc });
         jc = jc + 1;
     }
     out.*.len = 0;
@@ -232,6 +243,29 @@ fn palette_filtered(a: *App, out: *list.ArrayList[PCmd]) void {
 
 // Execute the highlighted command in the current filtered list.
 fn app_palette_exec(a: *App) void {
+    // Coordinate jump is intentionally textual so exact negative world
+    // coordinates remain quick to enter: Ctrl+K, `tp x y z`, Enter.
+    let pq: []u8 = a.*.palette_text.data[0..a.*.palette_text.len];
+    if (pq.len >= 4 && pq[0] == 't' && pq[1] == 'p' && pq[2] == ' ') {
+        let vals: list.ArrayList[i64] = list.make[i64](3);
+        let p: i32 = 3;
+        while (p < pq.len && vals.len < 3) {
+            while (p < pq.len && pq[p] == ' ') { p = p + 1; }
+            let st: i32 = p;
+            while (p < pq.len && pq[p] != ' ') { p = p + 1; }
+            if (p > st) { list.push[i64](&vals, _zag_str_to_i64(pq[st..p])); }
+        }
+        if (vals.len == 3) {
+            app_camera_teleport(a, vals.data[0] as f64, vals.data[1] as f64, vals.data[2] as f64);
+ let __log_s251: []u8 = _zag_str_concat("camera teleported to ", pq[3..pq.len]);
+                app_log(a, __log_s251);
+                _zag_str_free(__log_s251);
+            a.*.palette_open = false;
+            list.free[i64](&vals);
+            return;
+        }
+        list.free[i64](&vals);
+    }
     let filt: list.ArrayList[PCmd] = list.make[PCmd](40);
     palette_filtered(a, &filt);
     if (filt.len > 0) {
@@ -284,39 +318,40 @@ fn draw_palette(a: *App) void {
     if (a.*.palette_sel < 0) { a.*.palette_sel = 0; }
     let shown: i32 = filt.len;
     if (shown > 9) { shown = 9; }
-    let row_h: i32 = 20;
-    let ph: i32 = 30 + shown * row_h + 6;
+    let prow_h: i32 = row_h() + 2;
+    let ph: i32 = 34 + shown * prow_h + 6;
 
     draw_shadow(f, px, py, pw, ph, radius_panel());
     fill_round_rect(f, px, py, pw, ph, radius_panel(), th_panel());
     round_rect_outline(f, px, py, pw, ph, radius_panel(), th_outline());
     // input row
-    draw_text(f, px + 12, py + 9, ">", th_accent());
+    let iy: i32 = py + text_cy(face_body(), 30);
+    draw_text(f, px + 12, iy, ">", th_accent());
     if (a.*.palette_text.len > 0) {
-        draw_text(f, px + 24, py + 9, a.*.palette_text.data[0..a.*.palette_text.len], th_text());
+        draw_text(f, px + 24, iy, a.*.palette_text.data[0..a.*.palette_text.len], th_text());
     } else {
-        draw_text(f, px + 24, py + 9, "Type a command...", th_text_dim());
+        draw_text(f, px + 24, iy, "Type a command...", th_text_dim());
     }
-    hline(f, px + 8, py + 27, pw - 16, th_outline_soft());
+    hline(f, px + 8, py + 31, pw - 16, th_outline_soft());
 
-    let y: i32 = py + 30;
+    let y: i32 = py + 34;
     let idx: i32 = 0;
     while (idx < shown) {
         let c: PCmd = filt.data[idx];
-        let row: Rect = rect(px + 6, y, pw - 12, row_h);
+        let row: Rect = rect(px + 6, y, pw - 12, prow_h);
         let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
         let _eid: i64 = ui_register(inp, "menuitem", c.label, c.label, row, true,
                                     idx == a.*.palette_sel, false);
         if (idx == a.*.palette_sel || hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
-        draw_text(f, row.x + 8, y + 6, c.label, th_text());
+        draw_text(f, row.x + 8, y + text_cy(face_body(), prow_h), c.label, th_text());
         if (c.hint.len > 0) {
-            draw_text(f, row.x + row.w - text_w(c.hint) - 8, y + 6, c.hint, th_text_dim());
+            draw_text(f, row.x + row.w - text_w(c.hint) - 8, y + text_cy(face_body(), prow_h), c.hint, th_text_dim());
         }
         if (hov && btn_released(inp, 0)) {
             a.*.palette_sel = idx;
             app_palette_exec(a);
         }
-        y = y + row_h;
+        y = y + prow_h;
         idx = idx + 1;
     }
     list.free[PCmd](&filt);
@@ -352,50 +387,50 @@ fn menu_title(m: i32) []u8 {
 fn menu_items(m: i32, out: *list.ArrayList[MenuItem]) void {
     out.*.len = 0;
     if (m == 0) {
-        list.push[MenuItem](out, MenuItem{ .label = "New", .hint = "Ctrl+N", .code = 1 });
-        list.push[MenuItem](out, MenuItem{ .label = "Open...", .hint = "Ctrl+O", .code = 2 });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
-        list.push[MenuItem](out, MenuItem{ .label = "Save", .hint = "Ctrl+S", .code = 3 });
-        list.push[MenuItem](out, MenuItem{ .label = "Save As...", .hint = "Ctrl+Shift+S", .code = 4 });
-        list.push[MenuItem](out, MenuItem{ .label = "Recover Autosave...", .hint = "", .code = 34 });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
-        list.push[MenuItem](out, MenuItem{ .label = "Quit", .hint = "Ctrl+Q", .code = 5 });
+        list.push[MenuItem](out, MenuItem{ .label = "New", .hint = "Ctrl+N", .code = cmd_new() });
+        list.push[MenuItem](out, MenuItem{ .label = "Open...", .hint = "Ctrl+O", .code = cmd_open() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Save", .hint = "Ctrl+S", .code = cmd_save() });
+        list.push[MenuItem](out, MenuItem{ .label = "Save As...", .hint = "Ctrl+Shift+S", .code = cmd_save_as() });
+        list.push[MenuItem](out, MenuItem{ .label = "Recover Autosave...", .hint = "", .code = cmd_recover_autosave() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Quit", .hint = "Ctrl+Q", .code = cmd_quit() });
     }
     if (m == 1) {
-        list.push[MenuItem](out, MenuItem{ .label = "Undo", .hint = "Ctrl+Z", .code = 10 });
-        list.push[MenuItem](out, MenuItem{ .label = "Redo", .hint = "Ctrl+Y", .code = 11 });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
-        list.push[MenuItem](out, MenuItem{ .label = "Duplicate", .hint = "Shift+D", .code = 12 });
-        list.push[MenuItem](out, MenuItem{ .label = "Copy", .hint = "Ctrl+C", .code = 15 });
-        list.push[MenuItem](out, MenuItem{ .label = "Paste", .hint = "Ctrl+V", .code = 16 });
-        list.push[MenuItem](out, MenuItem{ .label = "Delete", .hint = "X", .code = 13 });
-        list.push[MenuItem](out, MenuItem{ .label = "Deselect", .hint = "Esc", .code = 14 });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
-        list.push[MenuItem](out, MenuItem{ .label = "Group", .hint = "Ctrl+G", .code = 17 });
-        list.push[MenuItem](out, MenuItem{ .label = "Ungroup", .hint = "Ctrl+Shift+G", .code = 18 });
-        list.push[MenuItem](out, MenuItem{ .label = "Rename", .hint = "F2", .code = 19 });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
-        list.push[MenuItem](out, MenuItem{ .label = "Command Palette", .hint = "Ctrl+K", .code = 45 });
+        list.push[MenuItem](out, MenuItem{ .label = "Undo", .hint = "Ctrl+Z", .code = cmd_undo() });
+        list.push[MenuItem](out, MenuItem{ .label = "Redo", .hint = "Ctrl+Y", .code = cmd_redo() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Duplicate", .hint = "Shift+D", .code = cmd_duplicate() });
+        list.push[MenuItem](out, MenuItem{ .label = "Copy", .hint = "Ctrl+C", .code = cmd_copy() });
+        list.push[MenuItem](out, MenuItem{ .label = "Paste", .hint = "Ctrl+V", .code = cmd_paste() });
+        list.push[MenuItem](out, MenuItem{ .label = "Delete", .hint = "X", .code = cmd_delete() });
+        list.push[MenuItem](out, MenuItem{ .label = "Deselect", .hint = "Esc", .code = cmd_deselect() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Group", .hint = "Ctrl+G", .code = cmd_group() });
+        list.push[MenuItem](out, MenuItem{ .label = "Ungroup", .hint = "Ctrl+Shift+G", .code = cmd_ungroup() });
+        list.push[MenuItem](out, MenuItem{ .label = "Rename", .hint = "F2", .code = cmd_rename() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Command Palette", .hint = "Ctrl+K", .code = cmd_palette() });
     }
     if (m == 2) {
-        list.push[MenuItem](out, MenuItem{ .label = "Frame Selected", .hint = "F", .code = 20 });
-        list.push[MenuItem](out, MenuItem{ .label = "Frame All", .hint = "Home", .code = 21 });
-        list.push[MenuItem](out, MenuItem{ .label = "Reset View", .hint = "", .code = 28 });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
-        list.push[MenuItem](out, MenuItem{ .label = "Top", .hint = "", .code = 22 });
-        list.push[MenuItem](out, MenuItem{ .label = "Front", .hint = "", .code = 23 });
-        list.push[MenuItem](out, MenuItem{ .label = "Right", .hint = "", .code = 24 });
-        list.push[MenuItem](out, MenuItem{ .label = "Perspective", .hint = "", .code = 25 });
-        list.push[MenuItem](out, MenuItem{ .label = "Toggle Orthographic", .hint = "", .code = 26 });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
-        list.push[MenuItem](out, MenuItem{ .label = "Section View", .hint = "", .code = 29 });
-        list.push[MenuItem](out, MenuItem{ .label = "Measure Tool", .hint = "M", .code = 46 });
-        list.push[MenuItem](out, MenuItem{ .label = "Object Snapping", .hint = "", .code = 48 });
+        list.push[MenuItem](out, MenuItem{ .label = "Frame Selected", .hint = "F", .code = cmd_frame_selected() });
+        list.push[MenuItem](out, MenuItem{ .label = "Frame All", .hint = "Home", .code = cmd_frame_all() });
+        list.push[MenuItem](out, MenuItem{ .label = "Reset View", .hint = "", .code = cmd_reset_view() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Top", .hint = "", .code = cmd_view_top() });
+        list.push[MenuItem](out, MenuItem{ .label = "Front", .hint = "", .code = cmd_view_front() });
+        list.push[MenuItem](out, MenuItem{ .label = "Right", .hint = "", .code = cmd_view_right() });
+        list.push[MenuItem](out, MenuItem{ .label = "Perspective", .hint = "", .code = cmd_view_perspective() });
+        list.push[MenuItem](out, MenuItem{ .label = "Toggle Orthographic", .hint = "", .code = cmd_toggle_ortho() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Section View", .hint = "", .code = cmd_section_view() });
+        list.push[MenuItem](out, MenuItem{ .label = "Measure Tool", .hint = "M", .code = cmd_tool_measure() });
+        list.push[MenuItem](out, MenuItem{ .label = "Object Snapping", .hint = "", .code = cmd_toggle_object_snap() });
     }
     if (m == 3) {
-        list.push[MenuItem](out, MenuItem{ .label = "Shortcuts", .hint = "", .code = 30 });
-        list.push[MenuItem](out, MenuItem{ .label = "Load Demo Design", .hint = "F1", .code = 31 });
-        list.push[MenuItem](out, MenuItem{ .label = "Physical Model & Provenance...", .hint = "", .code = 49 });
+        list.push[MenuItem](out, MenuItem{ .label = "Shortcuts", .hint = "", .code = cmd_shortcuts() });
+        list.push[MenuItem](out, MenuItem{ .label = "Load Demo Design", .hint = "F1", .code = cmd_demo() });
+        list.push[MenuItem](out, MenuItem{ .label = "Physical Model & Provenance...", .hint = "", .code = cmd_model_provenance() });
     }
 }
 
@@ -406,7 +441,11 @@ fn draw_menubar(a: *App) void {
     fill_rect(f, r.x, r.y, r.w, r.h, th_header());
     hline(f, r.x, r.y + r.h - 1, r.w, th_outline());
 
-    let x: i32 = 6;
+    // Use a readable product label instead of an unexplained accent square.
+    // In a technical workspace every persistent pixel should carry meaning.
+    let my: i32 = r.y + text_cy(face_body(), r.h);
+    draw_text(f, 10, my, "PRISM", th_accent_hot());
+    let x: i32 = 48;
     let m: i32 = 0;
     while (m < 4) {
         let t: []u8 = menu_title(m);
@@ -420,7 +459,7 @@ fn draw_menubar(a: *App) void {
         } else if (hov && a.*.modal == modal_none()) {
             fill_round_rect(f, br.x, br.y, br.w, br.h, radius_control(), th_panel_alt());
         }
-        draw_text(f, x + 9, r.y + 7, t, th_text());
+        draw_text(f, x + 9, my, t, th_text());
         if (a.*.modal == modal_none()) {
             if (hov && btn_pressed(inp, 0)) {
                 if (a.*.menu == m) { a.*.menu = 0 - 1; } else { a.*.menu = m; }
@@ -433,23 +472,27 @@ fn draw_menubar(a: *App) void {
     }
 
     // right side: Optimizer button (quiet, count-only badge) + Settings gear.
+    // The control is absent while the optimizer is disabled; Settings remains
+    // available so the user can turn it back on.
     let ob: Rect = zone_opt_btn(a);
-    let oh: bool = rect_has(ob, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
-    let obr: Rect = rect(ob.x, ob.y + 3, ob.w, ob.h - 5);
-    let _oeid: i64 = ui_register(inp, "button", "optimizer", "Optimizer", obr,
-                                 a.*.modal == modal_none(), a.*.opt_open, false);
-    if (a.*.opt_open) { fill_round_rect(f, obr.x, obr.y, obr.w, obr.h, radius_control(), th_accent()); }
-    else if (oh) { fill_round_rect(f, obr.x, obr.y, obr.w, obr.h, radius_control(), th_panel_alt()); }
-    draw_text(f, ob.x + 9, r.y + 7, "opt", th_text());
-    if (opt_engine_badge(a.*.opt) > 0) {
-        let bx: i32 = ob.x + 9 + text_w("opt ");
-        let _bw: i32 = draw_int(f, bx, r.y + 7, opt_engine_badge(a.*.opt) as i64, th_accent_hot());
-    }
-    if (oh && btn_pressed(inp, 0)) {
-        a.*.opt_open = !a.*.opt_open;
-        a.*.settings_open = false;
-        a.*.opt_previewed = false;
-        a.*.opt_details = false;
+    if (a.*.opt.*.enabled) {
+        let oh: bool = rect_has(ob, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
+        let obr: Rect = rect(ob.x, ob.y + 3, ob.w, ob.h - 5);
+        let _oeid: i64 = ui_register(inp, "button", "optimizer", "Optimizer", obr,
+                                     a.*.modal == modal_none(), a.*.opt_open, false);
+        if (a.*.opt_open) { fill_round_rect(f, obr.x, obr.y, obr.w, obr.h, radius_control(), th_accent()); }
+        else if (oh) { fill_round_rect(f, obr.x, obr.y, obr.w, obr.h, radius_control(), th_panel_alt()); }
+        draw_text(f, ob.x + 9, my, "opt", th_text());
+        if (opt_engine_badge(a.*.opt) > 0) {
+            let bx: i32 = ob.x + 9 + text_w("opt ");
+            let _bw: i32 = draw_int(f, bx, my, opt_engine_badge(a.*.opt) as i64, th_accent_hot());
+        }
+        if (oh && btn_pressed(inp, 0)) {
+            a.*.opt_open = !a.*.opt_open;
+            a.*.settings_open = false;
+            a.*.opt_previewed = false;
+            a.*.opt_details = false;
+        }
     }
 
     let gr: Rect = zone_settings_gear(a);
@@ -465,10 +508,37 @@ fn draw_menubar(a: *App) void {
         a.*.opt_open = false;
     }
 
-    // document name, left of the buttons
+    // Connection issues are first-class work, not a tiny status-bar counter.
+    // The chip opens the existing list, where each issue frames its component.
+    let issue_w: i32 = 0;
+    if (a.*.warn_ids.len > 0) {
+        let iw_n: []u8 = fmt_i(a.*.warn_ids.len as i64);
+        let issue_label: []u8 = s2(iw_n, " issues");
+        _zag_str_free(iw_n);
+        issue_w = text_w(issue_label) + 18;
+        let ir: Rect = rect(ob.x - issue_w - 8, r.y + 3, issue_w, r.h - 5);
+        let ih: bool = rect_has(ir, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
+        // The catalog retains this label until next frame: park it (ui_park),
+        // do NOT free it at the end of this draw call.
+        let _ieid: i64 = ui_register(inp, "button", "design-issues", ui_park(a, issue_label), ir,
+                                     a.*.modal == modal_none(), a.*.warn_open, false);
+        let ic: i64 = th_warning();
+        if (a.*.warn_open || ih) { ic = th_accent(); }
+        fill_round_rect(f, ir.x, ir.y, ir.w, ir.h, radius_control(), ic);
+        round_rect_outline(f, ir.x, ir.y, ir.w, ir.h, radius_control(), th_warning());
+        draw_text(f, ir.x + 9, my, issue_label, th_text());
+        if (ih && btn_released(inp, 0)) { a.*.warn_open = !a.*.warn_open; }
+    }
+
+    // document name, left of the buttons and issue chip
     let title: []u8 = a.*.file_;
-    if (a.*.dirty) { title = _zag_str_concat(a.*.file_, " *"); }
-    draw_text(f, ob.x - text_w(title) - 12, r.y + 7, title, th_text_dim());
+    let title_owned: bool = false;
+    if (a.*.dirty) { title = s2(a.*.file_, " *"); title_owned = true; }
+    let title_x: i32 = ob.x - issue_w - text_w(title) - 26;
+    fill_round_rect(f, title_x - 8, r.y + 4, text_w(title) + 16, r.h - 8,
+                    radius_control(), th_panel());
+    draw_text(f, title_x, my, title, th_text_dim());
+    if (title_owned) { _zag_str_free(title); }
 }
 
 // A small cog icon composed from framebuffer rects (no glyph font dependency).
@@ -492,7 +562,7 @@ fn draw_menu_dropdown(a: *App) void {
     let inp: *Input = &a.*.inp;
 
     // anchor under the menu title
-    let x0: i32 = 6;
+    let x0: i32 = 30;
     let m: i32 = 0;
     while (m < a.*.menu) {
         x0 = x0 + text_w(menu_title(m)) + 18;
@@ -501,13 +571,13 @@ fn draw_menu_dropdown(a: *App) void {
 
     let items: list.ArrayList[MenuItem] = list.make[MenuItem](12);
     menu_items(a.*.menu, &items);
-    let iw: i32 = 208;
-    let ih: i32 = 21;
-    let sep: i32 = 7;
+    let iw: i32 = 220;
+    let ih: i32 = row_h() + 2;
+    let sep: i32 = 9;
     let total: i32 = 0;
     let i: i32 = 0;
     while (i < items.len) {
-        if (items.data[i].code == 0) { total = total + sep; } else { total = total + ih; }
+        if (items.data[i].code == cmd_none()) { total = total + sep; } else { total = total + ih; }
         i = i + 1;
     }
     let dr: Rect = rect(x0, menu_h(), iw, total + 8);
@@ -520,17 +590,17 @@ fn draw_menu_dropdown(a: *App) void {
     i = 0;
     while (i < items.len) {
         let it: MenuItem = items.data[i];
-        if (it.code == 0) {
-            hline(f, dr.x + 8, y + 3, dr.w - 16, th_outline_soft());
+        if (it.code == cmd_none()) {
+            hline(f, dr.x + 8, y + 4, dr.w - 16, th_outline_soft());
             y = y + sep;
         } else {
             let row: Rect = rect(dr.x + 4, y, dr.w - 8, ih);
             let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
             let _eid: i64 = ui_register(inp, "menuitem", it.label, it.label, row, true, false, false);
             if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
-            draw_text(f, row.x + 8, y + 6, it.label, th_text());
+            draw_text(f, row.x + 8, y + text_cy(face_body(), ih), it.label, th_text());
             if (it.hint.len > 0) {
-                draw_text(f, row.x + row.w - text_w(it.hint) - 8, y + 6, it.hint, th_text_dim());
+                draw_text(f, row.x + row.w - text_w(it.hint) - 8, y + text_cy(face_body(), ih), it.hint, th_text_dim());
             }
             if (hov && btn_released(inp, 0)) {
                 app_action(a, it.code);
@@ -550,22 +620,15 @@ fn draw_menu_dropdown(a: *App) void {
 }
 
 // ── status bar ────────────────────────────────────────────────────────────────
-
-fn tool_name(a: *App) []u8 {
-    if (a.*.moving) { return "move"; }
-    if (a.*.tool == tool_route()) { return "route"; }
-    if (a.*.tool >= tool_place_base()) {
-        return _zag_str_concat("place ", kind_short(app_current_kind(a)));
-    }
-    return "select";
-}
+// (tool_name was deleted: it had no callers and mixed literal/owned returns.
+// The status bar composes its tool label from literals + kind_short instead.)
 
 fn draw_statusbar(a: *App) void {
     let f: *FB = &a.*.f;
     let r: Rect = zone_status(a);
     fill_rect(f, r.x, r.y, r.w, r.h, th_header());
     hline(f, r.x, r.y, r.w, th_outline());
-    let ty: i32 = r.y + 7;
+    let ty: i32 = r.y + text_cy(face_body(), r.h);
 
     // left: document
     draw_text(f, 8, ty, a.*.file_, th_text());
@@ -617,14 +680,16 @@ fn draw_statusbar(a: *App) void {
         x = x + text_w(" selected") + 24;
     }
 
-    // camera + snap + section state (Section 3.2: a working status bar)
+    // camera + lattice + section state (Section 3.2: a working status bar)
     let camm: []u8 = "persp";
     if (a.*.cam.ortho) { camm = "ortho"; }
     draw_text(f, x, ty, camm, th_text_dim());
     x = x + text_w(camm) + 16;
+    draw_text(f, x, ty, "grid 1u", th_accent_hot());
+    x = x + text_w("grid 1u") + 16;
     if (a.*.snap_obj) {
-        draw_text(f, x, ty, "snap", th_accent_hot());
-        x = x + text_w("snap") + 16;
+        draw_text(f, x, ty, "align", th_text_dim());
+        x = x + text_w("align") + 16;
     }
     if (a.*.sect_on) {
         draw_text(f, x, ty, "section", th_warning());
@@ -655,9 +720,15 @@ fn draw_statusbar(a: *App) void {
     let run: []u8 = "paused";
     if (a.*.sim.*.playing) { run = "running"; }
     let rw: i32 = text_w(" parts  ") + text_w(" guides  ") + text_w(" ms  sim ") + text_w(run);
-    rw = rw + text_w(fmt_i(a.*.scene.*.comps.len as i64));
-    rw = rw + text_w(fmt_i(a.*.scene.*.guides.len as i64));
-    rw = rw + text_w(fmt_i(a.*.frame_ms));
+    let rw_c: []u8 = fmt_i(a.*.scene.*.comps.len as i64);
+    let rw_g: []u8 = fmt_i(a.*.scene.*.guides.len as i64);
+    let rw_m: []u8 = fmt_i(a.*.frame_ms);
+    rw = rw + text_w(rw_c);
+    rw = rw + text_w(rw_g);
+    rw = rw + text_w(rw_m);
+    _zag_str_free(rw_c);
+    _zag_str_free(rw_g);
+    _zag_str_free(rw_m);
     let sx: i32 = r.w - rw - 8;
     let rx: i32 = sx;
     rx = rx + draw_int(f, rx, ty, a.*.scene.*.comps.len as i64, th_text_dim());
@@ -682,32 +753,32 @@ fn draw_warnings_popup(a: *App) void {
     inp.*.capture = 0;
     let n: i32 = a.*.warn_ids.len;
     if (n > 12) { n = 12; }
-    let ph: i32 = n * 18 + 30;
+    let ph: i32 = n * row_h() + 34;
     let pw: i32 = 300;
     let pr: Rect = rect(8, a.*.inp.h - status_h() - ph - 4, pw, ph);
     draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
     fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
     round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
-    draw_text(f, pr.x + pad_panel(), pr.y + 7, "DESIGN WARNINGS", th_warning());
-    let y: i32 = pr.y + 24;
+    draw_text(f, pr.x + pad_panel(), pr.y + text_cy(face_body(), 24), "DESIGN WARNINGS", th_warning());
+    let y: i32 = pr.y + 28;
     let i: i32 = 0;
     while (i < n) {
         let id: i32 = list.get[i32](a.*.warn_ids, i);
         let code: i32 = list.get[i32](a.*.warn_codes, i);
-        let row: Rect = rect(pr.x + 4, y, pr.w - 8, 17);
+        let row: Rect = rect(pr.x + 4, y, pr.w - 8, row_h() - 1);
         let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
         if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
         let ci: i32 = scene_comp_index(a.*.scene, id);
         let nm: []u8 = "?";
         if (ci >= 0) { nm = a.*.scene.*.comps.data[ci].name_; }
-        draw_text(f, row.x + 6, y + 4, nm, th_text());
-        draw_text(f, row.x + 6 + text_w(nm) + 8, y + 4, warn_text(code), th_warning());
+        draw_text(f, row.x + 6, y + text_cy(face_body(), row_h() - 1), nm, th_text());
+        draw_text(f, row.x + 6 + text_w(nm) + 8, y + text_cy(face_body(), row_h() - 1), warn_text(code), th_warning());
         if (hov && btn_released(inp, 0)) {
             sel_set(a, id);
             app_frame_selected(a);
             a.*.warn_open = false;
         }
-        y = y + 18;
+        y = y + row_h();
         i = i + 1;
     }
     if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my)) { a.*.warn_open = false; }
@@ -743,7 +814,7 @@ fn library_tab_has(t: i32, ki: i32) bool {
 
 // Beam compatibility line for a component card.
 fn kind_compat(k: Kind) []u8 {
-    if (k == Kind.Emitter) { return "C-band 1530-1565 nm"; }
+    if (k == Kind.Emitter) { return "WDM emitter"; }
     if (k == Kind.Chamber) { return "any WDM channel"; }
     if (k == Kind.Detector) { return "any channel"; }
     return "no beam port";
@@ -768,7 +839,7 @@ fn draw_lib_card(a: *App, x: i32, y: i32, w: i32, ki: i32) i32 {
     let f: *FB = &a.*.f;
     let inp: *Input = &a.*.inp;
     let k: Kind = kind_at(ki);
-    let card: Rect = rect(x, y, w, 46);
+    let card: Rect = rect(x, y, w, 54);
     let armed: bool = a.*.tool == tool_place_base() + ki || a.*.lib_drag == ki;
     let hov: bool = hover(inp, card);
     let _eid: i64 = ui_register(inp, "option", kind_name(k), kind_name(k), card, true, armed, false);
@@ -780,20 +851,24 @@ fn draw_lib_card(a: *App, x: i32, y: i32, w: i32, ki: i32) i32 {
     let cbord: i64 = th_outline();
     if (armed) { cbord = th_accent_hot(); }
     round_rect_outline(f, card.x, card.y, card.w, card.h, radius_panel(), cbord);
-    draw_kind_icon(f, card.x + pad_panel(), card.y + 12, k);
-    let tx: i32 = card.x + 36;
+    draw_kind_icon(f, card.x + pad_panel(), card.y + 16, k);
+    let tx: i32 = card.x + 38;
     // Reserve the shortcut index before measuring copy. Every card line uses
     // the same safe text column, so descriptive copy never crosses the border
     // or collides with the index on narrow workspaces.
     let idx: []u8 = fmt_i((ki + 1) as i64);
-    let tmax: i32 = card.x + card.w - tx - pad_panel() - text_w(idx) - 4;
+    let tmax: i32 = card.x + card.w - tx - pad_panel() - text_wf(face_dense(), idx) - 4;
     let tcol: i64 = th_text();
     if (armed) { tcol = rgb(240, 244, 250); }
-    draw_text_max(f, tx, card.y + 5, kind_short(k), tcol, tmax);
-    draw_text_max(f, tx, card.y + 18, kind_blurb(k), th_text_dim(), tmax);
-    let ports: []u8 = _zag_str_concat(fmt_i(kind_port_count(k) as i64), " ports  ");
-    draw_text_max(f, tx, card.y + 31, _zag_str_concat(ports, kind_compat(k)), th_text_dim(), tmax);
-    draw_text(f, card.x + card.w - text_w(idx) - pad_text(), card.y + 5, idx, th_text_dim());
+    draw_text_face_max(f, tx, card.y + 4, face_body(), kind_short(k), tcol, tmax);
+    draw_text_face_max(f, tx, card.y + 22, face_dense(), kind_blurb(k), th_text_dim(), tmax);
+    let pc_n: []u8 = fmt_i(kind_port_count(k) as i64);
+    let ports: []u8 = s3(pc_n, " ports  ", kind_compat(k));
+    _zag_str_free(pc_n);
+    draw_text_face_max(f, tx, card.y + 38, face_dense(), ports, th_text_dim(), tmax);
+    _zag_str_free(ports);
+    draw_text_face(f, card.x + card.w - text_wf(face_dense(), idx) - pad_text(), card.y + 4, face_body(), idx, th_text_dim());
+    _zag_str_free(idx);
     ui_tip(inp, card, kind_name(k));
     if (hov && btn_pressed(inp, 0)) {
         a.*.tool = tool_place_base() + ki;
@@ -802,7 +877,7 @@ fn draw_lib_card(a: *App, x: i32, y: i32, w: i32, ki: i32) i32 {
     if (a.*.lib_drag == ki && !btn_down(inp, 0) && hov) {
         a.*.lib_drag = 0 - 1; // released in place: plain click, tool stays armed
     }
-    return y + 50;
+    return y + 58;
 }
 
 fn draw_toolbar(a: *App) void {
@@ -910,14 +985,14 @@ fn draw_toolbar(a: *App) void {
         }
         if (pcmd_match("reference flash pcu", q)) {
             if (ui_button(f, inp, rect(x, y, w, control_h()), "Open Reference Flash PCU", false)) {
-                app_action(a, 32);
+                app_action(a, cmd_open_flash_reference());
             }
             y = y + control_h() + pad_text();
             shown = shown + 1;
         }
         if (pcmd_match("flash fir workspace", q)) {
             if (ui_button(f, inp, rect(x, y, w, control_h()), "Flash FIR Workspace", false)) {
-                app_action(a, 49);
+                app_action(a, cmd_flash_workspace());
             }
             y = y + control_h() + pad_text();
             shown = shown + 1;
@@ -987,8 +1062,7 @@ fn insp_field(a: *App, x: i32, y: i32, w: i32, label: []u8, val: []u8, unit: []u
 fn insp_apply_move(a: *App, id: i32, d: Vox) void {
     if (d.x == 0 && d.y == 0 && d.z == 0) { return; }
     if (app_is_locked(a, id)) {
-        a.*.insp_err = "part is locked";
-        a.*.insp_err_frame = a.*.frame;
+        insp_err_set(a, "part is locked");
         return;
     }
     let one: list.ArrayList[i32] = list.make[i32](1);
@@ -997,11 +1071,10 @@ fn insp_apply_move(a: *App, id: i32, d: Vox) void {
         op_move(&a.*.jrn, a.*.scene, id, d);
         group_move(a.*.scene, &one, d);
         app_mark_dirty(a);
-        a.*.insp_err = "";
+        insp_err_clear(a);
         input_flash(&a.*.inp, 424242 + (id as i64));
     } else {
-        a.*.insp_err = "blocked: destination fails placement rules";
-        a.*.insp_err_frame = a.*.frame;
+        insp_err_set(a, "blocked: destination fails placement rules");
         a.*.invalid_frame = a.*.frame;
     }
     list.free[i32](&one);
@@ -1039,19 +1112,27 @@ fn draw_inspector_comp(a: *App, content: Rect, x: i32, y0: i32, w: i32, ci: i32)
     if (ui_section(f, inp, x, y, w, "Transform", &a.*.insp_open_t, 0 - 1)) {
         y = y + row_h() + 2;
         let tv: i64 = 0;
-        let sx: i32 = insp_field(a, x, y, w, "cell x", fmt_i(c.origin.x as i64), "cell", 0, &tv);
+        let fx: []u8 = fmt_i(c.origin.x as i64);
+        let sx: i32 = insp_field(a, x, y, w, "cell x", fx, "cell", 0, &tv);
+        _zag_str_free(fx);
         if (sx == 1 || sx == 0 - 1) { insp_apply_move(a, id, vox(sx, 0, 0)); }
         if (sx == 2) { insp_apply_move(a, id, vox((tv as i32) - c.origin.x, 0, 0)); }
         y = y + control_h() + 2;
-        let sy: i32 = insp_field(a, x, y, w, "cell y", fmt_i(c.origin.y as i64), "cell", 1, &tv);
+        let fy: []u8 = fmt_i(c.origin.y as i64);
+        let sy: i32 = insp_field(a, x, y, w, "cell y", fy, "cell", 1, &tv);
+        _zag_str_free(fy);
         if (sy == 1 || sy == 0 - 1) { insp_apply_move(a, id, vox(0, sy, 0)); }
         if (sy == 2) { insp_apply_move(a, id, vox(0, (tv as i32) - c.origin.y, 0)); }
         y = y + control_h() + 2;
-        let sz: i32 = insp_field(a, x, y, w, "cell z", fmt_i(c.origin.z as i64), "cell", 2, &tv);
+        let fz: []u8 = fmt_i(c.origin.z as i64);
+        let sz: i32 = insp_field(a, x, y, w, "cell z", fz, "cell", 2, &tv);
+        _zag_str_free(fz);
         if (sz == 1 || sz == 0 - 1) { insp_apply_move(a, id, vox(0, 0, sz)); }
         if (sz == 2) { insp_apply_move(a, id, vox(0, 0, (tv as i32) - c.origin.z)); }
         y = y + control_h() + 2;
-        let sr: i32 = insp_field(a, x, y, w, "rot", fmt_i((c.rot * 90) as i64), "deg", 3, &tv);
+        let fr: []u8 = fmt_i((c.rot * 90) as i64);
+        let sr: i32 = insp_field(a, x, y, w, "rot", fr, "deg", 3, &tv);
+        _zag_str_free(fr);
         if (sr != 0) {
             let newrot: i32 = (c.rot + 1) % 4;
             if (sr == 0 - 1) { newrot = (c.rot + 3) % 4; }
@@ -1061,50 +1142,65 @@ fn draw_inspector_comp(a: *App, content: Rect, x: i32, y0: i32, w: i32, ci: i32)
                 newrot = q as i32;
             }
             if (app_is_locked(a, id)) {
-                a.*.insp_err = "part is locked";
-                a.*.insp_err_frame = a.*.frame;
+                insp_err_set(a, "part is locked");
             } else {
                 let rv: i32 = op_rotate(&a.*.jrn, a.*.scene, id, newrot);
-                if (rv == 0) { app_mark_dirty(a); a.*.insp_err = ""; }
+                if (rv == 0) { app_mark_dirty(a); insp_err_clear(a); }
                 else {
-                    a.*.insp_err = _zag_str_concat("cannot rotate: ", place_err_text(rv));
-                    a.*.insp_err_frame = a.*.frame;
+                    let __err: []u8 = s2("cannot rotate: ", place_err_text(rv));
+                    insp_err_set(a, __err);
+                    _zag_str_free(__err);
                 }
             }
         }
         y = y + control_h() + 2;
         // exact dimensions; resizable kinds get live width/depth fields
         if (kind_resizable(c.kind)) {
-            let sw: i32 = insp_field(a, x, y, w, "size w", fmt_i(c.size.x as i64), "vox", 4, &tv);
+            let fw2: []u8 = fmt_i(c.size.x as i64);
+            let sw: i32 = insp_field(a, x, y, w, "size w", fw2, "vox", 4, &tv);
+            _zag_str_free(fw2);
             if (sw != 0) {
                 let ns: Vox = c.size;
                 if (sw == 2) { ns.x = tv as i32; } else { ns.x = ns.x + sw; }
                 let rv2: i32 = op_resize(&a.*.jrn, a.*.scene, id, clamp_size(c.kind, ns));
-                if (rv2 == 0) { app_mark_dirty(a); a.*.insp_err = ""; }
+                if (rv2 == 0) { app_mark_dirty(a); insp_err_clear(a); }
                 else {
-                    a.*.insp_err = _zag_str_concat("cannot resize: ", place_err_text(rv2));
-                    a.*.insp_err_frame = a.*.frame;
+                    let __err2: []u8 = s2("cannot resize: ", place_err_text(rv2));
+                    insp_err_set(a, __err2);
+                    _zag_str_free(__err2);
                 }
             }
             y = y + control_h() + 2;
-            let sd: i32 = insp_field(a, x, y, w, "size d", fmt_i(c.size.z as i64), "vox", 6, &tv);
+            let fd2: []u8 = fmt_i(c.size.z as i64);
+            let sd: i32 = insp_field(a, x, y, w, "size d", fd2, "vox", 6, &tv);
+            _zag_str_free(fd2);
             if (sd != 0) {
                 let ns2: Vox = c.size;
                 if (sd == 2) { ns2.z = tv as i32; } else { ns2.z = ns2.z + sd; }
                 let rv3: i32 = op_resize(&a.*.jrn, a.*.scene, id, clamp_size(c.kind, ns2));
-                if (rv3 == 0) { app_mark_dirty(a); a.*.insp_err = ""; }
+                if (rv3 == 0) { app_mark_dirty(a); insp_err_clear(a); }
                 else {
-                    a.*.insp_err = _zag_str_concat("cannot resize: ", place_err_text(rv3));
-                    a.*.insp_err_frame = a.*.frame;
+                    let __err3: []u8 = s2("cannot resize: ", place_err_text(rv3));
+                    insp_err_set(a, __err3);
+                    _zag_str_free(__err3);
                 }
             }
             y = y + control_h() + 2;
         } else {
             let ext: Vox = comp_ext(c);
-            let dim: []u8 = _zag_str_concat("size ", fmt_i(ext.x as i64));
-            dim = _zag_str_concat(_zag_str_concat(dim, "x"), fmt_i(ext.y as i64));
-            dim = _zag_str_concat(_zag_str_concat(dim, "x"), fmt_i(ext.z as i64));
-            draw_text(f, x, y + 3, _zag_str_concat(dim, " vox"), th_text_dim());
+            let ex: []u8 = fmt_i(ext.x as i64);
+            let ey: []u8 = fmt_i(ext.y as i64);
+            let ez: []u8 = fmt_i(ext.z as i64);
+            let d1: []u8 = s3("size ", ex, "x");
+            let d2: []u8 = s3(d1, ey, "x");
+            _zag_str_free(d1);
+            let dim: []u8 = s3(d2, ez, " vox");
+            _zag_str_free(d2);
+            _zag_str_free(ex);
+            _zag_str_free(ey);
+            _zag_str_free(ez);
+            draw_text_face(f, x, y + text_cy(face_dense(), row_h()), face_dense(), dim, th_text_dim());
+            _zag_str_free(dim);
             y = y + row_h();
         }
     } else { y = y + row_h() + 2; }
@@ -1112,12 +1208,13 @@ fn draw_inspector_comp(a: *App, content: Rect, x: i32, y0: i32, w: i32, ci: i32)
     // ── engine state: beam output, port states, simulation status ──
     if (ui_section(f, inp, x, y, w, "Engine", &a.*.insp_open_e, 0 - 1)) {
         y = y + row_h() + 2;
+        let idy: i32 = text_cy(face_dense(), row_h());
         if (c.kind == Kind.Emitter || c.kind == Kind.Chamber || c.kind == Kind.Detector) {
             let ot: i32 = sim_history(a.*.sim, id, 0);
-            draw_text(f, x, y + 2, "output", th_text_dim());
-            fill_rect(f, x + 46, y, 12, 12, trit_color(ot));
-            rect_outline(f, x + 46, y, 12, 12, trit_rim(ot));
-            draw_text(f, x + 64, y + 2, trit_glyph(ot), th_text());
+            draw_text_face(f, x, y + idy, face_dense(), "output", th_text_dim());
+            fill_rect(f, x + 56, y + 3, 14, 14, trit_color(ot));
+            rect_outline(f, x + 56, y + 3, 14, 14, trit_rim(ot));
+            draw_text_face(f, x + 76, y + idy, face_dense(), trit_glyph(ot), th_text());
             y = y + row_h() + 2;
         }
         // port states (Section 3.8): direction, connection, live carrier trit
@@ -1129,8 +1226,8 @@ fn draw_inspector_comp(a: *App, content: Rect, x: i32, y0: i32, w: i32, ci: i32)
                 let p: Port = kind_port(c.kind, pi2);
                 let dirs: []u8 = "in ";
                 if (p.is_output) { dirs = "out"; }
-                draw_text(f, x + pad_text(), y + 2, p.label, th_text());
-                draw_text(f, x + 46, y + 2, dirs, th_text_dim());
+                draw_text_face(f, x + pad_text(), y + idy, face_dense(), p.label, th_text());
+                draw_text_face(f, x + 56, y + idy, face_dense(), dirs, th_text_dim());
                 // find the guide attached to this port for its live trit
                 let gt: i32 = signal_unknown();
                 let attached: bool = false;
@@ -1144,11 +1241,11 @@ fn draw_inspector_comp(a: *App, content: Rect, x: i32, y0: i32, w: i32, ci: i32)
                     gg = gg + 1;
                 }
                 if (attached) {
-                    fill_rect(f, x + 72, y + 1, 10, 10, trit_color(gt));
-                    rect_outline(f, x + 72, y + 1, 10, 10, trit_rim(gt));
-                    draw_text(f, x + 88, y + 2, trit_glyph(gt), th_text());
+                    fill_rect(f, x + 84, y + 3, 12, 12, trit_color(gt));
+                    rect_outline(f, x + 84, y + 3, 12, 12, trit_rim(gt));
+                    draw_text_face(f, x + 102, y + idy, face_dense(), trit_glyph(gt), th_text());
                 } else {
-                    draw_text(f, x + 72, y + 2, "open", th_warning());
+                    draw_text_face(f, x + 84, y + idy, face_dense(), "open", th_warning());
                 }
                 y = y + row_h();
                 pi2 = pi2 + 1;
@@ -1159,15 +1256,20 @@ fn draw_inspector_comp(a: *App, content: Rect, x: i32, y0: i32, w: i32, ci: i32)
         if (a.*.sim.*.mode == SimMode.Physical) { sst = "Physical"; }
         let run2: []u8 = "  paused";
         if (a.*.sim.*.playing) { run2 = "  running"; }
-        draw_text(f, x, y + 2, _zag_str_concat(_zag_str_concat("sim ", sst), run2), th_text_dim());
+        let simst: []u8 = s3("sim ", sst, run2);
+        draw_text_face(f, x, y + idy, face_dense(), simst, th_text_dim());
+        _zag_str_free(simst);
         y = y + row_h();
         if (a.*.sim.*.mode == SimMode.Physical && !model_complete(a.*.scene.*.model)) {
-            draw_text(f, x, y + 2, "model incomplete: unverified", th_warning());
+            draw_text_face(f, x, y + idy, face_dense(), "model incomplete: unverified", th_warning());
             y = y + row_h();
         }
         if (c.kind == Kind.Chamber) {
-            let soh: []u8 = _zag_str_concat("memory tiles ", fmt_i(scene_soh_adjacent(a.*.scene, id) as i64));
-            draw_text(f, x, y + 2, soh, th_text());
+            let sohn: []u8 = fmt_i(scene_soh_adjacent(a.*.scene, id) as i64);
+            let soh: []u8 = s2("memory tiles ", sohn);
+            _zag_str_free(sohn);
+            draw_text_face(f, x, y + idy, face_dense(), soh, th_text());
+            _zag_str_free(soh);
             y = y + row_h();
         }
     } else { y = y + row_h() + 2; }
@@ -1176,29 +1278,68 @@ fn draw_inspector_comp(a: *App, content: Rect, x: i32, y0: i32, w: i32, ci: i32)
     if (ui_section(f, inp, x, y, w, "Model", &a.*.insp_open_m, 0 - 1)) {
         y = y + row_h() + 2;
         y = draw_provenance(f, x, y, "model", kind_model_param(a.*.scene.*.model, c.kind));
+        // Exact Y-stack contract, separate from the component's ternary signal
+        // state.  Values retain their explicit evidence status: this is a CAD
+        // process plan, not an implied fabrication measurement.
+        let pl: ProcessLayer = process_layer_for_y(c.origin.y);
+        let ply: []u8 = fmt_i(pl.y as i64);
+        let plabel: []u8 = s4("Y ", ply, "  ", process_layer_role_name(pl.role));
+        _zag_str_free(ply);
+        draw_text_face(f, x, y + text_cy(face_dense(), row_h()), face_dense(), plabel, th_accent_hot());
+        _zag_str_free(plabel);
+        y = y + row_h();
+        let pmaterial: []u8 = s2("material ", pl.material);
+        draw_text_face(f, x, y + text_cy(face_dense(), row_h()), face_dense(), pmaterial, th_text_dim());
+        _zag_str_free(pmaterial);
+        y = y + row_h();
+        let pthick: []u8 = s2("thickness ", "Unknown");
+        if (pl.thickness_nm.known) {
+            _zag_str_free(pthick);
+            let tf1: []u8 = fmt_f1(pl.thickness_nm.value);
+            pthick = s4("thickness ", tf1, " ", pl.thickness_nm.units);
+            _zag_str_free(tf1);
+        }
+        let pcol: i64 = th_warning();
+        if (pl.thickness_nm.known) { pcol = th_text_dim(); }
+        let pcl: []u8 = s3(" [", evidence_class_name(pl.thickness_nm.confidence), "]");
+        let ptl: []u8 = s2(pthick, pcl);
+        _zag_str_free(pthick);
+        _zag_str_free(pcl);
+        draw_text_face(f, x, y + text_cy(face_dense(), row_h()), face_dense(), ptl, pcol);
+        _zag_str_free(ptl);
+        y = y + row_h();
+        let psum: []u8 = process_layer_content_summary(pl);
+        let pall: []u8 = s2("allows ", psum);
+        draw_text_face_max(f, x, y + text_cy(face_dense(), row_h()), face_dense(), pall, th_text_dim(), w);
+        _zag_str_free(pall);
+        y = y + row_h();
         if (c.kind == Kind.Emitter) {
             let tv2: i64 = 0;
-            let swl: i32 = insp_field(a, x, y, w, "wl", fmt_i(c.wl_nm as i64), "nm", 7, &tv2);
+            let fwl: []u8 = fmt_i(c.wl_nm as i64);
+            let swl: i32 = insp_field(a, x, y, w, "wl", fwl, "nm", 7, &tv2);
+            _zag_str_free(fwl);
             if (swl != 0) {
                 let nwl: i32 = (c.wl_nm as i32) + swl;
                 if (swl == 2) { nwl = tv2 as i32; }
-                if (nwl < 1530) { nwl = 1530; }
-                if (nwl > 1565) { nwl = 1565; }
+                let wl_min: i32 = a.*.scene.*.model.emitter_wavelength_min_nm.value as i32;
+                let wl_max: i32 = a.*.scene.*.model.emitter_wavelength_max_nm.value as i32;
+                if (nwl < wl_min) { nwl = wl_min; }
+                if (nwl > wl_max) { nwl = wl_max; }
                 op_set_prop(&a.*.jrn, a.*.scene, id, prop_wl(), nwl);
                 app_mark_dirty(a);
             }
-            fill_rect(f, x + w - 24, y - row_h() + 2, 20, 9, wavelength_color(c.wl_nm));
+            fill_rect(f, x + w - 24, y - row_h() + 2, 20, 9, wavelength_color_model(c.wl_nm, a.*.scene.*.model));
             y = y + control_h() + 2;
-            draw_text(f, x, y, "pattern (T to cycle):", th_text_dim());
-            y = y + 13;
+            draw_text_face(f, x, y + text_cy(face_dense(), row_h()), face_dense(), "pattern (T to cycle):", th_text_dim());
+            y = y + row_h();
             let pat: []u8 = preset_pattern(c.preset);
             let pi3: i32 = 0;
             while (pi3 < pat.len) {
                 let t2: i32 = 0;
                 if ((pat[pi3] as i32) == '+') { t2 = 1; }
                 if ((pat[pi3] as i32) == '-') { t2 = 0 - 1; }
-                fill_rect(f, x + pi3 * 11, y, 9, 9, trit_color(t2));
-                rect_outline(f, x + pi3 * 11, y, 9, 9, trit_rim(t2));
+                fill_rect(f, x + pi3 * 13, y + 2, 11, 11, trit_color(t2));
+                rect_outline(f, x + pi3 * 13, y + 2, 11, 11, trit_rim(t2));
                 pi3 = pi3 + 1;
             }
             y = y + row_h();
@@ -1225,32 +1366,37 @@ fn draw_inspector_guide(a: *App, x: i32, y0: i32, w: i32, gi: i32) i32 {
     let inp: *Input = &a.*.inp;
     let y: i32 = y0;
     let g: Guide = a.*.scene.*.guides.data[gi];
-    draw_text(f, x, y, "Waveguide", th_select());
+    let idy: i32 = text_cy(face_dense(), row_h());
+    draw_text_face(f, x, y + idy, face_dense(), "Waveguide", th_select());
     y = y + row_h();
     // connection kind is stated explicitly (Section 3.4): this is a physically
     // routed lattice path, simulated by the engine
-    draw_text(f, x, y, "physical: routed lattice path", th_text());
+    draw_text_face(f, x, y + idy, face_dense(), "physical: routed lattice path", th_text());
     y = y + row_h();
     if (a.*.sim.*.mode == SimMode.Physical && !model_complete(a.*.scene.*.model)) {
-        draw_text(f, x, y, "unverified: model incomplete", th_warning());
+        draw_text_face(f, x, y + idy, face_dense(), "unverified: model incomplete", th_warning());
     } else {
-        draw_text(f, x, y, "simulated: deterministic engine", th_text_dim());
+        draw_text_face(f, x, y + idy, face_dense(), "simulated: deterministic engine", th_text_dim());
     }
     y = y + row_h();
-    let ln: []u8 = _zag_str_concat("length ", fmt_i(g.length_nm as i64));
-    draw_text(f, x, y, _zag_str_concat(ln, " nm"), th_text());
+    let ln_v: []u8 = fmt_i(g.length_nm as i64);
+    let ln: []u8 = s3("length ", ln_v, " nm");
+    _zag_str_free(ln_v);
+    draw_text_face(f, x, y + idy, face_dense(), ln, th_text());
+    _zag_str_free(ln);
     y = y + row_h();
-    let fs: []u8 = _zag_str_concat("delay ", fmt_i(guide_delay_fs_for(a.*.scene, g.length_nm) as i64));
-    fs = _zag_str_concat(fs, " fs / ");
-    fs = _zag_str_concat(fs,
-        fmt_i(guide_delay_symbols_for_model(a.*.scene, a.*.sim.*.clock_ghz, g.length_nm) as i64));
-    fs = _zag_str_concat(fs, " symbols");
-    draw_text(f, x, y, fs, th_text_dim());
+    let fs_v1: []u8 = fmt_i(guide_delay_fs_for(a.*.scene, g.length_nm) as i64);
+    let fs_v2: []u8 = fmt_i(guide_delay_symbols_for_model(a.*.scene, a.*.sim.*.clock_ghz, g.length_nm) as i64);
+    let fs: []u8 = s5("delay ", fs_v1, " fs / ", fs_v2, " symbols");
+    _zag_str_free(fs_v1);
+    _zag_str_free(fs_v2);
+    draw_text_face(f, x, y + idy, face_dense(), fs, th_text_dim());
+    _zag_str_free(fs);
     y = y + row_h();
-    draw_text(f, x, y + 2, "state", th_text_dim());
-    fill_rect(f, x + 38, y, 12, 12, trit_color(g.live));
-    rect_outline(f, x + 38, y, 12, 12, trit_rim(g.live));
-    draw_text(f, x + 56, y + 2, trit_glyph(g.live), th_text());
+    draw_text_face(f, x, y + idy, face_dense(), "state", th_text_dim());
+    fill_rect(f, x + 46, y + 3, 14, 14, trit_color(g.live));
+    rect_outline(f, x + 46, y + 3, 14, 14, trit_rim(g.live));
+    draw_text_face(f, x + 66, y + idy, face_dense(), trit_glyph(g.live), th_text());
     y = y + row_h() + 2;
     y = draw_provenance(f, x, y, "n_g", a.*.scene.*.model.group_index);
     if (ui_button(f, inp, rect(x, y, w, control_h()), "Delete (X)", false)) {
@@ -1264,18 +1410,20 @@ fn draw_inspector_guide(a: *App, x: i32, y0: i32, w: i32, gi: i32) i32 {
 fn outliner_group_row(a: *App, x: i32, y: i32, w: i32, gi: i32, label: []u8, count: i32) bool {
     let f: *FB = &a.*.f;
     let inp: *Input = &a.*.inp;
-    let r: Rect = rect(x, y, w, 16);
+    let r: Rect = rect(x, y, w, 20);
     let hov: bool = hover(inp, r);
     let open: bool = list.get[i32](a.*.expand, gi) == 1;
     let _eid: i64 = ui_register(inp, "disclosure", label, label, r, true, open, false);
     if (hov) { fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), th_header()); }
     let arrow: []u8 = ">";
     if (open) { arrow = "v"; }
-    draw_text(f, x + 4, y + 4, arrow, th_text_dim());
+    let ty: i32 = y + text_cy(face_dense(), 20);
+    draw_text_face(f, x + 4, ty, face_dense(), arrow, th_text_dim());
     let cnt: []u8 = fmt_i(count as i64);
-    let label_max: i32 = w - 16 - text_w(cnt) - 12;
-    draw_text_max(f, x + 16, y + 4, label, th_text(), label_max);
-    draw_text(f, x + w - text_w(cnt) - 6, y + 4, cnt, th_text_dim());
+    let label_max: i32 = w - 16 - text_wf(face_dense(), cnt) - 12;
+    draw_text_face_max(f, x + 16, ty, face_dense(), label, th_text(), label_max);
+    draw_text_face(f, x + w - text_wf(face_dense(), cnt) - 6, ty, face_dense(), cnt, th_text_dim());
+    _zag_str_free(cnt);
     if (hov && btn_released(inp, 0)) {
         let nv: i32 = 1;
         if (open) { nv = 0; }
@@ -1295,18 +1443,20 @@ fn outliner_comp_row(a: *App, row: Rect, j: i32) void {
     let k: Kind = c.kind;
     let selr: bool = sel_has(a, c.id);
     let hov: bool = hover(inp, row);
-    let _eid: i64 = ui_register(inp, "treeitem", fmt_i(c.id as i64), c.name_,
+    let tr_key: []u8 = fmt_i(c.id as i64);
+    let _eid: i64 = ui_register(inp, "treeitem", tr_key, c.name_,
                                 row, true, selr, false);
+    _zag_str_free(tr_key);
     if (selr) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
     else if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_header()); }
 
     // icon by object type
-    fill_rect(f, row.x + 3, row.y + 4, 7, 7, kind_tint(k));
-    rect_outline(f, row.x + 3, row.y + 4, 7, 7, th_outline());
+    fill_rect(f, row.x + 3, row.y + 5, 8, 8, kind_tint(k));
+    rect_outline(f, row.x + 3, row.y + 5, 8, 8, th_outline());
 
     // inline rename (Section 3.6): the row becomes a text field
     if (a.*.rename_id == c.id) {
-        let fr: Rect = rect(row.x + 14, row.y, row.w - 52, row.h);
+        let fr: Rect = rect(row.x + 16, row.y, row.w - 56, row.h);
         let _ch2: bool = ui_textfield(f, inp, fr, &a.*.rename_edit, "");
         if (a.*.rename_edit.committed) {
             op_rename(&a.*.jrn, a.*.scene, c.id, textedit_text(&a.*.rename_edit));
@@ -1320,25 +1470,26 @@ fn outliner_comp_row(a: *App, row: Rect, j: i32) void {
 
     let tcol: i64 = th_text();
     if (!c.visible) { tcol = th_text_dim(); }
-    let nmax: i32 = row.w - 15 - 60;
-    draw_text_max(f, row.x + 15, row.y + 3, c.name_, tcol, nmax);
-    let bx: i32 = row.x + 15 + imin(text_w(c.name_), nmax) + 5;
+    let nmax: i32 = row.w - 17 - 60;
+    let rty: i32 = row.y + text_cy(face_dense(), row.h);
+    draw_text_face_max(f, row.x + 17, rty, face_dense(), c.name_, tcol, nmax);
+    let bx: i32 = row.x + 17 + imin(text_wf(face_dense(), c.name_), nmax) + 5;
 
     // group marker
     if (app_group_of(a, c.id) >= 0) {
-        draw_text(f, bx, row.y + 3, "g", th_accent_hot());
-        bx = bx + 8;
+        draw_text_face(f, bx, rty, face_dense(), "g", th_accent_hot());
+        bx = bx + 10;
     }
     // warning badge (clickable meaning: selecting the row selects the part)
     if (app_comp_warning(a, c.id) != 0) {
-        draw_text(f, bx, row.y + 3, "!", th_warning());
-        bx = bx + 8;
+        draw_text_face(f, bx, rty, face_dense(), "!", th_warning());
+        bx = bx + 10;
     }
     // live signal badge for active parts
     if (k == Kind.Emitter || k == Kind.Chamber || k == Kind.Detector) {
         let lt: i32 = sim_history(a.*.sim, c.id, 0);
-        fill_rect(f, bx, row.y + 4, 7, 7, trit_color(lt));
-        rect_outline(f, bx, row.y + 4, 7, 7, trit_rim(lt));
+        fill_rect(f, bx, row.y + 5, 8, 8, trit_color(lt));
+        rect_outline(f, bx, row.y + 5, 8, 8, trit_rim(lt));
     }
 
     // right side: lock toggle then visibility toggle
@@ -1415,18 +1566,37 @@ fn draw_outliner(a: *App) void {
     // search/filter (Section 3.9) — pinned above the scrolling tree
     let _os: bool = ui_textfield(f, inp, rect(x, content.y + pad_text(), w, control_h()),
                                  &a.*.out_search, "Filter objects...");
-    let list_top: i32 = content.y + pad_text() + control_h() + pad_text();
+    // Start with an at-a-glance design summary.  The tree below remains the
+    // exact hierarchy, but users should not have to count rows to understand
+    // the working set they are navigating.
+    let summary_y: i32 = content.y + pad_text() + control_h() + pad_text();
+    let sn_c: []u8 = fmt_i(a.*.scene.*.comps.len as i64);
+    let sn_g: []u8 = fmt_i(a.*.scene.*.guides.len as i64);
+    let summary: []u8 = s4(sn_c, " parts / ", sn_g, " routes");
+    _zag_str_free(sn_c);
+    _zag_str_free(sn_g);
+    draw_text(f, x, summary_y + 3, summary, th_text_dim());
+    if (a.*.warn_ids.len > 0) {
+        let wi_n: []u8 = fmt_i(a.*.warn_ids.len as i64);
+        let wi: []u8 = s2(wi_n, " issues");
+        _zag_str_free(wi_n);
+        draw_text(f, x + text_w(summary) + 10, summary_y + 3, wi, th_warning());
+        _zag_str_free(wi);
+    }
+    let list_top: i32 = summary_y + row_h() + pad_text();
     fb_clip(f, content.x, list_top, content.x + content.w, content.y + content.h);
     let y: i32 = list_top - a.*.out_scroll;
     let q: []u8 = textedit_text(&a.*.out_search);
 
     // empty state: a fresh design has nothing to navigate yet
     if (a.*.scene.*.comps.len == 0 && a.*.scene.*.guides.len == 0) {
+        _zag_str_free(summary);
         fb_clip_reset(f);
         ui_empty_state(f, rect(content.x, list_top, content.w, content.h - (list_top - content.y)),
                        "empty design", "place parts from the Library");
         return;
     }
+    _zag_str_free(summary);
 
     // per-kind counts in ONE pass over the scene (was one pass per group)
     let counts: list.ArrayList[i32] = list.make[i32](kind_count());
@@ -1449,16 +1619,16 @@ fn draw_outliner(a: *App) void {
         let k: Kind = kind_at(gi);
         let count: i32 = list.get[i32](counts, gi);
         let open: bool = outliner_group_row(a, x, y, w, gi, kind_name(k), count);
-        y = y + 17;
+        y = y + 22;
         if (open) {
             let j: i32 = 0;
             while (j < a.*.scene.*.comps.len) {
                 let c: Comp = a.*.scene.*.comps.data[j];
                 if (c.kind == k && pcmd_match(c.name_, q)) {
                     if (y > y_lo && y < y_hi) {
-                        outliner_comp_row(a, rect(x + 10, y, w - 10, 15), j);
+                        outliner_comp_row(a, rect(x + 10, y, w - 10, 20), j);
                     }
-                    y = y + 16;
+                    y = y + 21;
                 }
                 j = j + 1;
             }
@@ -1470,31 +1640,34 @@ fn draw_outliner(a: *App) void {
     if (!btn_down(inp, 0) && a.*.out_drag_id >= 0) { a.*.out_drag_id = 0 - 1; }
 
     let open_g: bool = outliner_group_row(a, x, y, w, 5, "Waveguides", a.*.scene.*.guides.len);
-    y = y + 17;
+    y = y + 22;
     if (open_g) {
         let j2: i32 = 0;
         while (j2 < a.*.scene.*.guides.len) {
             if (y > y_lo && y < y_hi) {
                 let g: Guide = a.*.scene.*.guides.data[j2];
-                let row: Rect = rect(x + 10, y, w - 10, 15);
+                let row: Rect = rect(x + 10, y, w - 10, 20);
                 let selr: bool = a.*.sel_guide == g.id;
                 let hov: bool = hover(inp, row);
-                let _eid: i64 = ui_register(inp, "treeitem", fmt_i(g.id as i64), "Waveguide",
+                let tr_gkey: []u8 = fmt_i(g.id as i64);
+                let _eid: i64 = ui_register(inp, "treeitem", tr_gkey, "Waveguide",
                                             row, true, selr, false);
+                _zag_str_free(tr_gkey);
                 if (selr) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
                 else if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_header()); }
-                fill_rect(f, row.x + 3, row.y + 4, 7, 7, trit_color(g.live));
-                rect_outline(f, row.x + 3, row.y + 4, 7, 7, trit_rim(g.live));
+                fill_rect(f, row.x + 3, row.y + 5, 8, 8, trit_color(g.live));
+                rect_outline(f, row.x + 3, row.y + 5, 8, 8, trit_rim(g.live));
                 let sci: i32 = scene_comp_index(a.*.scene, g.from_c);
                 let dci: i32 = scene_comp_index(a.*.scene, g.to_c);
                 if (sci >= 0 && dci >= 0) {
                     let t1: []u8 = _zag_str_concat(a.*.scene.*.comps.data[sci].name_, " > ");
                     let t2: []u8 = _zag_str_concat(t1, a.*.scene.*.comps.data[dci].name_);
-                    draw_text_max(f, row.x + 15, row.y + 3, t2, th_text(), row.w - 34);
+                    let grty: i32 = row.y + text_cy(face_dense(), row.h);
+                    draw_text_face_max(f, row.x + 17, grty, face_dense(), t2, th_text(), row.w - 38);
                     _zag_str_free(t1);
                     _zag_str_free(t2);
                 }
-                if (ui_mini(f, inp, rect(row.x + row.w - 16, row.y, 14, 15), "x", th_danger())) {
+                if (ui_mini(f, inp, rect(row.x + row.w - 16, row.y, 14, 20), "x", th_danger())) {
                     op_del_guide(&a.*.jrn, a.*.scene, g.id);
                     scene_remove_guide(a.*.scene, g.id);
                     app_mark_dirty(a);
@@ -1504,7 +1677,7 @@ fn draw_outliner(a: *App) void {
                     a.*.sel.len = 0;
                 }
             }
-            y = y + 16;
+            y = y + 21;
             j2 = j2 + 1;
         }
     }
@@ -1549,11 +1722,11 @@ fn tl_toggle(lst: *list.ArrayList[i32], id: i32) void {
     list.push[i32](lst, id);
 }
 
-// Vertical level for a trit inside an 14px row: +1 top, 0 mid, -1 bottom.
+// Vertical level for a trit inside an 18px row: +1 top, 0 mid, -1 bottom.
 fn tl_level_y(y: i32, t: i32) i32 {
-    if (t > 0) { return y + 1; }
-    if (t < 0) { return y + 11; }
-    return y + 6;
+    if (t > 0) { return y + 2; }
+    if (t < 0) { return y + 14; }
+    return y + 8;
 }
 
 // One waveform row: pin + hide toggles, name with propagation delay, then a
@@ -1562,15 +1735,17 @@ fn tl_level_y(y: i32, t: i32) i32 {
 fn draw_signal_row(a: *App, x: i32, y: i32, w: i32, comp_id: i32, label: []u8, tint: i64, hidden: bool) void {
     let f: *FB = &a.*.f;
     let inp: *Input = &a.*.inp;
+    let tl_h: i32 = 18;
+    let rty: i32 = y + text_cy(face_dense(), tl_h);
 
     // pin / hide toggles
     let pinned: bool = tl_in(&a.*.tl_pin, comp_id);
     let pcol: i64 = th_disabled();
     if (pinned) { pcol = th_accent_hot(); }
-    if (ui_mini(f, inp, rect(x, y, 12, 14), "^", pcol)) { tl_toggle(&a.*.tl_pin, comp_id); }
-    if (ui_mini(f, inp, rect(x + 13, y, 12, 14), "x", th_disabled())) { tl_toggle(&a.*.tl_hide, comp_id); }
+    if (ui_mini(f, inp, rect(x, y, 14, tl_h), "^", pcol)) { tl_toggle(&a.*.tl_pin, comp_id); }
+    if (ui_mini(f, inp, rect(x + 15, y, 14, tl_h), "x", th_disabled())) { tl_toggle(&a.*.tl_hide, comp_id); }
 
-    fill_rect(f, x + 28, y + 3, 8, 8, tint);
+    fill_rect(f, x + 32, y + 5, 8, 8, tint);
 
     // cross-highlight (Section 3.10): the row whose beam path is selected in 3D
     let hl: bool = false;
@@ -1578,13 +1753,17 @@ fn draw_signal_row(a: *App, x: i32, y: i32, w: i32, comp_id: i32, label: []u8, t
         let hgi: i32 = scene_guide_index(a.*.scene, a.*.sel_guide);
         if (hgi >= 0 && a.*.scene.*.guides.data[hgi].from_c == comp_id) { hl = true; }
     }
-    let lrect: Rect = rect(x + 40, y, 96, 14);
+    let lrect: Rect = rect(x + 44, y, 100, tl_h);
     let lcol: i64 = th_text();
     if (hidden) { lcol = th_text_dim(); }
-    if (hl) { fill_rect(f, lrect.x - 2, y, 100, 14, th_accent()); }
-    else if (sel_has(a, comp_id)) { fill_rect(f, lrect.x - 2, y, 100, 14, th_header()); }
-    let label_max: i32 = 78;
-    draw_text_max(f, lrect.x, y + 3, label, lcol, label_max);
+    if (hl) { fill_rect(f, lrect.x - 2, y, 104, tl_h, th_accent()); }
+    else if (sel_has(a, comp_id)) { fill_rect(f, lrect.x - 2, y, 104, tl_h, th_header()); }
+    let label_max: i32 = 82;
+    draw_text_face_max(f, lrect.x, rty, face_dense(), label, lcol, label_max);
+    // Current state stays visible even before a user scrubs the trace.  Empty
+    // horizontal lines made a paused simulation look broken rather than idle.
+    let now_t: i32 = sim_history(a.*.sim, comp_id, a.*.tl_scrub);
+    draw_text_face(f, lrect.x + 86, rty, face_dense(), trit_glyph(now_t), trit_rim(now_t));
     // propagation delay of the incoming guide, in symbols (Section 3.10)
     let din: i32 = 0 - 1;
     let gg2: i32 = 0;
@@ -1596,12 +1775,17 @@ fn draw_signal_row(a: *App, x: i32, y: i32, w: i32, comp_id: i32, label: []u8, t
         gg2 = gg2 + 1;
     }
     if (din >= 0) {
-        let ds: []u8 = _zag_str_concat("+", fmt_i(din as i64));
-        draw_text(f, lrect.x + imin(text_w(label), label_max) + 4, y + 3, ds, th_accent_hot());
+        let din_s: []u8 = fmt_i(din as i64);
+        let ds: []u8 = s2("+", din_s);
+        _zag_str_free(din_s);
+        draw_text_face(f, lrect.x + imin(text_wf(face_dense(), label), label_max) + 4, rty, face_dense(), ds, th_accent_hot());
+        _zag_str_free(ds);
     }
     // clicking the label selects the part and lights its beam path in 3D
-    let _eid: i64 = ui_register(inp, "timelineitem", fmt_i(comp_id as i64), label,
+    let tl_key: []u8 = fmt_i(comp_id as i64);
+    let _eid: i64 = ui_register(inp, "timelineitem", tl_key, label,
                                 lrect, true, sel_has(a, comp_id), false);
+    _zag_str_free(tl_key);
     if (hover(inp, lrect) && btn_released(inp, 0)) {
         sel_set(a, comp_id);
         let found_g: i32 = 0 - 1;
@@ -1616,12 +1800,12 @@ fn draw_signal_row(a: *App, x: i32, y: i32, w: i32, comp_id: i32, label: []u8, t
     }
 
     // waveform area
-    let wx: i32 = x + 140;
-    let ww: i32 = w - 148;
+    let wx: i32 = x + 150;
+    let ww: i32 = w - 158;
     let cells: i32 = ww / a.*.tl_zoom;
     if (cells > hist_len() - 1) { cells = hist_len() - 1; }
     if (cells < 2) { return; }
-    fill_rect(f, wx, y, cells * a.*.tl_zoom, 14, rgb(14, 14, 18));
+    fill_rect(f, wx, y, cells * a.*.tl_zoom, tl_h, rgb(14, 14, 18));
     // symbol ruler ticks every 10 symbols
     let live_sym: i64 = a.*.sim.*.symbol - 1 - (a.*.tl_scrub as i64);
     let i: i32 = 0;
@@ -1632,11 +1816,11 @@ fn draw_signal_row(a: *App, x: i32, y: i32, w: i32, comp_id: i32, label: []u8, t
         let cxp: i32 = wx + i * a.*.tl_zoom;
         let sym_i: i64 = a.*.sim.*.symbol - 1 - (back as i64);
         if (sym_i >= 0 && sym_i % 10 == 0) {
-            vline(f, cxp, y, 14, rgb(30, 30, 36));
+            vline(f, cxp, y, tl_h, rgb(30, 30, 36));
         }
         if (!signal_is_trit(t)) {
             // invalid/conflicting state: unmistakable amber block (Section 3.10)
-            fill_rect(f, cxp, y + 2, a.*.tl_zoom, 10, trit_color(t));
+            fill_rect(f, cxp, y + 2, a.*.tl_zoom, tl_h - 4, trit_color(t));
         } else {
             let ly: i32 = tl_level_y(y, t);
             let segc: i64 = trit_rim(t);
@@ -1662,17 +1846,20 @@ fn draw_signal_row(a: *App, x: i32, y: i32, w: i32, comp_id: i32, label: []u8, t
         if (hsym >= 0) {
             vline(f, wx + hi * a.*.tl_zoom, y - 1, 16, th_focus());
             let hps: i64 = ((hsym as f64) * sim_period_ps(a.*.sim)) as i64;
-            let hs: []u8 = _zag_str_concat("sym ", fmt_i(hsym));
-            hs = _zag_str_concat(hs, "  t ");
-            hs = _zag_str_concat(hs, fmt_i(hps));
-            hs = _zag_str_concat(hs, " ps  state ");
-            hs = _zag_str_concat(hs, trit_glyph(ht));
-            let hw: i32 = text_w(hs) + 10;
+            let hs_sym: []u8 = fmt_i(hsym);
+            let hs_ps: []u8 = fmt_i(hps);
+            let hs: []u8 = s5("sym ", hs_sym, "  t ", hs_ps, " ps  state ");
+            _zag_str_free(hs_sym);
+            _zag_str_free(hs_ps);
+            let hs2: []u8 = s2(hs, trit_glyph(ht));
+            _zag_str_free(hs);
+            let hw: i32 = text_w(hs2) + 10;
             let hxp: i32 = inp.*.mx + 12;
             if (hxp + hw > wx + ww) { hxp = inp.*.mx - hw - 8; }
-            blend_rect(f, hxp, y - 4, hw, 15, rgb(6, 8, 12), 220);
-            rect_outline(f, hxp, y - 4, hw, 15, th_outline());
-            draw_text(f, hxp + 5, y, hs, th_text());
+            blend_rect(f, hxp, y - 4, hw, 18, rgb(6, 8, 12), 220);
+            rect_outline(f, hxp, y - 4, hw, 18, th_outline());
+            draw_text_face(f, hxp + 5, y - 4 + text_cy(face_dense(), 18), face_dense(), hs2, th_text());
+            _zag_str_free(hs2);
         }
     }
 }
@@ -1684,72 +1871,89 @@ fn draw_debugger(a: *App) void {
     fb_clip(f, content.x, content.y, content.x + content.w, content.y + content.h);
     let x: i32 = content.x + 8;
     let y: i32 = content.y + 6;
+    let hdr_h: i32 = 20;
+    let hty: i32 = y + text_cy(face_dense(), hdr_h);
 
     let playing: bool = a.*.sim.*.playing;
     let plabel: []u8 = "Run";
     if (playing) { plabel = "Pause"; }
-    if (ui_button(f, inp, rect(x, y, 58, 18), plabel, playing)) {
+    if (ui_button(f, inp, rect(x, y, 64, hdr_h), plabel, playing)) {
         a.*.sim.*.playing = !playing;
     }
-    if (ui_button(f, inp, rect(x + 62, y, 50, 18), "Step", false)) {
+    if (ui_button(f, inp, rect(x + 68, y, 56, hdr_h), "Step", false)) {
         sim_step(a.*.sim, a.*.scene);
     }
-    if (ui_button(f, inp, rect(x + 116, y, 54, 18), "Reset", false)) {
+    if (ui_button(f, inp, rect(x + 128, y, 60, hdr_h), "Reset", false)) {
         sim_reset(a.*.sim, a.*.scene);
     }
-    draw_text(f, x + 180, y + 5, "rate", th_text_dim());
-    a.*.sim.*.speed = ui_slider(f, inp, rect(x + 210, y + 3, 110, 12), a.*.sim.*.speed, 1.0, 120.0, &a.*.speed_drag);
+    draw_text_face(f, x + 196, hty, face_dense(), "rate", th_text_dim());
+    a.*.sim.*.speed = ui_slider(f, inp, rect(x + 228, y + 4, 110, 12), a.*.sim.*.speed, 1.0, 120.0, &a.*.speed_drag);
 
     // clock readout — the derived fabric clock (min EO bandwidth of the
     // placed parts), not an asserted constant
     let ps: f64 = (a.*.sim.*.symbol as f64) * sim_period_ps(a.*.sim);
-    let cx: i32 = x + 332;
+    let cx: i32 = x + 348;
     let tcol: i64 = th_text_dim();
     let mode_label: []u8 = "Functional  ";
     if (a.*.sim.*.mode == SimMode.Physical) { mode_label = "Physical  "; }
-    draw_text(f, cx, y + 5, mode_label, tcol);
-    cx = cx + text_w(mode_label);
-    draw_text(f, cx, y + 5, "symbol ", tcol);
-    cx = cx + text_w("symbol ");
-    cx = cx + draw_int(f, cx, y + 5, a.*.sim.*.symbol, tcol);
-    draw_text(f, cx, y + 5, "   t ", tcol);
-    cx = cx + text_w("   t ");
-    cx = cx + draw_int(f, cx, y + 5, ps as i64, tcol);
-    draw_text(f, cx, y + 5, " ps   clock ", tcol);
-    cx = cx + text_w(" ps   clock ");
+    draw_text_face(f, cx, hty, face_dense(), mode_label, tcol);
+    cx = cx + text_wf(face_dense(), mode_label);
+    draw_text_face(f, cx, hty, face_dense(), "symbol ", tcol);
+    cx = cx + text_wf(face_dense(), "symbol ");
+    cx = cx + draw_int_face(f, cx, hty, face_dense(), a.*.sim.*.symbol, tcol);
+    draw_text_face(f, cx, hty, face_dense(), "   t ", tcol);
+    cx = cx + text_wf(face_dense(), "   t ");
+    cx = cx + draw_int_face(f, cx, hty, face_dense(), ps as i64, tcol);
+    draw_text_face(f, cx, hty, face_dense(), " ps   clock ", tcol);
+    cx = cx + text_wf(face_dense(), " ps   clock ");
     if (a.*.sim.*.mode == SimMode.Physical && !model_complete(a.*.scene.*.model)) {
-        draw_text(f, cx, y + 5, "Unknown (model incomplete)", th_warning());
+        draw_text_face(f, cx, hty, face_dense(), "Unknown (model incomplete)", th_warning());
     } else if (a.*.sim.*.mode == SimMode.Functional) {
-        draw_text(f, cx, y + 5, "N/A (symbolic)", tcol);
+        draw_text_face(f, cx, hty, face_dense(), "N/A (symbolic)", tcol);
     } else if (a.*.sim.*.clock_ghz > 0.0) {
-        cx = cx + draw_int(f, cx, y + 5, a.*.sim.*.clock_ghz as i64, tcol);
+        cx = cx + draw_int_face(f, cx, hty, face_dense(), a.*.sim.*.clock_ghz as i64, tcol);
         let evidence: []u8 = evidence_class_name(a.*.scene.*.model.emitter_rate_ghz.confidence);
-        draw_text(f, cx, y + 5, _zag_str_concat(" GHz  ", evidence), tcol);
+        let ghz_ev: []u8 = s2(" GHz  ", evidence);
+        draw_text_face(f, cx, hty, face_dense(), ghz_ev, tcol);
+        _zag_str_free(ghz_ev);
     } else {
-        draw_text(f, cx, y + 5, "-- (no active parts)", tcol);
+        draw_text_face(f, cx, hty, face_dense(), "-- (no active parts)", tcol);
     }
 
     // timeline zoom controls + scrub state (Section 3.10)
-    let zx: i32 = content.x + content.w - 190;
-    draw_text(f, zx, y + 5, "zoom", th_text_dim());
-    if (ui_mini(f, inp, rect(zx + 30, y + 2, 14, 14), "-", th_text())) {
+    let zx: i32 = content.x + content.w - 200;
+    draw_text_face(f, zx, hty, face_dense(), "zoom", th_text_dim());
+    if (ui_mini(f, inp, rect(zx + 34, y + 3, 16, 16), "-", th_text())) {
         if (a.*.tl_zoom > 2) { a.*.tl_zoom = a.*.tl_zoom - 1; }
     }
-    if (ui_mini(f, inp, rect(zx + 46, y + 2, 14, 14), "+", th_text())) {
+    if (ui_mini(f, inp, rect(zx + 52, y + 3, 16, 16), "+", th_text())) {
         if (a.*.tl_zoom < 14) { a.*.tl_zoom = a.*.tl_zoom + 1; }
     }
     if (a.*.tl_scrub > 0) {
-        let vs: []u8 = _zag_str_concat("-", fmt_i(a.*.tl_scrub as i64));
-        draw_text(f, zx + 66, y + 5, vs, th_warning());
-        if (ui_button(f, inp, rect(zx + 106, y, 50, 18), "Live", true)) { a.*.tl_scrub = 0; }
+        let vs_n: []u8 = fmt_i(a.*.tl_scrub as i64);
+        let vs: []u8 = s2("-", vs_n);
+        _zag_str_free(vs_n);
+        draw_text_face(f, zx + 74, hty, face_dense(), vs, th_warning());
+        _zag_str_free(vs);
+        if (ui_button(f, inp, rect(zx + 114, y, 54, hdr_h), "Live", true)) { a.*.tl_scrub = 0; }
     } else if (a.*.tl_hide.len > 0) {
         let hl2: []u8 = "hidden";
-        if (ui_button(f, inp, rect(zx + 106, y, 60, 18), hl2, a.*.tl_show_hidden)) {
+        if (ui_button(f, inp, rect(zx + 106, y, 60, hdr_h), hl2, a.*.tl_show_hidden)) {
             a.*.tl_show_hidden = !a.*.tl_show_hidden;
         }
     }
 
-    y = y + 26;
+    y = y + 28;
+
+    // A compact legend makes the timeline readable at a glance: the two
+    // controls at left are actions, the colored dot identifies the component,
+    // and the waveform is its symbol history.
+    // Keep this legend in the control gutter so it explains the lanes without
+    // changing their established hit targets or their keyboard-test geometry.
+    draw_text(f, x + 4, y - 10, "P", th_text_dim());
+    draw_text(f, x + 17, y - 10, "H", th_text_dim());
+    draw_text(f, x + 40, y - 10, "SIGNAL", th_text_dim());
+    draw_text(f, x + 140, y - 10, "SYMBOL HISTORY", th_text_dim());
 
     // lanes use the full panel unless the interference scope is showing
     let has_scope: bool = scope_visible(a) && content.w >= 700;
@@ -1806,7 +2010,7 @@ fn draw_debugger(a: *App) void {
     }
 
     let shown: i32 = 0;
-    let max_lanes: i32 = (content.h - 60 - 14 * a.*.log.len) / 17;
+    let max_lanes: i32 = (content.h - 60 - 16 * a.*.log.len) / 20;
     if (a.*.tl_scroll > imax(0, order.len - max_lanes)) {
         a.*.tl_scroll = imax(0, order.len - max_lanes);
     }
@@ -1815,9 +2019,9 @@ fn draw_debugger(a: *App) void {
         let ci4: i32 = list.get[i32](order, oi);
         let c: Comp = a.*.scene.*.comps.data[ci4];
         let tint: i64 = kind_tint(c.kind);
-        if (c.kind == Kind.Emitter) { tint = wavelength_color(c.wl_nm); }
+        if (c.kind == Kind.Emitter) { tint = wavelength_color_model(c.wl_nm, a.*.scene.*.model); }
         draw_signal_row(a, x + 6, y, lanes_w, c.id, c.name_, tint, tl_in(&a.*.tl_hide, c.id));
-        y = y + 17;
+        y = y + 20;
         shown = shown + 1;
         oi = oi + 1;
     }
@@ -1825,15 +2029,15 @@ fn draw_debugger(a: *App) void {
     if (shown == 0) {
         ui_empty_state(f, rect(content.x, y, lanes_w, imax(70, lanes_h)),
                        "no signal lanes", "place emitters, chambers and sensors");
-        y = y + 15;
+        y = y + 20;
     }
 
     // console log
-    let ly: i32 = content.y + content.h - 14 * a.*.log.len - 4;
+    let ly: i32 = content.y + content.h - 16 * a.*.log.len - 4;
     hline(f, content.x, ly - 3, content.w, th_outline());
     let li: i32 = 0;
     while (li < a.*.log.len) {
-        draw_text(f, x, ly + li * 14, list.get[[]u8](a.*.log, li), th_text_dim());
+        draw_text_face(f, x, ly + li * 16 + text_cy(face_dense(), 16), face_dense(), list.get[[]u8](a.*.log, li), th_text_dim());
         li = li + 1;
     }
 
@@ -1926,9 +2130,9 @@ fn atan2_deg(y: f64, x: f64) f64 {
 fn draw_measure_marker(a: *App, vp: Rect, p: Vox, col: i64) void {
     let f: *FB = &a.*.f;
     let c: Vec3 = vox_center(p);
-    line3z(f, a.*.cam, vp, v3(c.x - 0.4, c.y, c.z), v3(c.x + 0.4, c.y, c.z), col, false, true);
-    line3z(f, a.*.cam, vp, v3(c.x, c.y, c.z - 0.4), v3(c.x, c.y, c.z + 0.4), col, false, true);
-    line3z(f, a.*.cam, vp, v3(c.x, c.y - 0.4, c.z), v3(c.x, c.y + 0.4, c.z), col, false, true);
+    line3z(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), v3(c.x - 0.4, c.y, c.z), v3(c.x + 0.4, c.y, c.z), col, false, true);
+    line3z(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), v3(c.x, c.y, c.z - 0.4), v3(c.x, c.y, c.z + 0.4), col, false, true);
+    line3z(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), v3(c.x, c.y - 0.4, c.z), v3(c.x, c.y + 0.4, c.z), col, false, true);
 }
 
 // Exact deltas, straight-line distance (cells and nm from the lattice pitch),
@@ -1946,34 +2150,42 @@ fn draw_measure(a: *App, vp: Rect) void {
     else if (!a.*.hover_ok) { pb = pa; }
     draw_measure_marker(a, vp, pa, th_accent_hot());
     draw_measure_marker(a, vp, pb, th_ok());
-    line3z(f, a.*.cam, vp, vox_center(pa), vox_center(pb), rgb(235, 240, 248), false, true);
+    line3z(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), vox_center(pa), vox_center(pb), rgb(235, 240, 248), false, true);
 
     let dx: i32 = pb.x - pa.x;
     let dy: i32 = pb.y - pa.y;
     let dz: i32 = pb.z - pa.z;
     let dist_cells: f64 = sqrt((dx * dx + dy * dy + dz * dz) as f64);
     let dist_nm: i64 = (dist_cells * pitch_nm()) as i64;
-    let s1: []u8 = _zag_str_concat("d ", fmt_i(dx as i64));
-    s1 = _zag_str_concat(s1, ", ");
-    s1 = _zag_str_concat(s1, fmt_i(dy as i64));
-    s1 = _zag_str_concat(s1, ", ");
-    s1 = _zag_str_concat(s1, fmt_i(dz as i64));
-    s1 = _zag_str_concat(s1, " cells   ");
-    s1 = _zag_str_concat(s1, fmt_f1(dist_cells));
-    s1 = _zag_str_concat(s1, " cells = ");
-    s1 = _zag_str_concat(s1, fmt_i(dist_nm));
-    s1 = _zag_str_concat(s1, " nm");
-    let s2: []u8 = _zag_str_concat("layer dy ", fmt_i(dy as i64));
-    s2 = _zag_str_concat(s2, "   angle ");
-    s2 = _zag_str_concat(s2, fmt_f1(atan2_deg(dz as f64, dx as f64)));
-    s2 = _zag_str_concat(s2, " deg (plane)");
-    let bw: i32 = imax(text_w(s1), text_w(s2)) + pad_panel() * 2;
+    let mdx: []u8 = fmt_i(dx as i64);
+    let mdy: []u8 = fmt_i(dy as i64);
+    let mdz: []u8 = fmt_i(dz as i64);
+    let mdc: []u8 = fmt_f1(dist_cells);
+    let mnm: []u8 = fmt_i(dist_nm);
+    let s1: []u8 = s5("d ", mdx, ", ", mdy, ", ");
+    let s1b: []u8 = s5(s1, mdz, " cells   ", mdc, " cells = ");
+    _zag_str_free(s1);
+    let s1c: []u8 = s3(s1b, mnm, " nm");
+    _zag_str_free(s1b);
+    _zag_str_free(mdx);
+    _zag_str_free(mdy);
+    _zag_str_free(mdz);
+    _zag_str_free(mdc);
+    _zag_str_free(mnm);
+    let mdy2: []u8 = fmt_i(dy as i64);
+    let mang: []u8 = fmt_f1(atan2_deg(dz as f64, dx as f64));
+    let s2l: []u8 = s5("layer dy ", mdy2, "   angle ", mang, " deg (plane)");
+    _zag_str_free(mdy2);
+    _zag_str_free(mang);
+    let bw: i32 = imax(text_w(s1c), text_w(s2l)) + pad_panel() * 2;
     let bx: i32 = vp.x + pad_panel();
-    let by: i32 = vp.y + vp.h - 52;
-    blend_rect(f, bx, by, bw, 36, rgb(6, 8, 12), 200);
-    rect_outline(f, bx, by, bw, 36, th_outline());
-    draw_text(f, bx + pad_panel(), by + 7, s1, th_text());
-    draw_text(f, bx + pad_panel(), by + 21, s2, th_text_dim());
+    let by: i32 = vp.y + vp.h - 56;
+    blend_rect(f, bx, by, bw, 40, rgb(6, 8, 12), 200);
+    rect_outline(f, bx, by, bw, 40, th_outline());
+    draw_text(f, bx + pad_panel(), by + text_cy(face_body(), 20), s1c, th_text());
+    draw_text(f, bx + pad_panel(), by + 20 + text_cy(face_body(), 20), s2l, th_text_dim());
+    _zag_str_free(s1c);
+    _zag_str_free(s2l);
 }
 
 // ── right-click context menu (Section 3.6) ────────────────────────────────────
@@ -1986,28 +2198,28 @@ fn ctx_items(a: *App, out: *list.ArrayList[MenuItem]) void {
         if (ci >= 0 && !a.*.scene.*.comps.data[ci].visible) { vis_label = "Show"; }
         let lock_label: []u8 = "Lock";
         if (app_is_locked(a, a.*.ctx_comp)) { lock_label = "Unlock"; }
-        list.push[MenuItem](out, MenuItem{ .label = "Rename", .hint = "F2", .code = 19 });
-        list.push[MenuItem](out, MenuItem{ .label = "Duplicate", .hint = "Shift+D", .code = 12 });
-        list.push[MenuItem](out, MenuItem{ .label = "Copy", .hint = "Ctrl+C", .code = 15 });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
-        list.push[MenuItem](out, MenuItem{ .label = "Frame", .hint = "F", .code = 20 });
-        list.push[MenuItem](out, MenuItem{ .label = vis_label, .hint = "", .code = 70 });
-        list.push[MenuItem](out, MenuItem{ .label = lock_label, .hint = "", .code = 71 });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
-        list.push[MenuItem](out, MenuItem{ .label = "Group", .hint = "Ctrl+G", .code = 17 });
-        list.push[MenuItem](out, MenuItem{ .label = "Ungroup", .hint = "", .code = 18 });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
-        list.push[MenuItem](out, MenuItem{ .label = "Delete", .hint = "X", .code = 13 });
+        list.push[MenuItem](out, MenuItem{ .label = "Rename", .hint = "F2", .code = cmd_rename() });
+        list.push[MenuItem](out, MenuItem{ .label = "Duplicate", .hint = "Shift+D", .code = cmd_duplicate() });
+        list.push[MenuItem](out, MenuItem{ .label = "Copy", .hint = "Ctrl+C", .code = cmd_copy() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Frame", .hint = "F", .code = cmd_frame_selected() });
+        list.push[MenuItem](out, MenuItem{ .label = vis_label, .hint = "", .code = cmd_toggle_visibility() });
+        list.push[MenuItem](out, MenuItem{ .label = lock_label, .hint = "", .code = cmd_toggle_lock() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Group", .hint = "Ctrl+G", .code = cmd_group() });
+        list.push[MenuItem](out, MenuItem{ .label = "Ungroup", .hint = "", .code = cmd_ungroup() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Delete", .hint = "X", .code = cmd_delete() });
     } else {
-        list.push[MenuItem](out, MenuItem{ .label = "Paste", .hint = "Ctrl+V", .code = 16 });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = 0 });
-        list.push[MenuItem](out, MenuItem{ .label = "Frame All", .hint = "Home", .code = 21 });
-        list.push[MenuItem](out, MenuItem{ .label = "Reset View", .hint = "", .code = 28 });
+        list.push[MenuItem](out, MenuItem{ .label = "Paste", .hint = "Ctrl+V", .code = cmd_paste() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Frame All", .hint = "Home", .code = cmd_frame_all() });
+        list.push[MenuItem](out, MenuItem{ .label = "Reset View", .hint = "", .code = cmd_reset_view() });
     }
 }
 
 fn ctx_exec(a: *App, code: i32) void {
-    if (code == 70) {
+    if (code == cmd_toggle_visibility()) {
         let ci: i32 = scene_comp_index(a.*.scene, a.*.ctx_comp);
         if (ci >= 0) {
             a.*.scene.*.comps.data[ci].visible = !a.*.scene.*.comps.data[ci].visible;
@@ -2015,7 +2227,7 @@ fn ctx_exec(a: *App, code: i32) void {
         }
         return;
     }
-    if (code == 71) {
+    if (code == cmd_toggle_lock()) {
         app_toggle_lock(a, a.*.ctx_comp);
         return;
     }
@@ -2031,13 +2243,13 @@ fn draw_ctx_menu(a: *App) void {
 
     let items: list.ArrayList[MenuItem] = list.make[MenuItem](14);
     ctx_items(a, &items);
-    let iw: i32 = 180;
-    let ih: i32 = 21;
-    let sep: i32 = 7;
+    let iw: i32 = 200;
+    let ih: i32 = row_h() + 2;
+    let sep: i32 = 9;
     let total: i32 = 0;
     let i: i32 = 0;
     while (i < items.len) {
-        if (items.data[i].code == 0) { total = total + sep; } else { total = total + ih; }
+        if (items.data[i].code == cmd_none()) { total = total + sep; } else { total = total + ih; }
         i = i + 1;
     }
     let mx0: i32 = a.*.ctx_x;
@@ -2054,17 +2266,17 @@ fn draw_ctx_menu(a: *App) void {
     i = 0;
     while (i < items.len) {
         let it: MenuItem = items.data[i];
-        if (it.code == 0) {
-            hline(f, dr.x + 8, y + 3, dr.w - 16, th_outline_soft());
+        if (it.code == cmd_none()) {
+            hline(f, dr.x + 8, y + 4, dr.w - 16, th_outline_soft());
             y = y + sep;
         } else {
             let row: Rect = rect(dr.x + 4, y, dr.w - 8, ih);
             let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
             let _eid: i64 = ui_register(inp, "menuitem", it.label, it.label, row, true, false, false);
             if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
-            draw_text(f, row.x + pad_panel(), y + 6, it.label, th_text());
+            draw_text(f, row.x + pad_panel(), y + text_cy(face_body(), ih), it.label, th_text());
             if (it.hint.len > 0) {
-                draw_text(f, row.x + row.w - text_w(it.hint) - pad_panel(), y + 6, it.hint, th_text_dim());
+                draw_text(f, row.x + row.w - text_w(it.hint) - pad_panel(), y + text_cy(face_body(), ih), it.hint, th_text_dim());
             }
             if (hov && btn_released(inp, 0)) {
                 a.*.ctx_open = false;
@@ -2085,6 +2297,46 @@ fn draw_ctx_menu(a: *App) void {
 
 // ── center: 3D viewport composition ───────────────────────────────────────────
 
+fn draw_viewport_toolbar(a: *App, vp: Rect) void {
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let bh: i32 = 24;
+    let tw: i32 = 326;
+    let x: i32 = vp.x + (vp.w - tw) / 2;
+    let y: i32 = vp.y + 10;
+    draw_shadow(f, x, y, tw, bh + 8, radius_panel());
+    blend_round_rect(f, x, y, tw, bh + 8, radius_panel(), th_panel(), 232);
+    round_rect_outline(f, x, y, tw, bh + 8, radius_panel(), th_outline());
+    let bx: i32 = x + 8;
+    let by: i32 = y + 4;
+    if (ui_button(f, inp, rect(bx, by, 42, bh), "Fit", false)) { app_frame_all(a); }
+    bx = bx + 46;
+    if (ui_button(f, inp, rect(bx, by, 42, bh), "Top", false)) { app_action(a, cmd_view_top()); }
+    bx = bx + 46;
+    if (ui_button(f, inp, rect(bx, by, 48, bh), "Front", false)) { app_action(a, cmd_view_front()); }
+    bx = bx + 52;
+    if (ui_button(f, inp, rect(bx, by, 48, bh), "Right", false)) { app_action(a, cmd_view_right()); }
+    bx = bx + 52;
+    let proj: []u8 = "Ortho"; if (!a.*.cam.ortho) { proj = "Persp"; }
+    if (ui_button(f, inp, rect(bx, by, 54, bh), proj, a.*.cam.ortho)) { app_action(a, cmd_toggle_ortho()); }
+    bx = bx + 58;
+    if (ui_button(f, inp, rect(bx, by, 48, bh), "Reset", false)) { app_action(a, cmd_reset_view()); }
+}
+
+// One source of truth for both viewport rendering and X11 presentation. A
+// static paused view must neither repaint its cached 3D content nor upload it.
+fn viewport_content_dirty(a: *App) bool {
+    let mouse_moved: bool = a.*.inp.mx != a.*.pmx || a.*.inp.my != a.*.pmy;
+    let sim_changed: bool = a.*.sim.*.symbol != a.*.present_sym_prev;
+    let rev_changed: bool = a.*.scene.*.render_rev != a.*.present_rev_prev;
+    return a.*.tile_cache.cam_moved || a.*.cam_drag || a.*.moving ||
+        a.*.box_sel || a.*.sim.*.playing || a.*.pulse_frame == a.*.frame ||
+        a.*.tool != tool_select() || a.*.ghost_ok >= 0 || mouse_moved ||
+        a.*.inp.anim_live || sim_changed || rev_changed ||
+        (a.*.frame - a.*.sel_frame) < 8 ||
+        (a.*.frame - a.*.invalid_frame) < 15;
+}
+
 fn draw_viewport(a: *App) void {
     let f: *FB = &a.*.f;
     let vp: Rect = zone_center(a);
@@ -2096,27 +2348,46 @@ fn draw_viewport(a: *App) void {
     // pixel+depth slabs blit back in one pass and the frame costs ~nothing.
     let s: *Scene = a.*.scene;
     let cache: *TileCache = &a.*.tile_cache;
-    tiles_marks_from_cam(cache, a.*.cam, vp);
+    // The tile cache holds PHYSICAL pixels, matching the viewport's native
+    // physical-resolution rasterization, so every tile call takes the scaled
+    // rect and the slabs blit back at the framebuffer's physical stride.
+    let pvp: Rect = vp_phys_rect(f, vp);
+    tiles_marks_from_cam(cache, a.*.cam, pvp);
     tiles_marks_from_rev(cache, s.*.render_rev);
-    if (tiles_cache_ready(cache)) {
-        tiles_blit(f, vp, cache);
+    let cache_ready: bool = tiles_cache_ready(cache);
+    let redraw_content: bool = !cache_ready || viewport_content_dirty(a);
+    if (cache_ready) {
+        if (redraw_content) { tiles_blit(f, pvp, cache); }
     } else {
-        vp_draw_static(f, a.*.cam, vp, s, a.*.sim, a.*.sect_on, a.*.sect_y);
+        // Camera motion may skip cache writes, but it must not change the
+        // visual language of the design. Keep the complete renderer active
+        // while orbiting so parts, textures and controls do not disappear.
+        vp_draw_static(f, vp_phys_cam(f, a.*.cam), pvp, s, a.*.sim, a.*.sect_on, a.*.sect_y, false);
         // Storing the slabs is only worth it if the camera will hold still and
         // reuse them. During an active orbit/pan every frame re-rasterizes
         // anyway, so skip the copy — the overlay still z-tests the fresh depth
         // in the framebuffer — and cache once when motion stops.
-        if (!a.*.cam_drag) { tiles_store_from_fb(f, vp, cache); }
+        if (!a.*.cam_drag) { tiles_store_from_fb(f, pvp, cache); }
+    }
+
+    // Nothing in the viewport changed. Leave its framebuffer bytes completely
+    // untouched. This is stronger than merely skipping X11 presentation: panel
+    // updates are currently coalesced into one bounding rectangle, which can
+    // span across the viewport. Mutating overlays here would therefore leak an
+    // unrequested partial frame the next time a side panel changed.
+    if (!redraw_content) {
+        fb_clip_reset(f);
+        return;
     }
 
     // ── dynamic overlay (every frame, z-tested against the cached depth) ─────
-    vp_draw_live(f, a.*.cam, vp, s, a.*.sim, a.*.sel_guide, a.*.sect_on, a.*.sect_y);
+    vp_draw_live(f, vp_phys_cam(f, a.*.cam), pvp, s, a.*.sim, a.*.sel_guide, a.*.sect_on, a.*.sect_y, false);
 
     // simulation tick pulses active beams for a few frames (Section 3.11):
     // a brief brightness lift on the carrier centerline, color only, and off
     // entirely in reduced motion
     let page: i64 = a.*.frame - a.*.pulse_frame;
-    if (!a.*.inp.reduced_motion && page >= 0 && page < 5) {
+    if (redraw_content && !a.*.inp.reduced_motion && page >= 0 && page < 5) {
         let pt: f64 = 1.0 - (page as f64) / 5.0;
         let pg: i32 = 0;
         while (pg < s.*.guides.len) {
@@ -2125,7 +2396,7 @@ fn draw_viewport(a: *App) void {
                 let pcol: i64 = lerp_color(trit_rim(pgd.live), rgb(255, 255, 255), pt * 0.5);
                 let pi4: i32 = 1;
                 while (pi4 < pgd.path.len) {
-                    line3(f, a.*.cam, vp, vox_center(list.get[Vox](pgd.path, pi4 - 1)),
+                    line3(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), vox_center(list.get[Vox](pgd.path, pi4 - 1)),
                           vox_center(list.get[Vox](pgd.path, pi4)), pcol, false);
                     pi4 = pi4 + 1;
                 }
@@ -2144,13 +2415,13 @@ fn draw_viewport(a: *App) void {
         let mx: Vec3 = v3(mn.x + (e.x as f64), mn.y + (e.y as f64), mn.z + (e.z as f64));
         let gcol: i64 = th_ok();
         if (a.*.ghost_ok != 0) { gcol = th_danger(); }
-        vp_box(f, a.*.cam, vp, mn, mx, gcol, 80, false);
-        vp_box_wire(f, a.*.cam, vp, mn, mx, gcol);
+        vp_box(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), mn, mx, gcol, 80, false);
+        vp_box_wire(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), mn, mx, gcol);
         let gcx: f64 = (mn.x + mx.x) * 0.5;
         let gcz: f64 = (mn.z + mx.z) * 0.5;
         // depth cue: drop line from the ghost base to the ground grid
         if (mn.y > 0.0) {
-            line3z(f, a.*.cam, vp, v3(gcx, mn.y, gcz), v3(gcx, 0.0, gcz), th_text_dim(), false, true);
+            line3z(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), v3(gcx, mn.y, gcz), v3(gcx, 0.0, gcz), th_text_dim(), false, true);
         }
         // snap targets shown BEFORE placement (Section 3.4): the snapped lattice
         // cell outline plus alignment guides that gently pulse (Section 3.11)
@@ -2160,10 +2431,10 @@ fn draw_viewport(a: *App) void {
             pulse = lerp_color(th_ok(), rgb(180, 255, 205), ph);
         }
         if (a.*.snap_ax != 0 - 1000000) {
-            line3z(f, a.*.cam, vp, v3(mn.x, mn.y, gcz - 14.0), v3(mn.x, mn.y, gcz + 14.0), pulse, false, false);
+            line3z(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), v3(mn.x, mn.y, gcz - 14.0), v3(mn.x, mn.y, gcz + 14.0), pulse, false, false);
         }
         if (a.*.snap_az != 0 - 1000000) {
-            line3z(f, a.*.cam, vp, v3(gcx - 14.0, mn.y, mn.z), v3(gcx + 14.0, mn.y, mn.z), pulse, false, false);
+            line3z(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), v3(gcx - 14.0, mn.y, mn.z), v3(gcx + 14.0, mn.y, mn.z), pulse, false, false);
         }
         // invalid placement: the reason follows the ghost (never hidden)
         if (a.*.ghost_ok > 0) {
@@ -2196,7 +2467,7 @@ fn draw_viewport(a: *App) void {
                 let rch: CellHit = vp_cell_at(a.*.cam, vp, a.*.inp.mx, a.*.inp.my, 1);
                 if (rch.ok) { rto = vox_center(rch.cell); }
             }
-            line3z(f, a.*.cam, vp, rfrom, rto, rcol, false, true);
+            line3z(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), rfrom, rto, rcol, false, true);
         }
     }
 
@@ -2218,8 +2489,8 @@ fn draw_viewport(a: *App) void {
                 let dz: f64 = a.*.move_delta.z as f64;
                 let mn2: Vec3 = v3(lo.x + dx, lo.y, lo.z + dz);
                 let mx2: Vec3 = v3(hi.x + dx, hi.y, hi.z + dz);
-                vp_box(f, a.*.cam, vp, mn2, mx2, gcol2, 70, false);
-                vp_box_wire(f, a.*.cam, vp, mn2, mx2, gcol2);
+                vp_box(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), mn2, mx2, gcol2, 70, false);
+                vp_box_wire(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), mn2, mx2, gcol2);
             }
             mi = mi + 1;
         }
@@ -2246,7 +2517,7 @@ fn draw_viewport(a: *App) void {
                 if (hovp) { ms = 0.24; }
                 let mn3: Vec3 = v3(ctr.x - ms, ctr.y - ms, ctr.z - ms);
                 let mx3: Vec3 = v3(ctr.x + ms, ctr.y + ms, ctr.z + ms);
-                vp_box(f, a.*.cam, vp, mn3, mx3, mcol, 256, false);
+                vp_box(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), mn3, mx3, mcol, 256, false);
                 pj = pj + 1;
             }
             pi = pi + 1;
@@ -2261,7 +2532,7 @@ fn draw_viewport(a: *App) void {
             let hmn: Vec3 = comp_bounds_min(hc);
             let hmx: Vec3 = comp_bounds_max(hc);
             let he: f64 = 0.04;
-            vp_box_wire(f, a.*.cam, vp,
+            vp_box_wire(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp),
                 v3(hmn.x - he, hmn.y - he, hmn.z - he),
                 v3(hmx.x + he, hmx.y + he, hmx.z + he), rgb(150, 156, 172));
         }
@@ -2288,8 +2559,8 @@ fn draw_viewport(a: *App) void {
             let se: f64 = 0.05;
             let smn: Vec3 = v3(smn0.x - se, smn0.y - se, smn0.z - se);
             let smx: Vec3 = v3(smx0.x + se, smx0.y + se, smx0.z + se);
-            vp_box_wire_ghost(f, a.*.cam, vp, smn, smx, rgb(150, 96, 30));
-            vp_box_wire(f, a.*.cam, vp, smn, smx, sel_col);
+            vp_box_wire_ghost(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), smn, smx, rgb(150, 96, 30));
+            vp_box_wire(f, vp_phys_cam(f, a.*.cam), vp_phys_rect(f, vp), smn, smx, sel_col);
             // a locked part shows a small padlock glyph at its top corner
             if (app_is_locked(a, c5.id)) {
                 let lp: P3 = vp_proj(a.*.cam, vp, v3(smx.x, smx.y, smn.z));
@@ -2304,7 +2575,7 @@ fn draw_viewport(a: *App) void {
     // (detector live badges are painted by vp_draw_live above)
 
     // navigation hint (bottom left, single dim line)
-    draw_text(f, vp.x + 8, vp.y + vp.h - 15, "MMB orbit   Shift+MMB pan   wheel zoom", th_text_dim());
+    draw_text(f, vp.x + 8, vp.y + vp.h - 15, "MMB orbit   Shift+MMB pan   RMB+WASD fly   Q/E vertical   wheel speed", th_text_dim());
 
     draw_gizmo(a, vp);
 
@@ -2319,15 +2590,53 @@ fn draw_viewport(a: *App) void {
     }
 
     draw_frame_timing_overlay(a, vp);
+    draw_viewport_toolbar(a, vp);
+
+    // Exact world-position HUD. Camera coordinates use one decimal world unit;
+    // the hovered construction cell remains an exact integer lattice address.
+    let px: []u8 = fmt_f1(a.*.cam.eye.x);
+    let py: []u8 = fmt_f1(a.*.cam.eye.y);
+    let pz: []u8 = fmt_f1(a.*.cam.eye.z);
+    let pos_text: []u8 = s5("POS  X ", px, "  Y ", py, "  Z ");
+    let pos_full: []u8 = s2(pos_text, pz);
+    _zag_str_free(pos_text);
+    _zag_str_free(px);
+    _zag_str_free(py);
+    _zag_str_free(pz);
+    let coord_text: []u8 = pos_full;
+    if (a.*.hover_ok) {
+        let hx: []u8 = fmt_i(a.*.hover_cell.x as i64);
+        let hy: []u8 = fmt_i(a.*.hover_cell.y as i64);
+        let hz: []u8 = fmt_i(a.*.hover_cell.z as i64);
+        let cs: []u8 = s5("    CELL  ", hx, ", ", hy, ", ");
+        let csz: []u8 = s2(cs, hz);
+        _zag_str_free(cs);
+        _zag_str_free(hx);
+        _zag_str_free(hy);
+        _zag_str_free(hz);
+        coord_text = s2(pos_full, csz);
+        _zag_str_free(pos_full);
+        _zag_str_free(csz);
+    }
+    let cw: i32 = text_w(coord_text) + 16;
+    let cx: i32 = vp.x + vp.w - cw - 10;
+    let cy: i32 = vp.y + vp.h - 30;
+    blend_round_rect(f, cx, cy, cw, 22, radius_control(), th_panel(), 224);
+    round_rect_outline(f, cx, cy, cw, 22, radius_control(), th_outline_soft());
+    draw_text(f, cx + 8, cy + text_cy(face_body(), 22), coord_text, th_text());
+    _zag_str_free(coord_text);
 
     // section view badge (Section 3.5)
     if (a.*.sect_on) {
-        let sb: []u8 = _zag_str_concat("SECTION  y <= ", fmt_i(a.*.sect_y as i64));
+        let sy_n: []u8 = fmt_i(a.*.sect_y as i64);
+        let sb: []u8 = s2("SECTION  y <= ", sy_n);
+        _zag_str_free(sy_n);
         let sbw: i32 = text_w(sb) + pad_panel() * 2;
         let sbx: i32 = vp.x + (vp.w - sbw) / 2;
-        blend_rect(f, sbx, vp.y + 8, sbw, 18, rgb(6, 8, 12), 190);
-        rect_outline(f, sbx, vp.y + 8, sbw, 18, th_warning());
-        draw_text(f, sbx + pad_panel(), vp.y + 13, sb, th_warning());
+        blend_rect(f, sbx, vp.y + 8, sbw, 22, rgb(6, 8, 12), 190);
+        rect_outline(f, sbx, vp.y + 8, sbw, 22, th_warning());
+        draw_text(f, sbx + pad_panel(), vp.y + 8 + text_cy(face_body(), 22), sb, th_warning());
+        _zag_str_free(sb);
     }
 
     // invalid-action flash (Section 3.11): a brief red border pulse plus the
@@ -2343,9 +2652,9 @@ fn draw_viewport(a: *App) void {
         if (a.*.invalid_text.len > 0) {
             let iw2: i32 = text_w(a.*.invalid_text) + pad_panel() * 2;
             let ix: i32 = vp.x + (vp.w - iw2) / 2;
-            let iy: i32 = vp.y + vp.h - 24;
-            blend_rect(f, ix, iy, iw2, 17, rgb(30, 10, 10), 210);
-            draw_text(f, ix + pad_panel(), iy + 5, a.*.invalid_text, th_danger());
+            let iy: i32 = vp.y + vp.h - 28;
+            blend_rect(f, ix, iy, iw2, 22, rgb(30, 10, 10), 210);
+            draw_text(f, ix + pad_panel(), iy + text_cy(face_body(), 22), a.*.invalid_text, th_danger());
         }
     }
 
@@ -2431,23 +2740,20 @@ fn draw_frame_timing_overlay(a: *App, vp: Rect) void {
     let f: *FB = &a.*.f;
     let x: i32 = vp.x + 8;
     let y: i32 = vp.y + 8;
-    let w: i32 = 176;
-    let h: i32 = 34;
-    blend_round_rect(f, x, y, w, h, radius_control(), rgb(6, 8, 12), 176);
-    round_rect_outline(f, x, y, w, h, radius_control(), th_outline_soft());
-    draw_text(f, x + 6, y + 7, "frame ", th_text_dim());
-    let tx: i32 = x + 6 + text_w("frame ");
-    let tx2: i32 = tx + draw_int(f, tx, y + 7, a.*.frame, th_text());
-    draw_text(f, tx2, y + 7, "  ", th_text_dim());
-    let tx3: i32 = tx2 + text_w("  ");
-    let tx4: i32 = tx3 + draw_int(f, tx3, y + 7, a.*.frame_ms, th_text());
-    draw_text(f, tx4, y + 7, " ms", th_text_dim());
-    draw_text(f, x + 6, y + 20, "symbol ", th_text_dim());
-    let sx: i32 = x + 6 + text_w("symbol ");
-    let sx2: i32 = sx + draw_int(f, sx, y + 20, a.*.sim.*.symbol, th_text());
-    let run: []u8 = " paused";
-    if (a.*.sim.*.playing) { run = " running"; }
-    draw_text(f, sx2, y + 20, run, th_text_dim());
+    let w: i32 = 200;
+    let h: i32 = 26;
+    blend_round_rect(f, x, y, w, h, radius_panel(), th_panel(), 210);
+    round_rect_outline(f, x, y, w, h, radius_panel(), th_outline_soft());
+    let dot: i64 = th_disabled(); if (a.*.sim.*.playing) { dot = th_ok(); }
+    fill_round_rect(f, x + 8, y + 9, 8, 8, 3, dot);
+    let fty: i32 = y + text_cy(face_body(), h);
+    draw_text(f, x + 22, fty, "frame ", th_text_dim());
+    let tx: i32 = x + 22 + text_w("frame ");
+    let tx2: i32 = tx + draw_int(f, tx, fty, a.*.frame, th_text());
+    draw_text(f, tx2, fty, "  /  ", th_text_dim());
+    let tx3: i32 = tx2 + text_w("  /  ");
+    let tx4: i32 = tx3 + draw_int(f, tx3, fty, a.*.frame_ms, th_text());
+    draw_text(f, tx4, fty, " ms", th_text_dim());
 }
 
 // ── modals ────────────────────────────────────────────────────────────────────
@@ -2460,10 +2766,10 @@ fn modal_frame(a: *App, w: i32, h: i32, title: []u8) Rect {
     draw_shadow(f, r.x, r.y, r.w, r.h, radius_panel());
     fill_round_rect(f, r.x, r.y, r.w, r.h, radius_panel(), th_panel());
     round_rect_outline(f, r.x, r.y, r.w, r.h, radius_panel(), th_outline());
-    fill_round_rect(f, r.x + 1, r.y + 1, r.w - 2, 23, radius_panel() - 1, th_header());
-    fill_rect(f, r.x + 1, r.y + 12, r.w - 2, 12, th_header());
-    hline(f, r.x + 1, r.y + 24, r.w - 2, th_outline_soft());
-    draw_text(f, r.x + pad_panel(), r.y + 8, title, th_text());
+    fill_round_rect(f, r.x + 1, r.y + 1, r.w - 2, 30, radius_panel() - 1, th_header());
+    fill_rect(f, r.x + 1, r.y + 15, r.w - 2, 16, th_header());
+    hline(f, r.x + 1, r.y + 30, r.w - 2, th_outline_soft());
+    draw_text_face(f, r.x + pad_panel(), r.y + text_cy(face_section(), 30), face_section(), title, th_text());
     return r;
 }
 
@@ -2523,12 +2829,16 @@ fn draw_flash_panel(a: *App) void {
         while (i < a.*.flash_tags.len && i < 16) {
             let yy: i32 = tr.y + 7 + i * 16;
             draw_text_max(f, tr.x + 7, yy, a.*.flash_tags.data[i], th_text(), 112);
-            let os: []u8 = _zag_str_concat("op ", _zag_i64_to_str(a.*.flash_ops.data[i] as i64));
+            let fo_n: []u8 = _zag_i64_to_str(a.*.flash_ops.data[i] as i64);
+            let os: []u8 = s2("op ", fo_n);
+            _zag_str_free(fo_n);
             draw_text(f, tr.x + 126, yy, os, th_text_dim());
-            let es: []u8 = _zag_str_concat("expected ", trit_glyph(a.*.flash_expected.data[i]));
+            _zag_str_free(os);
+            let es: []u8 = s2("expected ", trit_glyph(a.*.flash_expected.data[i]));
             let ecol: i64 = th_warning();
             if (a.*.flash_verify_errors == 0) { ecol = th_ok(); }
             draw_text(f, tr.x + 184, yy, es, ecol);
+            _zag_str_free(es);
             i = i + 1;
         }
     }
@@ -2588,8 +2898,10 @@ fn draw_modal(a: *App) void {
         while (i < a.*.modal_files.len) {
             let p: []u8 = a.*.modal_files.data[i];
             let row: Rect = rect(r.x + 8, y, r.w - 16, 26);
-            let label: []u8 = _zag_str_concat("Restore snapshot ", _zag_i64_to_str((i + 1) as i64));
-            if (ui_button(f, inp, row, label, false)) { let _ok: bool = app_recover_file(a, p); }
+            let rl_n: []u8 = _zag_i64_to_str((i + 1) as i64);
+            let label: []u8 = s2("Restore snapshot ", rl_n);
+            _zag_str_free(rl_n);
+            if (ui_button(f, inp, row, ui_park(a, label), false)) { let _ok: bool = app_recover_file(a, p); }
             y = y + 31; i = i + 1;
         }
         if (ui_button(f, inp, rect(r.x + r.w - 88, r.y + r.h - 26, 80, 18), "Cancel", false)) {
@@ -2673,6 +2985,12 @@ fn draw_modal(a: *App) void {
         y = y + 16;
         draw_text(f, x, y, "MMB drag", th_accent_hot());
         draw_text(f, x + 90, y, "orbit (Shift+MMB pans)", th_text());
+        y = y + 18;
+        draw_text(f, x, y, "RMB drag", th_accent_hot());
+        draw_text(f, x + 90, y, "free-look without orbiting the center", th_text());
+        y = y + 18;
+        draw_text(f, x, y, "RMB + WASD", th_accent_hot());
+        draw_text(f, x + 90, y, "fly; Q/E vertical, Shift fast, Ctrl precise", th_text());
         y = y + 22;
         if (ui_button(f, inp, rect(r.x + r.w - 88, r.y + r.h - 26, 80, 18), "Close", false)) {
             a.*.modal = modal_none();
@@ -2717,8 +3035,11 @@ fn draw_model_panel(a: *App) void {
     fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
     round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
     draw_text(f, pr.x + 14, pr.y + 14, "PHYSICAL MODEL & PROVENANCE", th_text());
-    let schema_line: []u8 = _zag_str_concat("Pinned schema ", fmt_i(a.*.scene.*.model.schema_version as i64));
+    let sl_v: []u8 = fmt_i(a.*.scene.*.model.schema_version as i64);
+    let schema_line: []u8 = s2("Pinned schema ", sl_v);
+    _zag_str_free(sl_v);
     draw_text(f, pr.x + 14, pr.y + 31, schema_line, th_accent_hot());
+    _zag_str_free(schema_line);
     draw_text(f, pr.x + 120, pr.y + 31, a.*.scene.*.model.id, th_text_dim());
     if (model_can_migrate(a.*.scene.*.model, model_schema_current())) {
         if (ui_button(f, inp, rect(pr.x + pr.w - 206, pr.y + 10, 112, 22), "Migrate to v2", true)) {
@@ -2738,8 +3059,11 @@ fn draw_model_panel(a: *App) void {
         let d: DeviceTypeSchema = model_type_schema(ti);
         let tx: i32 = pr.x + 14 + (ti % 4) * tw;
         let ty: i32 = pr.y + 68 + (ti / 4) * 20;
-        let ts: []u8 = _zag_str_concat(_zag_str_concat(d.id, "  v"), fmt_i(d.version as i64));
+        let ts_v: []u8 = fmt_i(d.version as i64);
+        let ts: []u8 = s3(d.id, "  v", ts_v);
+        _zag_str_free(ts_v);
         draw_text(f, tx, ty + 4, ts, th_text());
+        _zag_str_free(ts);
         ti = ti + 1;
     }
 
@@ -2760,11 +3084,17 @@ fn draw_model_panel(a: *App) void {
         let _eid: i64 = ui_register(inp, "gridcell", model_param_name(pi), model_param_name(pi), rr,
                                     true, selected, false);
         draw_text_max(f, rr.x + 5, rr.y + 4, model_param_name(pi), th_text(), rr.w / 2);
-        let pv: []u8 = "Unknown";
-        if (p.known) { pv = _zag_str_concat(_zag_str_concat(fmt_f1(p.value), " "), p.units); }
         let pvc: i64 = th_warning();
         if (p.known) { pvc = th_text_dim(); }
-        draw_text_max(f, rr.x + rr.w / 2, rr.y + 4, pv, pvc, rr.w / 2 - 5);
+        if (p.known) {
+            let pv_f: []u8 = fmt_f1(p.value);
+            let pv: []u8 = s3(pv_f, " ", p.units);
+            _zag_str_free(pv_f);
+            draw_text_max(f, rr.x + rr.w / 2, rr.y + 4, pv, pvc, rr.w / 2 - 5);
+            _zag_str_free(pv);
+        } else {
+            draw_text_max(f, rr.x + rr.w / 2, rr.y + 4, "Unknown", pvc, rr.w / 2 - 5);
+        }
         if (hov && btn_released(inp, 0)) { a.*.model_param_sel = pi; }
         pi = pi + 1;
     }
@@ -2775,12 +3105,23 @@ fn draw_model_panel(a: *App) void {
     draw_text(f, pr.x + 14, detail_y, model_param_name(a.*.model_param_sel), th_text());
     let dpc: i64 = th_warning();
     if (dp.known) { dpc = th_accent_hot(); }
-    draw_text(f, pr.x + 14, detail_y + 16,
-              _zag_str_concat(_zag_str_concat(evidence_class_name(dp.confidence), "  uncertainty ±"), fmt_f1(dp.uncertainty)), dpc);
-    draw_text(f, pr.x + 14, detail_y + 32, _zag_str_concat("Source: ", dp.source), th_text_dim());
-    draw_text(f, pr.x + 14, detail_y + 48, _zag_str_concat("Method: ", dp.method), th_text_dim());
-    draw_text(f, pr.x + pr.w - 270, detail_y + 32, _zag_str_concat("Version: ", dp.source_version), th_text_dim());
-    draw_text(f, pr.x + pr.w - 270, detail_y + 48, _zag_str_concat("Date: ", dp.date_), th_text_dim());
+    let dp_unc: []u8 = fmt_f1(dp.uncertainty);
+    let dp_ev: []u8 = s3(evidence_class_name(dp.confidence), "  uncertainty ±", dp_unc);
+    _zag_str_free(dp_unc);
+    draw_text(f, pr.x + 14, detail_y + 16, dp_ev, dpc);
+    _zag_str_free(dp_ev);
+    let dp_src: []u8 = s2("Source: ", dp.source);
+    draw_text(f, pr.x + 14, detail_y + 32, dp_src, th_text_dim());
+    _zag_str_free(dp_src);
+    let dp_m: []u8 = s2("Method: ", dp.method);
+    draw_text(f, pr.x + 14, detail_y + 48, dp_m, th_text_dim());
+    _zag_str_free(dp_m);
+    let dp_v: []u8 = s2("Version: ", dp.source_version);
+    draw_text(f, pr.x + pr.w - 270, detail_y + 32, dp_v, th_text_dim());
+    _zag_str_free(dp_v);
+    let dp_d: []u8 = s2("Date: ", dp.date_);
+    draw_text(f, pr.x + pr.w - 270, detail_y + 48, dp_d, th_text_dim());
+    _zag_str_free(dp_d);
 
     if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my)) { a.*.model_open = false; }
     inp.*.capture = cap;
@@ -2801,7 +3142,7 @@ fn draw_settings_panel(a: *App) void {
     let pw: i32 = 236;
     let px: i32 = gr.x + gr.w - pw;
     if (px < 4) { px = 4; }
-    let pr: Rect = rect(px, menu_h(), pw, 410);
+    let pr: Rect = rect(px, menu_h(), pw, 510);
     draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
     fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
     round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
@@ -2813,6 +3154,7 @@ fn draw_settings_panel(a: *App) void {
     if (a.*.opt.*.enabled) { e_lbl = "On"; }
     if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), e_lbl, a.*.opt.*.enabled)) {
         a.*.opt.*.enabled = !a.*.opt.*.enabled;
+        if (!a.*.opt.*.enabled) { a.*.opt_open = false; }
     }
     y = y + 24;
     draw_text(f, pr.x + 10, y + 5, "CPU budget", th_text_dim());
@@ -2822,8 +3164,14 @@ fn draw_settings_panel(a: *App) void {
     draw_text(f, cbx, y + 5, "%", th_text_dim());
     y = y + 24;
     draw_text(f, pr.x + 10, y + 5, "Quiet hours UTC", th_text_dim());
-    let qtext: []u8 = _zag_str_concat(_zag_str_concat(_zag_i64_to_str(a.*.opt.*.quiet_start_hour as i64), "-"), _zag_i64_to_str(a.*.opt.*.quiet_end_hour as i64));
-    if (ui_button(f, inp, rect(pr.x + pw - 74, y, 64, 18), qtext, opt_quiet_now(a.*.opt))) {
+    let qh_s: []u8 = _zag_i64_to_str(a.*.opt.*.quiet_start_hour as i64);
+    let qh_e: []u8 = _zag_i64_to_str(a.*.opt.*.quiet_end_hour as i64);
+    let qtext: []u8 = s3(qh_s, "-", qh_e);
+    _zag_str_free(qh_s);
+    _zag_str_free(qh_e);
+    // ui_button registers the label into the frame catalog (ui_button_key falls
+    // back to the label itself), so it must be parked, not freed after the call.
+    if (ui_button(f, inp, rect(pr.x + pw - 74, y, 64, 18), ui_park(a, qtext), opt_quiet_now(a.*.opt))) {
         a.*.opt.*.quiet_start_hour = (a.*.opt.*.quiet_start_hour + 1) % 24;
         a.*.opt.*.quiet_end_hour = (a.*.opt.*.quiet_end_hour + 1) % 24;
     }
@@ -2839,6 +3187,8 @@ fn draw_settings_panel(a: *App) void {
     if (ui_button(f, inp, rect(pr.x + 10, y, pw - 20, 18), "Reset optimizer defaults", false)) {
         a.*.opt.*.enabled = true; a.*.opt.*.auto_apply = false; a.*.opt.*.min_gain_pct = 1;
         a.*.opt.*.family_dead_path = true; a.*.opt.*.family_const_collapse = true;
+        a.*.opt.*.family_cse = true; a.*.opt.*.family_factoring = true;
+        a.*.opt.*.family_route = true; a.*.opt.*.family_placement = true;
         a.*.opt.*.cpu_budget_pct = 5; a.*.opt.*.quiet_start_hour = 22; a.*.opt.*.quiet_end_hour = 7;
         opt_engine_resume(a.*.opt);
     }
@@ -2873,6 +3223,22 @@ fn draw_settings_panel(a: *App) void {
         a.*.opt.*.family_const_collapse = !a.*.opt.*.family_const_collapse;
     }
     y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "CSE family", th_text_dim());
+    let cse_lbl: []u8 = "Off"; if (a.*.opt.*.family_cse) { cse_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), cse_lbl, a.*.opt.*.family_cse)) { a.*.opt.*.family_cse = !a.*.opt.*.family_cse; }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Factoring family", th_text_dim());
+    let fac_lbl: []u8 = "Off"; if (a.*.opt.*.family_factoring) { fac_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), fac_lbl, a.*.opt.*.family_factoring)) { a.*.opt.*.family_factoring = !a.*.opt.*.family_factoring; }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Route family", th_text_dim());
+    let rte_lbl: []u8 = "Off"; if (a.*.opt.*.family_route) { rte_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), rte_lbl, a.*.opt.*.family_route)) { a.*.opt.*.family_route = !a.*.opt.*.family_route; }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Placement family", th_text_dim());
+    let plc_lbl: []u8 = "Off"; if (a.*.opt.*.family_placement) { plc_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), plc_lbl, a.*.opt.*.family_placement)) { a.*.opt.*.family_placement = !a.*.opt.*.family_placement; }
+    y = y + 24;
     draw_text(f, pr.x + 10, y + 5, "HiDPI scale", th_text_dim());
     let s_lbl: []u8 = "1x";
     if (a.*.ui_scale == 2) { s_lbl = "2x"; }
@@ -2889,8 +3255,9 @@ fn draw_settings_panel(a: *App) void {
         a.*.inp.reduced_motion = !a.*.inp.reduced_motion;
     }
     y = y + 24;
-    // object-alignment snapping (Section 3.4)
-    draw_text(f, pr.x + 10, y + 5, "Object snapping", th_text_dim());
+    // Geometry is always placed on the integer lattice.  This control only
+    // enables the optional pull-to-neighbour alignment aid.
+    draw_text(f, pr.x + 10, y + 5, "Object alignment", th_text_dim());
     let sn_lbl: []u8 = "Off";
     if (a.*.snap_obj) { sn_lbl = "On"; }
     if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), sn_lbl, a.*.snap_obj)) {
@@ -2912,35 +3279,97 @@ fn opt_audit(family: i32, gain_pct: i32, removed_n: i32) void {
     let a4: []u8 = _zag_str_concat(a3, " removed=");
     let a5: []u8 = _zag_str_concat(a4, _zag_i64_to_str(removed_n as i64));
     audit_append("optimize", a5, 0);
+    _zag_str_free(a1);
+    _zag_str_free(a2);
+    _zag_str_free(a3);
+    _zag_str_free(a4);
+    _zag_str_free(a5);
+}
+
+// Owned "(x,y,z)" rendering. Caller frees.
+fn opt_format_vox(v: Vox) []u8 {
+    let x: []u8 = fmt_i(v.x as i64);
+    let y: []u8 = fmt_i(v.y as i64);
+    let z: []u8 = fmt_i(v.z as i64);
+    let xy: []u8 = s3(x, ",", y);
+    let mid: []u8 = s4("(", xy, ",", z);
+    let r: []u8 = s2(mid, ")");
+    _zag_str_free(x);
+    _zag_str_free(y);
+    _zag_str_free(z);
+    _zag_str_free(xy);
+    _zag_str_free(mid);
+    return r;
+}
+
+fn opt_draw_vox_rows(f: *FB, x: i32, y: i32, cells: *list.ArrayList[Vox], max_rows: i32) i32 {
+    let i: i32 = 0;
+    let oy: i32 = y;
+    while (i < cells.len && i < max_rows) {
+        let vs: []u8 = opt_format_vox(cells.data[i]);
+        draw_text(f, x, oy, vs, th_text_dim());
+        _zag_str_free(vs);
+        oy = oy + 12;
+        i = i + 1;
+    }
+    if (cells.len > max_rows) {
+        let more: i32 = cells.len - max_rows;
+        let ms: []u8 = fmt_i(more as i64);
+        let s: []u8 = s3("+", ms, " more cells");
+        _zag_str_free(ms);
+        draw_text(f, x, oy, s, th_text_dim());
+        _zag_str_free(s);
+        oy = oy + 12;
+    }
+    return oy;
 }
 
 // Commit the pending optimizer proposal through the journaled + audited edit path
 // (Section 20.4): re-verify output-equivalence, record ONE undoable op covering
 // every removal and relabel, write an audit record, and mark the document dirty.
 // Both the panel's Apply button and (when enabled) auto-apply route through here.
-fn opt_apply_gui(a: *App) void {
-    if (!a.*.opt.*.has_pending) { return; }
+fn opt_apply_gui(a: *App) bool {
+    if (!a.*.opt.*.has_pending) { return false; }
     let p: *OptProposal = &a.*.opt.*.pending;
-    if (opt_verify(a.*.scene, p)) {
-        let rid: list.ArrayList[i32] = list.make[i32](4);
-        let rnew: list.ArrayList[i32] = list.make[i32](4);
-        let ri: i32 = 0;
-        while (ri < p.*.relabels.len) {
-            list.push[i32](&rid, p.*.relabels.data[ri].comp_id);
-            list.push[i32](&rnew, p.*.relabels.data[ri].new_op);
-            ri = ri + 1;
-        }
-        let fam: i32 = p.*.family;
-        let gain: i32 = opt_gain_percent(p.*);
-        let removed_n: i32 = p.*.removed.len;
-        op_optimize(&a.*.jrn, a.*.scene, p.*.removed, rid, rnew);
-        list.free[i32](&rid);
-        list.free[i32](&rnew);
-        opt_audit(fam, gain, removed_n);
-        a.*.opt.*.applied_count = a.*.opt.*.applied_count + 1;
-        a.*.dirty = true;
+    if (!opt_verify(a.*.scene, p)) { app_invalid(a, "optimizer proposal stale; reopen Optimizer"); opt_engine_clear_pending(a.*.opt); return false; }
+
+    let rid: list.ArrayList[i32] = list.make[i32](4);
+    let rnew: list.ArrayList[i32] = list.make[i32](4);
+    let gafter: list.ArrayList[Guide] = list.make[Guide](4);
+    let mids: list.ArrayList[i32] = list.make[i32](4);
+    let mnew: list.ArrayList[Vox] = list.make[Vox](4);
+    let ri: i32 = 0;
+    while (ri < p.*.relabels.len) {
+        list.push[i32](&rid, p.*.relabels.data[ri].comp_id);
+        list.push[i32](&rnew, p.*.relabels.data[ri].new_op);
+        ri = ri + 1;
     }
+    let gi: i32 = 0;
+    while (gi < p.*.guides.len) {
+        list.push[Guide](&gafter, p.*.guides.data[gi].guide);
+        gi = gi + 1;
+    }
+    let mi: i32 = 0;
+    while (mi < p.*.moves.len) {
+        list.push[i32](&mids, p.*.moves.data[mi].comp_id);
+        list.push[Vox](&mnew, p.*.moves.data[mi].new_origin);
+        mi = mi + 1;
+    }
+    let fam: i32 = p.*.family;
+    let gain: i32 = opt_gain_percent(p.*);
+    let removed_n: i32 = p.*.removed.len;
+    op_optimize_full(&a.*.jrn, a.*.scene, p.*.removed, rid, rnew,
+                     gafter, mids, mnew);
+    list.free[i32](&rid);
+    list.free[i32](&rnew);
+    list.free[Guide](&gafter);
+    list.free[i32](&mids);
+    list.free[Vox](&mnew);
+    opt_audit(fam, gain, removed_n);
+    a.*.opt.*.applied_count = a.*.opt.*.applied_count + 1;
+    a.*.dirty = true;
     opt_engine_clear_pending(a.*.opt);
+    return true;
 }
 
 // ── Optimizer proposal panel (Section 20.4) ──────────────────────────────────
@@ -2955,7 +3384,7 @@ fn draw_opt_panel(a: *App) void {
     let px: i32 = ob.x + ob.w - pw;
     if (px < 4) { px = 4; }
     let ph: i32 = 96;
-    if (a.*.opt.*.has_pending && a.*.opt_details) { ph = 156; }
+    if (a.*.opt.*.has_pending && a.*.opt_details) { ph = 340; }
     if (!a.*.opt.*.has_pending) { ph = 56; }
     let pr: Rect = rect(px, menu_h(), pw, ph);
     draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
@@ -2977,14 +3406,11 @@ fn draw_opt_panel(a: *App) void {
         draw_text(f, gx, gy, " parts", th_text_dim());
 
         let by: i32 = pr.y + 62;
-        if (ui_button(f, inp, rect(pr.x + 10, by, 82, 20), "Apply", a.*.opt_previewed)) {
-            if (a.*.opt_previewed) {
-                opt_apply_gui(a);
+        if (ui_button(f, inp, rect(pr.x + 10, by, 82, 20), "Apply", true)) {
+            if (opt_apply_gui(a)) {
                 a.*.opt_open = false;
                 a.*.opt_details = false;
                 a.*.opt_previewed = false;
-            } else {
-                app_invalid(a, "review Details before Apply");
             }
         }
         if (ui_button(f, inp, rect(pr.x + 98, by, 82, 20), "Ignore", false)) {
@@ -2997,21 +3423,201 @@ fn draw_opt_panel(a: *App) void {
             if (a.*.opt_details) { a.*.opt_previewed = true; }
         }
         if (a.*.opt_details) {
+            let s: *Scene = a.*.scene;
+            let p: *OptProposal = &a.*.opt.*.pending;
             let dy: i32 = pr.y + 90;
-            draw_text(f, pr.x + 10, dy, "removes ", th_text_dim());
-            let dx: i32 = pr.x + 10 + text_w("removes ");
-            dx = dx + draw_int(f, dx, dy, a.*.opt.*.pending.removed.len as i64, th_text_dim());
-            draw_text(f, dx, dy, " part(s), relabels ", th_text_dim());
-            dx = dx + text_w(" part(s), relabels ");
-            dx = dx + draw_int(f, dx, dy, a.*.opt.*.pending.relabels.len as i64, th_text_dim());
-            let sy: i32 = pr.y + 108;
-            draw_text(f, pr.x + 10, sy, "cost ", th_text_dim());
-            let sx: i32 = pr.x + 10 + text_w("cost ");
-            sx = sx + draw_int(f, sx, sy, opt_cost_score(a.*.opt.*.pending.before), th_text_dim());
+
+            draw_text(f, pr.x + 10, dy, "removes", th_text_dim()); dy = dy + 12;
+            let r: i32 = 0;
+            if (p.*.removed.len == 0) {
+                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
+                dy = dy + 12;
+            } else {
+                while (r < p.*.removed.len) {
+                    let rid: i32 = p.*.removed.data[r];
+                    let ri: i32 = scene_comp_index(s, rid);
+                    let rid_s: []u8 = fmt_i(rid as i64);
+                    let rs: []u8 = s2(" - #", rid_s);
+                    _zag_str_free(rid_s);
+                    if (ri >= 0) {
+                        let rc: Comp = s.*.comps.data[ri];
+                        let vox_s: []u8 = opt_format_vox(rc.origin);
+                        let line: []u8 = s5(rs, " ", kind_short(rc.kind), " @ ", vox_s);
+                        _zag_str_free(vox_s);
+                        draw_text(f, pr.x + 10, dy, line, th_text_dim());
+                        _zag_str_free(line);
+                        dy = dy + 12;
+                        let cc: list.ArrayList[Vox] = list.make[Vox](8);
+                        scene_cells_comp(rc, &cc);
+                        dy = opt_draw_vox_rows(f, pr.x + 22, dy, &cc, 4);
+                        list.free[Vox](&cc);
+                    } else {
+                        let np: []u8 = s2(rs, " no longer present");
+                        draw_text(f, pr.x + 10, dy, np, th_text_dim());
+                        _zag_str_free(np);
+                        dy = dy + 12;
+                    }
+                    _zag_str_free(rs);
+                    r = r + 1;
+                }
+            }
+
+            draw_text(f, pr.x + 10, dy, "moves", th_text_dim()); dy = dy + 12;
+            let mv: i32 = 0;
+            if (p.*.moves.len == 0) {
+                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
+                dy = dy + 12;
+            } else {
+                while (mv < p.*.moves.len) {
+                    let m: OptMove = p.*.moves.data[mv];
+                    let mi: i32 = scene_comp_index(s, m.comp_id);
+                    let mc_s: []u8 = fmt_i(m.comp_id as i64);
+                    let ms: []u8 = s2(" - #", mc_s);
+                    _zag_str_free(mc_s);
+                    if (mi >= 0) {
+                        let mc: Comp = s.*.comps.data[mi];
+                        let mc_s2: []u8 = fmt_i(m.comp_id as i64);
+                        let vox_old: []u8 = opt_format_vox(mc.origin);
+                        let vox_new: []u8 = opt_format_vox(m.new_origin);
+                        let mline: []u8 = s4(" - ", kind_short(mc.kind), " #", mc_s2);
+                        _zag_str_free(mc_s2);
+                        let mline2: []u8 = s3(mline, " @ ", vox_old);
+                        _zag_str_free(mline);
+                        _zag_str_free(vox_old);
+                        let mline3: []u8 = s3(mline2, " -> ", vox_new);
+                        _zag_str_free(mline2);
+                        _zag_str_free(vox_new);
+                        draw_text(f, pr.x + 10, dy, mline3, th_text_dim());
+                        _zag_str_free(mline3);
+                        let mcells: list.ArrayList[Vox] = list.make[Vox](8);
+                        let nmcells: list.ArrayList[Vox] = list.make[Vox](8);
+                        scene_cells_comp(mc, &mcells);
+                        draw_text(f, pr.x + 22, dy, "cells @ old", th_text_dim());
+                        dy = dy + 12;
+                        dy = opt_draw_vox_rows(f, pr.x + 34, dy, &mcells, 4);
+                        let mi2: i32 = 0;
+                        while (mi2 < mcells.len) {
+                            let c: Vox = mcells.data[mi2];
+                            let nv: Vox = vox(
+                                c.x - mc.origin.x + m.new_origin.x,
+                                c.y - mc.origin.y + m.new_origin.y,
+                                c.z - mc.origin.z + m.new_origin.z
+                            );
+                            list.push[Vox](&nmcells, nv);
+                            mi2 = mi2 + 1;
+                        }
+                        draw_text(f, pr.x + 22, dy, "cells @ new", th_text_dim());
+                        dy = dy + 12;
+                        dy = opt_draw_vox_rows(f, pr.x + 34, dy, &nmcells, 4);
+                        list.free[Vox](&mcells);
+                        list.free[Vox](&nmcells);
+                    } else {
+                        let np: []u8 = s2(ms, " no longer present");
+                        draw_text(f, pr.x + 10, dy, np, th_text_dim());
+                        _zag_str_free(np);
+                    }
+                    _zag_str_free(ms);
+                    dy = dy + 12;
+                    mv = mv + 1;
+                }
+            }
+
+            draw_text(f, pr.x + 10, dy, "relabels", th_text_dim()); dy = dy + 12;
+            let rl: i32 = 0;
+            if (p.*.relabels.len == 0) {
+                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
+                dy = dy + 12;
+            } else {
+                while (rl < p.*.relabels.len) {
+                    let rel: OptRelabel = p.*.relabels.data[rl];
+                    let ci2: i32 = scene_comp_index(s, rel.comp_id);
+                    let rel_s: []u8 = fmt_i(rel.comp_id as i64);
+                    let rs: []u8 = s2(" - #", rel_s);
+                    _zag_str_free(rel_s);
+                    if (ci2 >= 0) {
+                        let rc: Comp = s.*.comps.data[ci2];
+                        let vox_s: []u8 = opt_format_vox(rc.origin);
+                        let op_old: []u8 = fmt_i(rc.logic_op as i64);
+                        let op_new: []u8 = fmt_i(rel.new_op as i64);
+                        let head: []u8 = s5(rs, " ", kind_short(rc.kind), " @ ", vox_s);
+                        _zag_str_free(vox_s);
+                        let mid: []u8 = s4(head, " op ", op_old, " -> ");
+                        _zag_str_free(head);
+                        _zag_str_free(op_old);
+                        let line: []u8 = s2(mid, op_new);
+                        _zag_str_free(mid);
+                        _zag_str_free(op_new);
+                        draw_text(f, pr.x + 10, dy, line, th_text_dim());
+                        _zag_str_free(line);
+                        let rcells: list.ArrayList[Vox] = list.make[Vox](8);
+                        scene_cells_comp(rc, &rcells);
+                        draw_text(f, pr.x + 22, dy, "cells", th_text_dim());
+                        dy = dy + 12;
+                        dy = opt_draw_vox_rows(f, pr.x + 34, dy, &rcells, 4);
+                        list.free[Vox](&rcells);
+                    } else {
+                        let np: []u8 = s2(rs, " op change, no longer present");
+                        draw_text(f, pr.x + 10, dy, np, th_text_dim());
+                        _zag_str_free(np);
+                    }
+                    _zag_str_free(rs);
+                    dy = dy + 12;
+                    rl = rl + 1;
+                }
+            }
+
+            draw_text(f, pr.x + 10, dy, "guides", th_text_dim()); dy = dy + 12;
+            let gi: i32 = 0;
+            if (p.*.guides.len == 0) {
+                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
+                dy = dy + 12;
+            } else {
+                while (gi < p.*.guides.len) {
+                    let g: Guide = p.*.guides.data[gi].guide;
+                    let gid_s: []u8 = fmt_i(g.id as i64);
+                    let gh: []u8 = s2(" - guide ", gid_s);
+                    _zag_str_free(gid_s);
+                    if (g.path.len > 0) {
+                        let vox_a: []u8 = opt_format_vox(g.path.data[0]);
+                        let vox_b: []u8 = opt_format_vox(g.path.data[g.path.len - 1]);
+                        let gs: []u8 = s2(gh, " path");
+                        let gl: []u8 = s3(gs, " start ", vox_a);
+                        _zag_str_free(gs);
+                        _zag_str_free(vox_a);
+                        let ge: []u8 = s3(gl, " -> ", vox_b);
+                        _zag_str_free(gl);
+                        _zag_str_free(vox_b);
+                        draw_text(f, pr.x + 10, dy, ge, th_text_dim());
+                        _zag_str_free(ge);
+                        dy = dy + 12;
+                        dy = opt_draw_vox_rows(f, pr.x + 22, dy, &g.path, 4);
+                    } else {
+                        let ge2: []u8 = s2(gh, " empty path");
+                        draw_text(f, pr.x + 10, dy, ge2, th_text_dim());
+                        _zag_str_free(ge2);
+                        dy = dy + 12;
+                    }
+                    _zag_str_free(gh);
+                    gi = gi + 1;
+                }
+            }
+
+            let sy: i32 = dy;
+            draw_text(f, pr.x + 10, sy, "cost before ", th_text_dim());
+            let sx: i32 = pr.x + 10 + text_w("cost before ");
+            let cost_b: []u8 = fmt_i(opt_cost_score(a.*.opt.*.pending.before));
+            let cost_a: []u8 = fmt_i(opt_cost_score(a.*.opt.*.pending.after));
+            draw_text(f, sx, sy, cost_b, th_text_dim());
+            sx = sx + text_w(cost_b);
+            sx = sx + 12; // spacing after before value
             draw_text(f, sx, sy, " -> ", th_text_dim());
             sx = sx + text_w(" -> ");
-            sx = sx + draw_int(f, sx, sy, opt_cost_score(a.*.opt.*.pending.after), th_text_dim());
-            draw_text(f, pr.x + 10, pr.y + 128, "equivalent over all inputs", th_ok());
+            sx = sx + text_w(cost_a);
+            sx = sx + 12; // spacing before suffix
+            draw_text(f, sx, sy, cost_a, th_text_dim());
+            _zag_str_free(cost_b);
+            _zag_str_free(cost_a);
+            draw_text(f, pr.x + 10, pr.y + 312, "equivalent over all inputs", th_ok());
         }
     }
 
@@ -3195,17 +3801,9 @@ fn app_compute_present(a: *App) void {
     // The viewport redraws its dynamic overlay every frame; include it whenever
     // anything there could have moved. A dead-still pointer over a paused scene
     // with no animation leaves it untouched (and we skip the upload).
-    let mouse_moved: bool = a.*.inp.mx != a.*.pmx || a.*.inp.my != a.*.pmy;
-    // sim symbol and scene revision change the viewport without a pointer move
-    // (Step button, paste, undo/redo, agent edits, optimizer auto-apply).
-    let sim_changed: bool = a.*.sim.*.symbol != a.*.present_sym_prev;
-    let rev_changed: bool = a.*.scene.*.render_rev != a.*.present_rev_prev;
-    let vp_dirty: bool = a.*.tile_cache.cam_moved || a.*.cam_drag || a.*.moving ||
-        a.*.box_sel || a.*.sim.*.playing || a.*.pulse_frame == a.*.frame ||
-        a.*.tool != tool_select() || a.*.ghost_ok >= 0 || mouse_moved ||
-        a.*.inp.anim_live || sim_changed || rev_changed ||
-        (a.*.frame - a.*.sel_frame) < 8 ||
-        (a.*.frame - a.*.invalid_frame) < 15;
+    // Scene revision, simulation, pointer and interaction state use the exact
+    // same predicate as draw_viewport, preventing redraw/upload disagreement.
+    let vp_dirty: bool = viewport_content_dirty(a);
     if (vp_dirty) { present_add_rect(a, zone_center(a)); }
 
     // Menu and status strips are thin; refresh them alongside any other change
@@ -3231,11 +3829,16 @@ fn app_compute_present(a: *App) void {
 fn app_frame(a: *App, dt: f64) void {
     let t0: i64 = _zag_clock_monotonic_ms();
 
+    app_layout_constrain(a);
+
     a.*.inp.frame = a.*.frame;
     a.*.inp.anim_live = false;
     a.*.inp.text_focus = false;
     a.*.inp.tip_text = "";
     a.*.inp.capture = 0;
+    // Previous frame's parked catalog labels die here, before the catalog is
+    // cleared and rebuilt (ui_park / frame_scratch discipline).
+    free_str_list(&a.*.frame_scratch);
     ui_catalog_begin(&a.*.inp);
     input_focus_begin(&a.*.inp);
     // an open modal, menu, command palette, context menu, or optimizer/settings
@@ -3248,7 +3851,7 @@ fn app_frame(a: *App, dt: f64) void {
         a.*.rename_edit.focus || a.*.insp_edit.focus;
     if (a.*.palette_open) { app_palette_keys(a); }
     else if (!typing) { app_keys(a); }
-    if (a.*.inp.capture != 4 && !typing) { app_viewport_input(a); }
+    if (a.*.inp.capture != 4 && !typing) { app_viewport_input(a, dt); }
     app_warnings_rebuild(a);
 
     // Incremental sim patch: small edits keep symbol time and in-flight state;
@@ -3263,6 +3866,7 @@ fn app_frame(a: *App, dt: f64) void {
     // default — a tick only updates the Optimizer badge and never mutates the
     // project, so it is a pure runtime observer.
     if (a.*.frame % opt_cadence_frames(a.*.opt) == 0 && !opt_quiet_now(a.*.opt) &&
+        !opt_system_pressure() &&
         opt_should_run(a.*.opt.*.enabled, a.*.opt.*.suspended, a.*.moving, a.*.cam_drag,
                        a.*.grab != 0, a.*.menu >= 0, a.*.modal != modal_none(),
                        a.*.sim.*.playing, a.*.opt_open || a.*.settings_open || a.*.palette_open || a.*.flash_open || a.*.model_open)) {
@@ -3280,34 +3884,35 @@ fn app_frame(a: *App, dt: f64) void {
     // pointer is over it (or just left), an ease is mid-flight, or a pointer
     // grab is active; otherwise its cached pixels blit back in one command.
     let force: bool = a.*.anim_live_prev || a.*.inp.capture == 3 || a.*.inp.capture == 1 || a.*.inp.focus_nav;
-    // During an active camera drag the panels neither change nor get re-uploaded
-    // (dirty-region present sends only the viewport, which never overwrites the
-    // panel regions), so their framebuffer pixels persist and the cached blit is
-    // pure waste — skip it for real orbit headroom.
-    let keep_cached: bool = a.*.cam_drag && a.*.frame > 3;
-    let lr: Rect = zone_left(a);
-    let lh: i64 = hash_left(a);
-    if (force || mouse_in(a, lr) || ps_stale(&a.*.ps_left, lr, lh)) {
-        draw_toolbar(a);
-        ps_capture(&a.*.f, lr, &a.*.ps_left, lh);
-    } else if (!keep_cached) {
-        ps_blit(&a.*.f, &a.*.ps_left);
-    }
-    let rr: Rect = zone_right(a);
-    let rh: i64 = hash_right(a);
-    if (force || mouse_in(a, rr) || ps_stale(&a.*.ps_right, rr, rh)) {
-        draw_outliner(a);
-        ps_capture(&a.*.f, rr, &a.*.ps_right, rh);
-    } else if (!keep_cached) {
-        ps_blit(&a.*.f, &a.*.ps_right);
-    }
-    let br: Rect = zone_bottom(a);
-    let bh: i64 = hash_bottom(a);
-    if (force || mouse_in(a, br) || ps_stale(&a.*.ps_bottom, br, bh)) {
-        draw_debugger(a);
-        ps_capture(&a.*.f, br, &a.*.ps_bottom, bh);
-    } else if (!keep_cached) {
-        ps_blit(&a.*.f, &a.*.ps_bottom);
+    // Keep controls stable and visible during camera navigation. Rendering may
+    // still avoid tile-cache writes, but orbit never removes the user's active
+    // tool surface or status feedback.
+    let keep_cached: bool = false;
+    if (!keep_cached) {
+        let lr: Rect = zone_left(a);
+        let lh: i64 = hash_left(a);
+        if (force || mouse_in(a, lr) || ps_stale(&a.*.ps_left, lr, lh)) {
+            draw_toolbar(a);
+            ps_capture(&a.*.f, lr, &a.*.ps_left, lh);
+        } else {
+            ps_blit(&a.*.f, &a.*.ps_left);
+        }
+        let rr: Rect = zone_right(a);
+        let rh: i64 = hash_right(a);
+        if (force || mouse_in(a, rr) || ps_stale(&a.*.ps_right, rr, rh)) {
+            draw_outliner(a);
+            ps_capture(&a.*.f, rr, &a.*.ps_right, rh);
+        } else {
+            ps_blit(&a.*.f, &a.*.ps_right);
+        }
+        let br: Rect = zone_bottom(a);
+        let bh: i64 = hash_bottom(a);
+        if (force || mouse_in(a, br) || ps_stale(&a.*.ps_bottom, br, bh)) {
+            draw_debugger(a);
+            ps_capture(&a.*.f, br, &a.*.ps_bottom, bh);
+        } else {
+            ps_blit(&a.*.f, &a.*.ps_bottom);
+        }
     }
     a.*.anim_live_prev = a.*.inp.anim_live;
 

@@ -167,14 +167,13 @@ fn tiles_cache_ready(cache: *TileCache) bool {
     return true;
 }
 
-// Clear only dirty tile regions (gradient bands clipped per tile).
+// Clear only dirty tile regions. Use one continuous vertical gradient across
+// the viewport; the former four hard bands looked like stale partial redraws.
+// `vp` is the PHYSICAL viewport rect.
 fn vp_clear_tiled(f: *FB, vp: Rect, cache: *TileCache) void {
-    let c0: i64 = rgb(13, 14, 18);
-    let c1: i64 = rgb(18, 19, 24);
-    let c2: i64 = rgb(21, 23, 28);
-    let c3: i64 = rgb(24, 26, 33);
-    let band_h: i32 = vp.h / 4;
-    if (band_h < 1) { band_h = 1; }
+    let c0: i64 = rgb(10, 13, 19);
+    let c1: i64 = rgb(22, 26, 35);
+    let pw: i32 = fb_pw(f);
     let ty: i32 = 0;
     while (ty < cache.*.tiles_y) {
         let tx: i32 = 0;
@@ -190,13 +189,9 @@ fn vp_clear_tiled(f: *FB, vp: Rect, cache: *TileCache) void {
                 let y: i32 = y0;
                 while (y < y0 + th) {
                     let rel: i32 = y - vp.y;
-                    let band: i32 = rel / band_h;
-                    if (band > 3) { band = 3; }
-                    let c: i64 = c0;
-                    if (band == 1) { c = c1; }
-                    if (band == 2) { c = c2; }
-                    if (band == 3) { c = c3; }
-                    let base: i32 = y * f.*.w;
+                    let alpha: i32 = clampi((rel * 256) / imax(vp.h - 1, 1), 0, 256);
+                    let c: i64 = mix(c1, c0, alpha);
+                    let base: i32 = y * pw;
                     let x: i32 = x0;
                     while (x < x0 + tw) {
                         f.*.px.data[base + x] = c;
@@ -212,7 +207,10 @@ fn vp_clear_tiled(f: *FB, vp: Rect, cache: *TileCache) void {
     }
 }
 
+// `vp` is the PHYSICAL viewport rect: the cache holds physical pixels, so the
+// blit is a straight row memcpy at the framebuffer's physical stride.
 fn tiles_blit(f: *FB, vp: Rect, cache: *TileCache) void {
+    let pw: i32 = fb_pw(f);
     let ty: i32 = 0;
     while (ty < cache.*.tiles_y) {
         let tx: i32 = 0;
@@ -229,7 +227,7 @@ fn tiles_blit(f: *FB, vp: Rect, cache: *TileCache) void {
                 let yy: i32 = 0;
                 while (yy < th) {
                     let src_row: i32 = dst_base + yy * TILE_SIZE();
-                    let dst_row: i32 = (y0 + yy) * f.*.w + x0;
+                    let dst_row: i32 = (y0 + yy) * pw + x0;
                     _zag_memcpy((&f.*.px.data[dst_row]) as *i8, (&cache.*.px.data[src_row]) as *i8, tw * 8);
                     _zag_memcpy((&f.*.zb.data[dst_row]) as *i8, (&cache.*.zb.data[src_row]) as *i8, tw * 8);
                     yy = yy + 1;
@@ -242,6 +240,7 @@ fn tiles_blit(f: *FB, vp: Rect, cache: *TileCache) void {
 }
 
 fn tiles_store_from_fb(f: *FB, vp: Rect, cache: *TileCache) void {
+    let pw: i32 = fb_pw(f);
     let ty: i32 = 0;
     while (ty < cache.*.tiles_y) {
         let tx: i32 = 0;
@@ -257,7 +256,7 @@ fn tiles_store_from_fb(f: *FB, vp: Rect, cache: *TileCache) void {
             let yy: i32 = 0;
             while (yy < th) {
                 let dst_row: i32 = dst_base + yy * TILE_SIZE();
-                let src_row: i32 = (y0 + yy) * f.*.w + x0;
+                let src_row: i32 = (y0 + yy) * pw + x0;
                 _zag_memcpy((&cache.*.px.data[dst_row]) as *i8, (&f.*.px.data[src_row]) as *i8, tw * 8);
                 _zag_memcpy((&cache.*.zb.data[dst_row]) as *i8, (&f.*.zb.data[src_row]) as *i8, tw * 8);
                 yy = yy + 1;

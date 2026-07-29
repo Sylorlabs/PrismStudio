@@ -99,6 +99,19 @@ fn kind_short(k: Kind) []u8 {
     };
 }
 
+// Static palette label for each kind's placement command. Must stay a string
+// LITERAL: palette command lists are rebuilt while open and own only their
+// scratch entries, so any heap-built label here would leak on every rebuild.
+fn kind_place_label(k: Kind) []u8 {
+    return switch (k) {
+        .Plate => "Place: GeSn Base Plate",
+        .Chamber => "Place: Exec Chamber",
+        .Soh => "Place: SOH Matrix Tile",
+        .Emitter => "Place: WDM Laser Emitter",
+        .Detector => "Place: MoS2 Photodetector",
+    };
+}
+
 fn kind_blurb(k: Kind) []u8 {
     return switch (k) {
         .Plate => "Substrate waffle grid, 8x8 cells",
@@ -216,15 +229,20 @@ fn kind_port(k: Kind, i: i32) Port {
     return Port{ .cell = vox(0, 0, 0), .out = vox(0 - 1, 0, 0), .is_output = false, .label = "SENSE" };
 }
 
-// WDM channel color for an emitter wavelength (1530..1565 nm ITU C-band
-// mapped onto a vivid hue sweep for the viewport lens + debugger lanes).
-fn wavelength_color(wl_nm: f64) i64 {
-    let t: f64 = (wl_nm - 1530.0) / 35.0;
+// WDM channel color for an emitter wavelength.  Range is derived from the
+// device model (typically the ITU C-band), never hardcoded.
+fn wavelength_color(wl_nm: f64, min_nm: f64, max_nm: f64) i64 {
+    let span: f64 = max_nm - min_nm;
+    if (span <= 0.0) { return 0; }
+    let t: f64 = (wl_nm - min_nm) / span;
     if (t < 0.0) { t = 0.0; }
     if (t > 1.0) { t = 1.0; }
-    // sweep amber -> magenta -> blue
     let r: i32 = (255.0 - t * 130.0) as i32;
     let g: i32 = (180.0 - t * 140.0) as i32;
     let b: i32 = (60.0 + t * 195.0) as i32;
     return ((r * 65536) + (g * 256) + b) as i64;
+}
+
+fn wavelength_color_model(wl_nm: f64, m: DeviceModel) i64 {
+    return wavelength_color(wl_nm, m.emitter_wavelength_min_nm.value, m.emitter_wavelength_max_nm.value);
 }

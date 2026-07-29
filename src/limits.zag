@@ -17,7 +17,7 @@ fn limit_env_or(name_: []u8, def: i32) i32 {
 
 // Named delay-line depth cap (symbols): the simulator memory guard that quantized
 // guide delays are clamped to. Configurable for large fabrics.
-fn limit_delay_symbols_max() i32 { return limit_env_or("TRITON_MAX_DELAY_SYMBOLS", 4096); }
+fn limit_delay_symbols_max() i32 { return limit_env_or("PRISMSTUDIO_MAX_DELAY_SYMBOLS", 4096); }
 
 fn limit_agent_request_bytes() i32 { return 4096; }
 fn limit_agent_script_bytes() i32 { return 1048576; }
@@ -27,8 +27,8 @@ fn limit_project_bytes() i32 { return 16777216; }
 fn limit_project_line_bytes() i32 { return 65536; }
 fn limit_journal_bytes() i32 { return 16777216; }
 fn limit_journal_operations() i32 { return 256; }
-fn limit_project_components() i32 { return limit_env_or("TRITON_MAX_COMPONENTS", 100000); }
-fn limit_project_guides() i32 { return limit_env_or("TRITON_MAX_GUIDES", 200000); }
+fn limit_project_components() i32 { return limit_env_or("PRISMSTUDIO_MAX_COMPONENTS", 100000); }
+fn limit_project_guides() i32 { return limit_env_or("PRISMSTUDIO_MAX_GUIDES", 200000); }
 fn limit_graph_path_points() i32 { return 4096; }
 fn limit_route_search_nodes() i32 { return 262144; }
 fn limit_waveguide_layer_min() i32 { return 1; }

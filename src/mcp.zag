@@ -272,43 +272,51 @@ fn mcp_is_err(raw: []u8) bool {
 
 fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
     out.*.len = 0;
-    if (_zag_strcmp(name, "triton_command") == 1) {
+    if (_zag_strcmp(name, "prismstudio_command") == 1) {
         let cmd: []u8 = mcp_find_str(body, "command");
         if (cmd.len == 0) { return false; }
         mcp_append(out, cmd);
         return true;
     }
-    if (_zag_strcmp(name, "triton_mutate") == 1) {
+    if (_zag_strcmp(name, "prismstudio_mutate") == 1) {
         let cmd: []u8 = mcp_find_str(body, "command");
         if (cmd.len == 0) { return false; }
         mcp_append(out, cmd);
         return true;
     }
-    if (_zag_strcmp(name, "triton_help") == 1) { mcp_append(out, "help"); return true; }
-    if (_zag_strcmp(name, "triton_capabilities") == 1) { mcp_append(out, "capabilities"); return true; }
-    if (_zag_strcmp(name, "triton_demo") == 1) { mcp_append(out, "demo"); return true; }
-    if (_zag_strcmp(name, "triton_list") == 1) { mcp_append(out, "list"); return true; }
-    if (_zag_strcmp(name, "triton_list_files") == 1) { mcp_append(out, "list_files"); return true; }
-    if (_zag_strcmp(name, "triton_status") == 1) { mcp_append(out, "status"); return true; }
-    if (_zag_strcmp(name, "triton_coords") == 1) { mcp_append(out, "coords"); return true; }
-    if (_zag_strcmp(name, "triton_power") == 1) { mcp_append(out, "power"); return true; }
-    if (_zag_strcmp(name, "triton_perf") == 1) { mcp_append(out, "perf"); return true; }
-    if (_zag_strcmp(name, "triton_kinds") == 1) { mcp_append(out, "kinds"); return true; }
-    if (_zag_strcmp(name, "triton_get") == 1) {
+    if (_zag_strcmp(name, "prismstudio_ping") == 1) { mcp_append(out, "ping"); return true; }
+    if (_zag_strcmp(name, "prismstudio_help") == 1) { mcp_append(out, "help"); return true; }
+    if (_zag_strcmp(name, "prismstudio_capabilities") == 1) { mcp_append(out, "capabilities"); return true; }
+    if (_zag_strcmp(name, "prismstudio_new") == 1) { mcp_append(out, "new"); return true; }
+    if (_zag_strcmp(name, "prismstudio_demo") == 1) { mcp_append(out, "demo"); return true; }
+    if (_zag_strcmp(name, "prismstudio_list") == 1) { mcp_append(out, "list"); return true; }
+    if (_zag_strcmp(name, "prismstudio_list_files") == 1) { mcp_append(out, "list_files"); return true; }
+    if (_zag_strcmp(name, "prismstudio_status") == 1) { mcp_append(out, "status"); return true; }
+    if (_zag_strcmp(name, "prismstudio_coords") == 1) { mcp_append(out, "coords"); return true; }
+    if (_zag_strcmp(name, "prismstudio_process_stack") == 1) {
+        let sy: i32 = mcp_find_int(body, "y");
+        mcp_append(out, "stack");
+        if (sy >= 0) { mcp_append(out, " "); mcp_append(out, _zag_i64_to_str(sy as i64)); }
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_power") == 1) { mcp_append(out, "power"); return true; }
+    if (_zag_strcmp(name, "prismstudio_perf") == 1) { mcp_append(out, "perf"); return true; }
+    if (_zag_strcmp(name, "prismstudio_kinds") == 1) { mcp_append(out, "kinds"); return true; }
+    if (_zag_strcmp(name, "prismstudio_get") == 1) {
         let id: i32 = mcp_find_int(body, "component_id");
         if (id < 0) { return false; }
         mcp_append(out, "get ");
         mcp_append(out, _zag_i64_to_str(id as i64));
         return true;
     }
-    if (_zag_strcmp(name, "triton_select") == 1) {
+    if (_zag_strcmp(name, "prismstudio_select") == 1) {
         let id2: i32 = mcp_find_int(body, "component_id");
         if (id2 < 0) { return false; }
         mcp_append(out, "select ");
         mcp_append(out, _zag_i64_to_str(id2 as i64));
         return true;
     }
-    if (_zag_strcmp(name, "triton_can_place") == 1) {
+    if (_zag_strcmp(name, "prismstudio_can_place") == 1) {
         let kind0: []u8 = mcp_find_str(body, "kind");
         let x0: i32 = mcp_find_int(body, "x");
         let y0: i32 = mcp_find_int(body, "y");
@@ -328,7 +336,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, _zag_i64_to_str(rot0 as i64));
         return true;
     }
-    if (_zag_strcmp(name, "triton_place") == 1) {
+    if (_zag_strcmp(name, "prismstudio_place") == 1) {
         let kind: []u8 = mcp_find_str(body, "kind");
         let x: i32 = mcp_find_int(body, "x");
         let y: i32 = mcp_find_int(body, "y");
@@ -348,7 +356,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, _zag_i64_to_str(rot as i64));
         return true;
     }
-    if (_zag_strcmp(name, "triton_route") == 1) {
+    if (_zag_strcmp(name, "prismstudio_route") == 1) {
         let fc: i32 = mcp_find_int(body, "from_comp");
         let fp: i32 = mcp_find_int(body, "from_port");
         let tc: i32 = mcp_find_int(body, "to_comp");
@@ -364,40 +372,62 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, _zag_i64_to_str(tp as i64));
         return true;
     }
-    if (_zag_strcmp(name, "triton_delete") == 1) {
+    if (_zag_strcmp(name, "prismstudio_delete") == 1) {
         let did: i32 = mcp_find_int(body, "component_id");
         if (did < 0) { return false; }
         mcp_append(out, "delete ");
         mcp_append(out, _zag_i64_to_str(did as i64));
         return true;
     }
-    if (_zag_strcmp(name, "triton_sim_step") == 1) {
+    if (_zag_strcmp(name, "prismstudio_sim_step") == 1) {
         let n: i32 = mcp_find_int(body, "n");
         if (n < 1) { n = 1; }
         mcp_append(out, "sim step ");
         mcp_append(out, _zag_i64_to_str(n as i64));
         return true;
     }
-    if (_zag_strcmp(name, "triton_sim_state") == 1) { mcp_append(out, "sim state"); return true; }
-    if (_zag_strcmp(name, "triton_save") == 1) {
+    if (_zag_strcmp(name, "prismstudio_sim_state") == 1) { mcp_append(out, "sim state"); return true; }
+    if (_zag_strcmp(name, "prismstudio_save") == 1) {
         let path: []u8 = mcp_find_str(body, "path");
         if (path.len == 0) { mcp_append(out, "save"); return true; }
         mcp_append(out, "save ");
         mcp_append(out, path);
         return true;
     }
-    if (_zag_strcmp(name, "triton_open") == 1) {
+    if (_zag_strcmp(name, "prismstudio_open") == 1) {
         let path: []u8 = mcp_find_str(body, "path");
         if (path.len == 0) { mcp_append(out, "open"); return true; }
         mcp_append(out, "open ");
         mcp_append(out, path);
         return true;
     }
-    if (_zag_strcmp(name, "triton_undo") == 1) { mcp_append(out, "undo"); return true; }
-    if (_zag_strcmp(name, "triton_redo") == 1) { mcp_append(out, "redo"); return true; }
-    if (_zag_strcmp(name, "triton_view") == 1) { mcp_append(out, "view"); return true; }
-    if (_zag_strcmp(name, "triton_pick") == 1) { mcp_append(out, "pick"); return true; }
-    if (_zag_strcmp(name, "triton_place_here") == 1) {
+    if (_zag_strcmp(name, "prismstudio_undo") == 1) { mcp_append(out, "undo"); return true; }
+    if (_zag_strcmp(name, "prismstudio_redo") == 1) { mcp_append(out, "redo"); return true; }
+    if (_zag_strcmp(name, "prismstudio_view") == 1) { mcp_append(out, "view"); return true; }
+    if (_zag_strcmp(name, "prismstudio_camera") == 1) {
+        let cx: i32 = mcp_find_int(body, "x");
+        let cy: i32 = mcp_find_int(body, "y");
+        let cz: i32 = mcp_find_int(body, "z");
+        mcp_append(out, "camera ");
+        mcp_append(out, _zag_i64_to_str(cx as i64)); mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(cy as i64)); mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(cz as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_render_at") == 1) {
+        let rpath: []u8 = mcp_find_str(body, "path");
+        if (rpath.len == 0) { return false; }
+        let rx: i32 = mcp_find_int(body, "x");
+        let ry: i32 = mcp_find_int(body, "y");
+        let rz: i32 = mcp_find_int(body, "z");
+        mcp_append(out, "render_at "); mcp_append(out, rpath); mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(rx as i64)); mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(ry as i64)); mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(rz as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_pick") == 1) { mcp_append(out, "pick"); return true; }
+    if (_zag_strcmp(name, "prismstudio_place_here") == 1) {
         let kind: []u8 = mcp_find_str(body, "kind");
         let rot: i32 = mcp_find_int(body, "rot");
         if (kind.len == 0) { return false; }
@@ -409,7 +439,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         }
         return true;
     }
-    if (_zag_strcmp(name, "triton_place_on") == 1) {
+    if (_zag_strcmp(name, "prismstudio_place_on") == 1) {
         let kind: []u8 = mcp_find_str(body, "kind");
         let pid: i32 = mcp_find_int(body, "plate_id");
         let lx: i32 = mcp_find_int(body, "lx");
@@ -430,21 +460,68 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         }
         return true;
     }
-    if (_zag_strcmp(name, "triton_render") == 1) {
+    if (_zag_strcmp(name, "prismstudio_render") == 1) {
         let path: []u8 = mcp_find_str(body, "path");
         if (path.len == 0) { return false; }
         mcp_append(out, "render ");
         mcp_append(out, path);
         return true;
     }
-    if (_zag_strcmp(name, "triton_export") == 1) {
+    if (_zag_strcmp(name, "prismstudio_sim") == 1) {
+        let sub: []u8 = mcp_find_str(body, "sub");
+        if (sub.len == 0) { return false; }
+        if (_zag_strcmp(sub, "step") == 1) {
+            let n: i32 = mcp_find_int(body, "n");
+            if (n < 1) { return false; }
+            mcp_append(out, "sim step ");
+            mcp_append(out, _zag_i64_to_str(n as i64));
+            return true;
+        }
+        if (_zag_strcmp(sub, "state") == 1) { mcp_append(out, "sim state"); return true; }
+        if (_zag_strcmp(sub, "reset") == 1) { mcp_append(out, "sim reset"); return true; }
+        if (_zag_strcmp(sub, "mode") == 1) {
+            let mode: []u8 = mcp_find_str(body, "mode");
+            if (mode.len == 0) { return false; }
+            mcp_append(out, "sim mode ");
+            mcp_append(out, mode);
+            return true;
+        }
+        return false;
+    }
+    if (_zag_strcmp(name, "prismstudio_export") == 1) {
         let prefix: []u8 = mcp_find_str(body, "prefix");
         if (prefix.len == 0) { return false; }
         mcp_append(out, "export ");
         mcp_append(out, prefix);
         return true;
     }
-    if (_zag_strcmp(name, "triton_trace") == 1) {
+    if (_zag_strcmp(name, "prismstudio_diagnostics") == 1) {
+        let dpath: []u8 = mcp_find_str(body, "path");
+        if (dpath.len == 0) { return false; }
+        mcp_append(out, "diagnostics ");
+        mcp_append(out, dpath);
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_details") == 1) { mcp_append(out, "details"); return true; }
+    if (_zag_strcmp(name, "prismstudio_audit") == 1 || _zag_strcmp(name, "prismstudio_logs") == 1) {
+        let lines: i32 = mcp_find_int(body, "lines");
+        mcp_append(out, "audit");
+        if (lines > 0) {
+            mcp_append(out, " ");
+            mcp_append(out, _zag_i64_to_str(lines as i64));
+        }
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_uilog") == 1) {
+        let lines: i32 = mcp_find_int(body, "lines");
+        mcp_append(out, "uilog");
+        if (lines > 0) {
+            mcp_append(out, " ");
+            mcp_append(out, _zag_i64_to_str(lines as i64));
+        }
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_trace") == 1) {
         let tpath: []u8 = mcp_find_str(body, "path");
         let steps: i32 = mcp_find_int(body, "steps");
         if (tpath.len == 0 || steps < 1) { return false; }
@@ -454,32 +531,129 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, _zag_i64_to_str(steps as i64));
         return true;
     }
-    if (_zag_strcmp(name, "triton_flash_import") == 1) {
+    if (_zag_strcmp(name, "prismstudio_flash_import") == 1) {
         let fpath: []u8 = mcp_find_str(body, "path");
         if (fpath.len == 0) { return false; }
         mcp_append(out, "flash import ");
         mcp_append(out, fpath);
         return true;
     }
-    if (_zag_strcmp(name, "triton_flash_verify") == 1) { mcp_append(out, "flash verify"); return true; }
-    if (_zag_strcmp(name, "triton_ui_list") == 1) { mcp_append(out, "ui list"); return true; }
-    if (_zag_strcmp(name, "triton_ui_screenshot") == 1) {
+    if (_zag_strcmp(name, "prismstudio_flash_verify") == 1) { mcp_append(out, "flash verify"); return true; }
+    if (_zag_strcmp(name, "prismstudio_ui_list") == 1) { mcp_append(out, "ui list"); return true; }
+    if (_zag_strcmp(name, "prismstudio_ui_screenshot") == 1) {
         let upath: []u8 = mcp_find_str(body, "path");
         if (upath.len == 0) { return false; }
         mcp_append(out, "ui screenshot "); mcp_append(out, upath); return true;
     }
-    if (_zag_strcmp(name, "triton_ui_activate") == 1) {
+    if (_zag_strcmp(name, "prismstudio_ui_activate") == 1) {
         let eid: []u8 = mcp_find_str(body, "element_id");
         if (eid.len == 0) { return false; }
         mcp_append(out, "ui activate "); mcp_append(out, eid); return true;
     }
-    if (_zag_strcmp(name, "triton_model_status") == 1) { mcp_append(out, "model status"); return true; }
-    if (_zag_strcmp(name, "triton_model_migrate") == 1) {
+    if (_zag_strcmp(name, "prismstudio_optimizer_apply") == 1) { mcp_append(out, "optimizer apply"); return true; }
+    if (_zag_strcmp(name, "prismstudio_optimizer_accept") == 1) { mcp_append(out, "optimizer accept"); return true; }
+    if (_zag_strcmp(name, "prismstudio_optimizer_decline") == 1) { mcp_append(out, "optimizer decline"); return true; }
+    if (_zag_strcmp(name, "prismstudio_optimizer_ignore") == 1) { mcp_append(out, "optimizer decline"); return true; }
+    if (_zag_strcmp(name, "prismstudio_optimizer_details") == 1) { mcp_append(out, "optimizer details"); return true; }
+    if (_zag_strcmp(name, "prismstudio_move") == 1) {
+        let cid: i32 = mcp_find_int(body, "id");
+        let dx: i32 = mcp_find_int(body, "dx");
+        let dy: i32 = mcp_find_int(body, "dy");
+        let dz: i32 = mcp_find_int(body, "dz");
+        if (cid < 0) { return false; }
+        if (dx < 0 - 2048 || dy < 0 - 2048 || dz < 0 - 2048) { return false; }
+        mcp_append(out, "move ");
+        mcp_append(out, _zag_i64_to_str(cid as i64)); mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(dx as i64)); mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(dy as i64)); mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(dz as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_rotate") == 1) {
+        let cid: i32 = mcp_find_int(body, "id");
+        let q: i32 = mcp_find_int(body, "quarters");
+        if (cid < 0) { return false; }
+        if (q < 0) { q = 1; }
+        mcp_append(out, "rotate ");
+        mcp_append(out, _zag_i64_to_str(cid as i64)); mcp_append(out, " ");
+        mcp_append(out, _zag_i64_to_str(q as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_disconnect") == 1) {
+        let gid: i32 = mcp_find_int(body, "guide_id");
+        if (gid < 0) { return false; }
+        mcp_append(out, "disconnect ");
+        mcp_append(out, _zag_i64_to_str(gid as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_reroute") == 1) {
+        let gid: i32 = mcp_find_int(body, "guide_id");
+        if (gid < 0) { return false; }
+        mcp_append(out, "reroute ");
+        mcp_append(out, _zag_i64_to_str(gid as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_inspect") == 1) { mcp_append(out, "inspect"); return true; }
+    if (_zag_strcmp(name, "prismstudio_close") == 1) { mcp_append(out, "close"); return true; }
+    if (_zag_strcmp(name, "prismstudio_build") == 1) { mcp_append(out, "build"); return true; }
+    if (_zag_strcmp(name, "prismstudio_preview") == 1) {
+        let sub: []u8 = mcp_find_str(body, "sub");
+        if (sub.len == 0) { return false; }
+        if (_zag_strcmp(sub, "place") == 1) {
+            let kind: []u8 = mcp_find_str(body, "kind");
+            let x: i32 = mcp_find_int(body, "x");
+            let y: i32 = mcp_find_int(body, "y");
+            let z: i32 = mcp_find_int(body, "z");
+            let rot: i32 = mcp_find_int(body, "rot");
+            if (kind.len == 0 || x < 0 - 2048 || y < 0 - 2048 || z < 0 - 2048) { return false; }
+            if (rot < 0) { rot = 0; }
+            mcp_append(out, "preview place ");
+            mcp_append(out, kind); mcp_append(out, " ");
+            mcp_append(out, _zag_i64_to_str(x as i64)); mcp_append(out, " ");
+            mcp_append(out, _zag_i64_to_str(y as i64)); mcp_append(out, " ");
+            mcp_append(out, _zag_i64_to_str(z as i64)); mcp_append(out, " ");
+            mcp_append(out, _zag_i64_to_str(rot as i64));
+            return true;
+        }
+        if (_zag_strcmp(sub, "delete") == 1) {
+            let cid: i32 = mcp_find_int(body, "id");
+            if (cid < 0) { cid = mcp_find_int(body, "component_id"); }
+            if (cid < 0) { return false; }
+            mcp_append(out, "preview delete ");
+            mcp_append(out, _zag_i64_to_str(cid as i64));
+            return true;
+        }
+        return false;
+    }
+    if (_zag_strcmp(name, "prismstudio_simstream") == 1) {
+        let steps: i32 = mcp_find_int(body, "steps");
+        if (steps < 0) { return false; }
+        mcp_append(out, "simstream ");
+        mcp_append(out, _zag_i64_to_str(steps as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_timing") == 1) { mcp_append(out, "timing"); return true; }
+    if (_zag_strcmp(name, "prismstudio_del") == 1) {
+        let cid: i32 = mcp_find_int(body, "id");
+        if (cid < 0) { return false; }
+        mcp_append(out, "del ");
+        mcp_append(out, _zag_i64_to_str(cid as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_sel") == 1) {
+        let cid: i32 = mcp_find_int(body, "id");
+        if (cid < 0) { return false; }
+        mcp_append(out, "sel ");
+        mcp_append(out, _zag_i64_to_str(cid as i64));
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_model_status") == 1) { mcp_append(out, "model status"); return true; }
+    if (_zag_strcmp(name, "prismstudio_model_migrate") == 1) {
         let mv: i32 = mcp_find_int(body, "version");
         if (mv < 1) { return false; }
         mcp_append(out, "model migrate "); mcp_append(out, _zag_i64_to_str(mv as i64)); return true;
     }
-    if (_zag_strcmp(name, "triton_test") == 1) {
+    if (_zag_strcmp(name, "prismstudio_test") == 1) {
         let tname: []u8 = mcp_find_str(body, "name");
         if (tname.len == 0) { return false; }
         mcp_append(out, "test ");
@@ -515,65 +689,117 @@ fn mcp_append_tool(out: *list.ArrayList[u8], first: bool, name: []u8, desc: []u8
 }
 
 fn mcp_tool_requires_envelope(name: []u8) bool {
-    if (_zag_strcmp(name, "triton_mutate") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_demo") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_undo") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_redo") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_place_here") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_place_on") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_place") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_route") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_delete") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_save") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_open") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_flash_import") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_ui_activate") == 1) { return true; }
-    if (_zag_strcmp(name, "triton_model_migrate") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_mutate") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_ping") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_new") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_demo") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_undo") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_redo") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_place_here") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_place_on") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_place") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_route") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_delete") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_del") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_move") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_rotate") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_disconnect") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_reroute") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_close") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_sel") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_sim") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_build") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_preview") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_simstream") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_timing") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_diagnostics") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_details") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_audit") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_logs") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_uilog") == 1) { return false; }
+    if (_zag_strcmp(name, "prismstudio_save") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_open") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_flash_import") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_ui_activate") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_optimizer_apply") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_optimizer_accept") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_optimizer_decline") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_optimizer_ignore") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_optimizer_details") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_model_migrate") == 1) { return true; }
     return false;
 }
 
 fn mcp_tools_list_json() []u8 {
     let out: list.ArrayList[u8] = list.make[u8](10000);
     mcp_append(&out, "{\"tools\":[");
-    mcp_append_tool(&out, true, "triton_command", "Run a native agent command. Project mutations must use the native request envelope.", "\"command\":{\"type\":\"string\"}", "\"command\"", false);
-    mcp_append_tool(&out, false, "triton_mutate", "Run one idempotent revision-checked native mutation.", "\"command\":{\"type\":\"string\"}", "\"command\"", true);
-    mcp_append_tool(&out, false, "triton_help", "List agent commands and component kinds.", "", "", false);
-    mcp_append_tool(&out, false, "triton_capabilities", "Report protocol, grants, limits, revision, and mutation contract.", "", "", false);
-    mcp_append_tool(&out, false, "triton_demo", "Load the reference photonic processor design.", "", "", true);
-    mcp_append_tool(&out, false, "triton_list", "List components and waveguides.", "", "", false);
-    mcp_append_tool(&out, false, "triton_list_files", "List saved project files visible to the app.", "", "", false);
-    mcp_append_tool(&out, false, "triton_get", "Inspect one component by stable ID.", "\"component_id\":{\"type\":\"integer\",\"minimum\":0}", "\"component_id\"", false);
-    mcp_append_tool(&out, false, "triton_select", "Select one component by stable ID in shared app state.", "\"component_id\":{\"type\":\"integer\",\"minimum\":0}", "\"component_id\"", false);
-    mcp_append_tool(&out, false, "triton_can_place", "Validate placement without mutating the project.", "\"kind\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"},\"z\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"}", "\"kind\",\"x\",\"y\",\"z\"", false);
-    mcp_append_tool(&out, false, "triton_undo", "Undo last edit using the shared journal.", "", "", true);
-    mcp_append_tool(&out, false, "triton_redo", "Redo last undone edit using the shared journal.", "", "", true);
-    mcp_append_tool(&out, false, "triton_view", "GUI live bus: selection, hover, camera, and tool.", "", "", false);
-    mcp_append_tool(&out, false, "triton_pick", "Voxel at GUI ghost or hover cell.", "", "", false);
-    mcp_append_tool(&out, false, "triton_place_here", "Place component at GUI ghost or hover cell.", "\"kind\":{\"type\":\"string\"},\"rot\":{\"type\":\"integer\"}", "\"kind\"", true);
-    mcp_append_tool(&out, false, "triton_place_on", "Place on plate using local lx,lz offsets.", "\"kind\":{\"type\":\"string\"},\"plate_id\":{\"type\":\"integer\"},\"lx\":{\"type\":\"integer\"},\"lz\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"}", "\"kind\",\"plate_id\",\"lx\",\"lz\"", true);
-    mcp_append_tool(&out, false, "triton_place", "Place plate|chamber|soh|emitter|detector on the lattice.", "\"kind\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"},\"z\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"}", "\"kind\",\"x\",\"y\",\"z\"", true);
-    mcp_append_tool(&out, false, "triton_route", "Route waveguide between ports.", "\"from_comp\":{\"type\":\"integer\"},\"from_port\":{\"type\":\"integer\"},\"to_comp\":{\"type\":\"integer\"},\"to_port\":{\"type\":\"integer\"}", "\"from_comp\",\"from_port\",\"to_comp\",\"to_port\"", true);
-    mcp_append_tool(&out, false, "triton_delete", "Delete a component by stable ID.", "\"component_id\":{\"type\":\"integer\",\"minimum\":0}", "\"component_id\"", true);
-    mcp_append_tool(&out, false, "triton_sim_step", "Advance simulation by n symbols.", "\"n\":{\"type\":\"integer\"}", "", false);
-    mcp_append_tool(&out, false, "triton_sim_state", "Live trit states.", "", "", false);
-    mcp_append_tool(&out, false, "triton_save", "Save design, defaulting to the live session .zpa.", "\"path\":{\"type\":\"string\"}", "", true);
-    mcp_append_tool(&out, false, "triton_open", "Open design, defaulting to the live session .zpa.", "\"path\":{\"type\":\"string\"}", "", true);
-    mcp_append_tool(&out, false, "triton_render", "Render BMP screenshot.", "\"path\":{\"type\":\"string\"}", "\"path\"", false);
-    mcp_append_tool(&out, false, "triton_export", "Export BOM, netlist, model manifest, and report with a path prefix.", "\"prefix\":{\"type\":\"string\"}", "\"prefix\"", false);
-    mcp_append_tool(&out, false, "triton_trace", "Export a deterministic simulation trace.", "\"path\":{\"type\":\"string\"},\"steps\":{\"type\":\"integer\",\"minimum\":1}", "\"path\",\"steps\"", false);
-    mcp_append_tool(&out, false, "triton_flash_import", "Import Flash FIR into a photonic project through the production builder.", "\"path\":{\"type\":\"string\"}", "\"path\"", true);
-    mcp_append_tool(&out, false, "triton_flash_verify", "Verify the active Flash photonic import against its oracle.", "", "", false);
-    mcp_append_tool(&out, false, "triton_ui_list", "Inspect every currently visible control with stable element ID, role, state, and exact click bounds.", "", "", false);
-    mcp_append_tool(&out, false, "triton_ui_screenshot", "Capture the same UI state described by triton_ui_list.", "\"path\":{\"type\":\"string\"}", "\"path\"", false);
-    mcp_append_tool(&out, false, "triton_ui_activate", "Activate a visible UI control by stable element ID through its real pointer target.", "\"element_id\":{\"type\":\"string\"}", "\"element_id\"", true);
-    mcp_append_tool(&out, false, "triton_model_status", "Inspect pinned physical-model schema and all versioned device-type descriptors.", "", "", false);
-    mcp_append_tool(&out, false, "triton_model_migrate", "Explicitly migrate a pinned physical-model schema without inventing new evidence.", "\"version\":{\"type\":\"integer\",\"minimum\":2,\"maximum\":2}", "\"version\"", true);
-    mcp_append_tool(&out, false, "triton_test", "Run engine|smoke|build verification.", "\"name\":{\"type\":\"string\",\"enum\":[\"engine\",\"smoke\",\"build\"]}", "\"name\"", false);
-    mcp_append_tool(&out, false, "triton_status", "Design and simulation status.", "", "", false);
-    mcp_append_tool(&out, false, "triton_coords", "Component origins and port coordinates.", "", "", false);
-    mcp_append_tool(&out, false, "triton_power", "Optical power and interference state.", "", "", false);
-    mcp_append_tool(&out, false, "triton_perf", "Place+route+render micro-benchmark ms.", "", "", false);
-    mcp_append_tool(&out, false, "triton_kinds", "Component kinds, footprints, and ports.", "", "", false);
+    mcp_append_tool(&out, true, "prismstudio_command", "Run a native agent command. Project mutations must use the native request envelope.", "\"command\":{\"type\":\"string\"}", "\"command\"", false);
+    mcp_append_tool(&out, false, "prismstudio_mutate", "Run one idempotent revision-checked native mutation.", "\"command\":{\"type\":\"string\"}", "\"command\"", true);
+    mcp_append_tool(&out, false, "prismstudio_help", "List agent commands and component kinds.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_capabilities", "Report protocol, grants, limits, revision, and mutation contract.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_ping", "Health ping for native agent transport.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_new", "Start a fresh empty project in session memory.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_demo", "Load the reference photonic processor design.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_list", "List components and waveguides.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_list_files", "List saved project files visible to the app.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_get", "Inspect one component by stable ID.", "\"component_id\":{\"type\":\"integer\",\"minimum\":0}", "\"component_id\"", false);
+    mcp_append_tool(&out, false, "prismstudio_select", "Select one component by stable ID in shared app state.", "\"component_id\":{\"type\":\"integer\",\"minimum\":0}", "\"component_id\"", false);
+    mcp_append_tool(&out, false, "prismstudio_can_place", "Validate placement without mutating the project.", "\"kind\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"},\"z\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"}", "\"kind\",\"x\",\"y\",\"z\"", false);
+    mcp_append_tool(&out, false, "prismstudio_undo", "Undo last edit using the shared journal.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_redo", "Redo last undone edit using the shared journal.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_view", "GUI live bus: selection, hover, camera, and tool.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_camera", "Teleport the camera eye to exact world coordinates.", "\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"},\"z\":{\"type\":\"integer\"}", "\"x\",\"y\",\"z\"", false);
+    mcp_append_tool(&out, false, "prismstudio_render_at", "Render a BMP from exact camera-eye world coordinates.", "\"path\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"},\"z\":{\"type\":\"integer\"}", "\"path\",\"x\",\"y\",\"z\"", false);
+    mcp_append_tool(&out, false, "prismstudio_pick", "Voxel at GUI ghost or hover cell.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_place_here", "Place component at GUI ghost or hover cell.", "\"kind\":{\"type\":\"string\"},\"rot\":{\"type\":\"integer\"}", "\"kind\"", true);
+    mcp_append_tool(&out, false, "prismstudio_place_on", "Place on plate using local lx,lz offsets.", "\"kind\":{\"type\":\"string\"},\"plate_id\":{\"type\":\"integer\"},\"lx\":{\"type\":\"integer\"},\"lz\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"}", "\"kind\",\"plate_id\",\"lx\",\"lz\"", true);
+    mcp_append_tool(&out, false, "prismstudio_place", "Place plate|chamber|soh|emitter|detector on the lattice.", "\"kind\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"},\"z\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"}", "\"kind\",\"x\",\"y\",\"z\"", true);
+    mcp_append_tool(&out, false, "prismstudio_route", "Route waveguide between ports.", "\"from_comp\":{\"type\":\"integer\"},\"from_port\":{\"type\":\"integer\"},\"to_comp\":{\"type\":\"integer\"},\"to_port\":{\"type\":\"integer\"}", "\"from_comp\",\"from_port\",\"to_comp\",\"to_port\"", true);
+    mcp_append_tool(&out, false, "prismstudio_delete", "Delete a component by stable ID.", "\"component_id\":{\"type\":\"integer\",\"minimum\":0}", "\"component_id\"", true);
+    mcp_append_tool(&out, false, "prismstudio_sim_step", "Advance simulation by n symbols.", "\"n\":{\"type\":\"integer\"}", "", false);
+    mcp_append_tool(&out, false, "prismstudio_sim_state", "Live trit states.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_sim", "Simulate using a subcommand: step, state, reset, mode.", "\"sub\":{\"type\":\"string\",\"enum\":[\"step\",\"state\",\"reset\",\"mode\"]},\"n\":{\"type\":\"integer\",\"minimum\":1},\"mode\":{\"type\":\"string\",\"enum\":[\"functional\",\"physical\"]}", "\"sub\"", false);
+    mcp_append_tool(&out, false, "prismstudio_move", "Move a component by integer delta in lattice units.", "\"id\":{\"type\":\"integer\",\"minimum\":0},\"dx\":{\"type\":\"integer\"},\"dy\":{\"type\":\"integer\"},\"dz\":{\"type\":\"integer\"}", "\"id\",\"dx\",\"dy\",\"dz\"", true);
+    mcp_append_tool(&out, false, "prismstudio_rotate", "Rotate a component by quarter-turn increments.", "\"id\":{\"type\":\"integer\",\"minimum\":0},\"quarters\":{\"type\":\"integer\",\"minimum\":1}", "\"id\"", true);
+    mcp_append_tool(&out, false, "prismstudio_disconnect", "Disconnect a guide by ID from both endpoints.", "\"guide_id\":{\"type\":\"integer\",\"minimum\":0}", "\"guide_id\"", true);
+    mcp_append_tool(&out, false, "prismstudio_reroute", "Reroute a guide by stable ID.", "\"guide_id\":{\"type\":\"integer\",\"minimum\":0}", "\"guide_id\"", true);
+    mcp_append_tool(&out, false, "prismstudio_inspect", "Report whether the active model is complete enough to export.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_close", "Close the current project and clear scene state.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_build", "Run build verification without mutating project files.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_preview", "Preview placement/remove operations before commit.", "\"sub\":{\"type\":\"string\",\"enum\":[\"place\",\"delete\"]},\"kind\":{\"type\":\"string\"},\"plate_id\":{\"type\":\"integer\",\"minimum\":0},\"lx\":{\"type\":\"integer\"},\"lz\":{\"type\":\"integer\"},\"rot\":{\"type\":\"integer\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"},\"z\":{\"type\":\"integer\"},\"id\":{\"type\":\"integer\",\"minimum\":0},\"component_id\":{\"type\":\"integer\",\"minimum\":0}", "\"sub\"", false);
+    mcp_append_tool(&out, false, "prismstudio_simstream", "Start a timed simulation stream for N steps.", "\"steps\":{\"type\":\"integer\",\"minimum\":0}", "\"steps\"", false);
+    mcp_append_tool(&out, false, "prismstudio_timing", "Report timing/engine benchmark sample.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_del", "Delete by compact alias (same behavior as delete).", "\"id\":{\"type\":\"integer\",\"minimum\":0}", "\"id\"", true);
+    mcp_append_tool(&out, false, "prismstudio_sel", "Select by compact alias.", "\"id\":{\"type\":\"integer\",\"minimum\":0}", "\"id\"", false);
+    mcp_append_tool(&out, false, "prismstudio_save", "Save design, defaulting to the live session .zpa.", "\"path\":{\"type\":\"string\"}", "", true);
+    mcp_append_tool(&out, false, "prismstudio_open", "Open design, defaulting to the live session .zpa.", "\"path\":{\"type\":\"string\"}", "", true);
+    mcp_append_tool(&out, false, "prismstudio_render", "Render BMP screenshot.", "\"path\":{\"type\":\"string\"}", "\"path\"", false);
+    mcp_append_tool(&out, false, "prismstudio_export", "Export BOM, netlist, model manifest, and report with a path prefix.", "\"prefix\":{\"type\":\"string\"}", "\"prefix\"", false);
+    mcp_append_tool(&out, false, "prismstudio_diagnostics", "Export metadata diagnostics to a single text file.", "\"path\":{\"type\":\"string\"}", "\"path\"", false);
+    mcp_append_tool(&out, false, "prismstudio_details", "Return live diagnostics text for the current app state.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_audit", "Read append-only request audit log from PRISMSTUDIO_AUDIT (or .prismstudio/audit.log).", "\"lines\":{\"type\":\"integer\",\"minimum\":0}", "", false);
+    mcp_append_tool(&out, false, "prismstudio_logs", "Alias of audit: read request audit lines.", "\"lines\":{\"type\":\"integer\",\"minimum\":0}", "", false);
+    mcp_append_tool(&out, false, "prismstudio_uilog", "Read recent in-memory UI log lines from the running app session.", "\"lines\":{\"type\":\"integer\",\"minimum\":0}", "", false);
+    mcp_append_tool(&out, false, "prismstudio_trace", "Export a deterministic simulation trace.", "\"path\":{\"type\":\"string\"},\"steps\":{\"type\":\"integer\",\"minimum\":1}", "\"path\",\"steps\"", false);
+    mcp_append_tool(&out, false, "prismstudio_flash_import", "Import Flash FIR into a photonic project through the production builder.", "\"path\":{\"type\":\"string\"}", "\"path\"", true);
+    mcp_append_tool(&out, false, "prismstudio_flash_verify", "Verify the active Flash photonic import against its oracle.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_ui_list", "Inspect every currently visible control with stable element ID, role, state, and exact click bounds.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_ui_screenshot", "Capture the same UI state described by prismstudio_ui_list.", "\"path\":{\"type\":\"string\"}", "\"path\"", false);
+    mcp_append_tool(&out, false, "prismstudio_ui_activate", "Activate a visible UI control by stable element ID through its real pointer target.", "\"element_id\":{\"type\":\"string\"}", "\"element_id\"", true);
+    mcp_append_tool(&out, false, "prismstudio_optimizer_apply", "Apply the pending optimizer proposal through native flow.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_optimizer_accept", "Alias for optimizer_apply.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_optimizer_decline", "Decline the pending optimizer proposal through native flow.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_optimizer_ignore", "Alias for optimizer_decline.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_optimizer_details", "Toggle optimizer proposal details visibility.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_model_status", "Inspect pinned physical-model schema and all versioned device-type descriptors.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_model_migrate", "Explicitly migrate a pinned physical-model schema without inventing new evidence.", "\"version\":{\"type\":\"integer\",\"minimum\":2,\"maximum\":2}", "\"version\"", true);
+    mcp_append_tool(&out, false, "prismstudio_test", "Run engine|smoke|build verification.", "\"name\":{\"type\":\"string\",\"enum\":[\"engine\",\"smoke\",\"build\"]}", "\"name\"", false);
+    mcp_append_tool(&out, false, "prismstudio_status", "Design and simulation status.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_coords", "Component origins and port coordinates.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_process_stack", "Inspect exact Y-layer material, thickness provenance, and permitted content. Omit y for every declared layer.", "\"y\":{\"type\":\"integer\",\"minimum\":0}", "", false);
+    mcp_append_tool(&out, false, "prismstudio_power", "Optical power and interference state.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_perf", "Place+route+render micro-benchmark ms.", "", "", false);
+    mcp_append_tool(&out, false, "prismstudio_kinds", "Component kinds, footprints, and ports.", "", "", false);
     mcp_append(&out, "]}");
     let result: []u8 = _zag_strdup(out.data[0..out.len]);
     list.free[u8](&out);
@@ -586,7 +812,7 @@ fn mcp_dispatch(a: *App, msg: []u8) void {
     if (method.len == 0) { return; }
 
     if (_zag_strcmp(method, "initialize") == 1) {
-        mcp_send_response(id, "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"triton\",\"version\":\"1.0.0\"}}");
+        mcp_send_response(id, "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"prismstudio\",\"version\":\"1.0.0\"}}");
         return;
     }
     if (_zag_strcmp(method, "notifications/initialized") == 1) { return; }

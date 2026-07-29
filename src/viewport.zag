@@ -20,30 +20,33 @@ fn z_far() i64 { return 1099511627776; }   // 2^40 sentinel
 fn near_z() f64 { return 0.15; }
 fn fade_start() f64 { return 26.0; }
 fn fade_end() f64 { return 110.0; }
-fn lod_detail_dist() f64 { return 34.0; }    // skip sub-voxel ornament beyond this
-fn lod_impostor_dist() f64 { return 58.0; } // billboard proxy beyond this
-
 fn lod_level(cam: Cam, c: Comp) i32 {
     let ctr: Vec3 = vox_center(c.origin);
     let e: Vox = comp_ext(c);
     ctr.x = ctr.x + (e.x as f64) * 0.5;
     ctr.z = ctr.z + (e.z as f64) * 0.5;
-    let d: f64 = vlen(vsub(ctr, cam.eye));
-    if (d >= lod_impostor_dist()) { return 2; }
-    if (d >= lod_detail_dist()) { return 1; }
+    let ext: f64 = fmax(e.x as f64, fmax(e.y as f64, e.z as f64));
+    let vv: VPt = view_of(cam, ctr);
+    let pixels: f64 = ext * cam.flen / fmax(vv.z, near_z());
+    if (cam.ortho) { pixels = ext * cam.flen / cam.dist; }
+    // LOD is a screen-space quality decision. Distance-only thresholds caused
+    // detail to collapse abruptly while flying even when an object was still
+    // large and readable on screen.
+    if (pixels < 5.0) { return 2; }
+    if (pixels < 18.0) { return 1; }
     return 0;
 }
 
-fn comp_impostor_col(c: Comp) i64 {
-    if (c.kind == Kind.Emitter) { return wavelength_color(c.wl_nm); }
+fn comp_impostor_col(c: Comp, m: DeviceModel) i64 {
+    if (c.kind == Kind.Emitter) { return wavelength_color_model(c.wl_nm, m); }
     return kind_tint(c.kind);
 }
 
 // Far-field proxy: one flat-shaded footprint box (no ports/waffle/inner cavity).
-fn draw_impostor(f: *FB, cam: Cam, clip: Rect, c: Comp) void {
+fn draw_impostor(f: *FB, cam: Cam, clip: Rect, c: Comp, m: DeviceModel) void {
     let lo: Vec3 = comp_bounds_min(c);
     let hi: Vec3 = comp_bounds_max(c);
-    let col: i64 = comp_impostor_col(c);
+    let col: i64 = comp_impostor_col(c, m);
     let inset: f64 = 0.08;
     let mn: Vec3 = v3(lo.x + inset, lo.y, lo.z + inset);
     let mx: Vec3 = v3(hi.x - inset, hi.y - inset, hi.z - inset);
@@ -120,6 +123,24 @@ fn depth_alpha(z: f64) i32 {
     return 256 - ((t * 192.0) as i32);
 }
 
+// ── logical -> physical viewport mapping ─────────────────────────────────────
+// The 3D pipeline rasterizes natively at physical resolution: the viewport
+// rect and the focal length are both multiplied by the framebuffer scale, so
+// projected coordinates land on physical pixels and the rasterizer writes one
+// sample per physical pixel. This is what makes HiDPI 3D genuinely sharper
+// rather than a nearest-neighbor blowup of a logical-resolution image.
+fn vp_phys_rect(f: *FB, r: Rect) Rect {
+    let s: i32 = f.*.scale;
+    return rect(r.x * s, r.y * s, r.w * s, r.h * s);
+}
+
+fn vp_phys_cam(f: *FB, cam: Cam) Cam {
+    let c: Cam = cam;
+    c.flen = cam.flen * (f.*.scale as f64);
+    return c;
+}
+
+// `r` is the PHYSICAL viewport rect; writes pixels and depth in one pass.
 fn vp_clear(f: *FB, r: Rect) void {
     // cheap 4-band vertical gradient (4 colors, not per-pixel mix)
     let c0: i64 = rgb(13, 14, 18);
@@ -127,6 +148,8 @@ fn vp_clear(f: *FB, r: Rect) void {
     let c2: i64 = rgb(21, 23, 28);
     let c3: i64 = rgb(24, 26, 33);
     let band_h: i32 = r.h / 4;
+    let pw: i32 = fb_pw(f);
+    let zf: i64 = z_far();
     let band: i32 = 0;
     while (band < 4) {
         let y0: i32 = r.y + band * band_h;
@@ -138,11 +161,11 @@ fn vp_clear(f: *FB, r: Rect) void {
         if (band == 3) { c = c3; }
         let y: i32 = y0;
         while (y < y1) {
-            let base: i32 = y * f.*.w;
+            let base: i32 = y * pw;
             let x: i32 = r.x;
             while (x < r.x + r.w) {
                 f.*.px.data[base + x] = c;
-                f.*.zb.data[base + x] = z_far();
+                f.*.zb.data[base + x] = zf;
                 x = x + 1;
             }
             y = y + 1;
@@ -188,13 +211,16 @@ fn tri_z(f: *FB, clip: Rect, a: P3, b: P3, c: P3, col: i64, alpha: i32, zwrite: 
     let da: i32 = depth_alpha((a.z + b.z + c.z) * 0.333333);
     let ea: i32 = (alpha * da) >> 8;
     let neg: bool = area < 0.0;
+    // Coordinates here are already PHYSICAL (the caller scaled clip + flen),
+    // so the buffer is indexed directly — one write per physical pixel.
+    let pw: i32 = fb_pw(f);
     let y: i32 = y0;
     while (y < y1) {
         let e0: f64 = e0r;
         let e1: f64 = e1r;
         let e2: f64 = e2r;
         let z: f64 = zr;
-        let base: i32 = y * f.*.w;
+        let base: i32 = y * pw;
         let x: i32 = x0;
         while (x < x1) {
             // e_i = -(standard edge fn): inside when every e_i opposes area's sign
@@ -293,10 +319,11 @@ fn quad3d(f: *FB, clip: Rect, cam: Cam, p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, 
 
 // ── anti-aliased, depth-faded, z-tested 3D line ───────────────────────────────
 
+// x/y are PHYSICAL pixel coordinates (clip is the physical viewport rect).
 fn line3_px(f: *FB, clip: Rect, x: i32, y: i32, z: f64, col: i64, cov: i32, zwrite: bool, always: bool) void {
     if (x < clip.x || x >= clip.x + clip.w || y < clip.y || y >= clip.y + clip.h) { return; }
     let zq: i64 = ((z - 0.03) * 1024.0) as i64;
-    let idx: i32 = y * f.*.w + x;
+    let idx: i32 = y * fb_pw(f) + x;
     if (always || zq < f.*.zb.data[idx]) {
         let da: i32 = depth_alpha(z);
         let ea: i32 = (cov * da) >> 8;
@@ -364,7 +391,23 @@ fn line3z(f: *FB, cam: Cam, clip: Rect, p0: Vec3, p1: Vec3, col: i64, zwrite: bo
     }
 }
 
-// Fast 3D line for grid overlays: no Wu AA, one opaque pixel per step.
+// Clip one parametric screen-space boundary for the fast grid path.  Doing this
+// before rasterisation keeps horizon-facing grid lines bounded by the viewport
+// instead of silently dropping them when their projection is very long.
+fn line3_clip_param(p: f64, q: f64, tlo: *f64, thi: *f64) bool {
+    if (fabs(p) < 0.000000001) { return q >= 0.0; }
+    let t: f64 = q / p;
+    if (p < 0.0) {
+        if (t > thi.*) { return false; }
+        if (t > tlo.*) { tlo.* = t; }
+    } else {
+        if (t < tlo.*) { return false; }
+        if (t < thi.*) { thi.* = t; }
+    }
+    return true;
+}
+
+// Fast 3D line for grid overlays: clipped to the visible viewport, no Wu AA.
 fn line3_fast(f: *FB, cam: Cam, clip: Rect, p0: Vec3, p1: Vec3, col: i64, zwrite: bool) void {
     let a: VPt = view_of(cam, p0);
     let b: VPt = view_of(cam, p1);
@@ -381,6 +424,28 @@ fn line3_fast(f: *FB, cam: Cam, clip: Rect, p0: Vec3, p1: Vec3, col: i64, zwrite
     let pa: P3 = vp_screen(clip, cam, a);
     let pb: P3 = vp_screen(clip, cam, b);
 
+    // Liang-Barsky clipping in screen space.  The old 4000-step guard returned
+    // here, which made perfectly valid grid lines vanish as they crossed the
+    // near horizon.  Clip first, then every remaining step is on-screen.
+    let ox: f64 = pa.x;
+    let oy: f64 = pa.y;
+    let oz: f64 = pa.z;
+    let dx0: f64 = pb.x - pa.x;
+    let dy0: f64 = pb.y - pa.y;
+    let dz0: f64 = pb.z - pa.z;
+    let tlo: f64 = 0.0;
+    let thi: f64 = 1.0;
+    if (!line3_clip_param(0.0 - dx0, pa.x - (clip.x as f64), &tlo, &thi)) { return; }
+    if (!line3_clip_param(dx0, ((clip.x + clip.w - 1) as f64) - pa.x, &tlo, &thi)) { return; }
+    if (!line3_clip_param(0.0 - dy0, pa.y - (clip.y as f64), &tlo, &thi)) { return; }
+    if (!line3_clip_param(dy0, ((clip.y + clip.h - 1) as f64) - pa.y, &tlo, &thi)) { return; }
+    pa.x = ox + dx0 * tlo;
+    pa.y = oy + dy0 * tlo;
+    pa.z = oz + dz0 * tlo;
+    pb.x = ox + dx0 * thi;
+    pb.y = oy + dy0 * thi;
+    pb.z = oz + dz0 * thi;
+
     let dx: f64 = pb.x - pa.x;
     let dy: f64 = pb.y - pa.y;
     let adx: f64 = fabs(dx);
@@ -388,7 +453,9 @@ fn line3_fast(f: *FB, cam: Cam, clip: Rect, p0: Vec3, p1: Vec3, col: i64, zwrite
     let steps: i32 = 0;
     if (adx > ady) { steps = adx as i32; } else { steps = ady as i32; }
     if (steps < 1) { steps = 1; }
-    if (steps > 4000) { return; }
+    // Clipping normally bounds this to the viewport diagonal.  Keep a hard
+    // ceiling as a safety net for malformed rectangles.
+    if (steps > 4096) { steps = 4096; }
 
     let major_x: bool = adx > ady;
     let i: i32 = 0;
@@ -409,7 +476,45 @@ fn line3_fast(f: *FB, cam: Cam, clip: Rect, p0: Vec3, p1: Vec3, col: i64, zwrite
     }
 }
 
-// ── flat-shaded axis-aligned box (near-clipped) ───────────────────────────────
+// ── directional-lit axis-aligned box (near-clipped) ───────────────────────────
+
+// A stable world-space key light gives every surface a continuous response to
+// its normal.  Keep a modest ambient floor so the dark side of a device stays
+// readable without falling back to a per-face brightness lookup table.
+fn vp_key_light() Vec3 {
+    // Pre-normalized once as a literal; this sits on the hot raster path.
+    return v3(-0.461, 0.781, -0.421);
+}
+
+fn vp_face_light_q(n: Vec3) i32 {
+    let l: Vec3 = vp_key_light();
+    let diffuse: f64 = fmax(0.0, vdot(n, l));
+    return 82 + (diffuse * 174.0) as i32;
+}
+
+fn vp_lit_col(col: i64, n: Vec3) i64 {
+    return shade(col, vp_face_light_q(n));
+}
+
+// Edges belong to two faces. Averaging their illumination makes wireframes
+// reinforce the lit form instead of drawing a uniform SketchUp-like rim.
+fn vp_lit_edge_col(col: i64, a: Vec3, b: Vec3) i64 {
+    let q: i32 = 128 + (vp_face_light_q(a) + vp_face_light_q(b)) / 4;
+    return shade(col, q);
+}
+
+// A small receiver-plane footprint darkening gives mounted components contact
+// with the plate/grid without a second geometry pass or ray tracing.
+fn vp_contact_shadow(f: *FB, cam: Cam, clip: Rect, bmin: Vec3, bmax: Vec3) void {
+    let spread: f64 = 0.075;
+    let y: f64 = bmin.y - 0.022;
+    quad3d(f, clip, cam,
+        v3(bmin.x - spread, y, bmin.z - spread),
+        v3(bmax.x + spread, y, bmin.z - spread),
+        v3(bmax.x + spread, y, bmax.z + spread),
+        v3(bmin.x - spread, y, bmax.z + spread),
+        rgb(5, 7, 11), 84, false);
+}
 
 fn vp_box(f: *FB, cam: Cam, clip: Rect, bmin: Vec3, bmax: Vec3, col: i64, alpha: i32, zwrite: bool) void {
     let v000: VPt = view_of(cam, v3(bmin.x, bmin.y, bmin.z));
@@ -421,23 +526,29 @@ fn vp_box(f: *FB, cam: Cam, clip: Rect, bmin: Vec3, bmax: Vec3, col: i64, alpha:
     let v011: VPt = view_of(cam, v3(bmin.x, bmax.y, bmax.z));
     let v111: VPt = view_of(cam, v3(bmax.x, bmax.y, bmax.z));
 
-    // top (+y): brightest, then sides by axis, bottom darkest
-    let ct: i64 = shade(col, 256);
+    let ny: Vec3 = v3(0.0, 1.0, 0.0);
+    let nny: Vec3 = v3(0.0, -1.0, 0.0);
+    let nx: Vec3 = v3(1.0, 0.0, 0.0);
+    let nnx: Vec3 = v3(-1.0, 0.0, 0.0);
+    let nz: Vec3 = v3(0.0, 0.0, 1.0);
+    let nnz: Vec3 = v3(0.0, 0.0, -1.0);
+
+    let ct: i64 = vp_lit_col(col, ny);
     tri_view(f, clip, cam, v010, v110, v111, ct, alpha, zwrite);
     tri_view(f, clip, cam, v010, v111, v011, ct, alpha, zwrite);
-    let cb: i64 = shade(col, 110);
+    let cb: i64 = vp_lit_col(col, nny);
     tri_view(f, clip, cam, v000, v001, v101, cb, alpha, zwrite);
     tri_view(f, clip, cam, v000, v101, v100, cb, alpha, zwrite);
-    let cpx: i64 = shade(col, 205);
+    let cpx: i64 = vp_lit_col(col, nx);
     tri_view(f, clip, cam, v100, v101, v111, cpx, alpha, zwrite);
     tri_view(f, clip, cam, v100, v111, v110, cpx, alpha, zwrite);
-    let cnx: i64 = shade(col, 150);
+    let cnx: i64 = vp_lit_col(col, nnx);
     tri_view(f, clip, cam, v000, v010, v011, cnx, alpha, zwrite);
     tri_view(f, clip, cam, v000, v011, v001, cnx, alpha, zwrite);
-    let cpz: i64 = shade(col, 180);
+    let cpz: i64 = vp_lit_col(col, nz);
     tri_view(f, clip, cam, v001, v011, v111, cpz, alpha, zwrite);
     tri_view(f, clip, cam, v001, v111, v101, cpz, alpha, zwrite);
-    let cnz: i64 = shade(col, 135);
+    let cnz: i64 = vp_lit_col(col, nnz);
     tri_view(f, clip, cam, v000, v100, v110, cnz, alpha, zwrite);
     tri_view(f, clip, cam, v000, v110, v010, cnz, alpha, zwrite);
 }
@@ -451,18 +562,40 @@ fn vp_box_wire(f: *FB, cam: Cam, clip: Rect, bmin: Vec3, bmax: Vec3, col: i64) v
     let g: Vec3 = v3(bmax.x, bmax.y, bmin.z);
     let h: Vec3 = v3(bmax.x, bmax.y, bmax.z);
     let i: Vec3 = v3(bmin.x, bmax.y, bmax.z);
-    line3(f, cam, clip, a, b, col, false);
-    line3(f, cam, clip, b, c, col, false);
-    line3(f, cam, clip, c, d, col, false);
-    line3(f, cam, clip, d, a, col, false);
-    line3(f, cam, clip, e, g, col, false);
-    line3(f, cam, clip, g, h, col, false);
-    line3(f, cam, clip, h, i, col, false);
-    line3(f, cam, clip, i, e, col, false);
-    line3(f, cam, clip, a, e, col, false);
-    line3(f, cam, clip, b, g, col, false);
-    line3(f, cam, clip, c, h, col, false);
-    line3(f, cam, clip, d, i, col, false);
+    let ny: Vec3 = v3(0.0, 1.0, 0.0); let nny: Vec3 = v3(0.0, -1.0, 0.0);
+    let nx: Vec3 = v3(1.0, 0.0, 0.0); let nnx: Vec3 = v3(-1.0, 0.0, 0.0);
+    let nz: Vec3 = v3(0.0, 0.0, 1.0); let nnz: Vec3 = v3(0.0, 0.0, -1.0);
+    line3(f, cam, clip, a, b, vp_lit_edge_col(col, nny, nnz), false);
+    line3(f, cam, clip, b, c, vp_lit_edge_col(col, nny, nx), false);
+    line3(f, cam, clip, c, d, vp_lit_edge_col(col, nny, nz), false);
+    line3(f, cam, clip, d, a, vp_lit_edge_col(col, nny, nnx), false);
+    line3(f, cam, clip, e, g, vp_lit_edge_col(col, ny, nnz), false);
+    line3(f, cam, clip, g, h, vp_lit_edge_col(col, ny, nx), false);
+    line3(f, cam, clip, h, i, vp_lit_edge_col(col, ny, nz), false);
+    line3(f, cam, clip, i, e, vp_lit_edge_col(col, ny, nnx), false);
+    line3(f, cam, clip, a, e, vp_lit_edge_col(col, nnx, nnz), false);
+    line3(f, cam, clip, b, g, vp_lit_edge_col(col, nx, nnz), false);
+    line3(f, cam, clip, c, h, vp_lit_edge_col(col, nx, nz), false);
+    line3(f, cam, clip, d, i, vp_lit_edge_col(col, nnx, nz), false);
+}
+
+// Navigation silhouette: use the clipped non-AA line path so a near-horizon
+// box edge cannot dominate an otherwise lightweight orbit frame.
+fn vp_box_motion_wire(f: *FB, cam: Cam, clip: Rect, bmin: Vec3, bmax: Vec3, col: i64) void {
+    let a: Vec3 = v3(bmin.x, bmin.y, bmin.z);
+    let b: Vec3 = v3(bmax.x, bmin.y, bmin.z);
+    let c: Vec3 = v3(bmax.x, bmin.y, bmax.z);
+    let d: Vec3 = v3(bmin.x, bmin.y, bmax.z);
+    let e: Vec3 = v3(bmin.x, bmax.y, bmin.z);
+    let g: Vec3 = v3(bmax.x, bmax.y, bmin.z);
+    let h: Vec3 = v3(bmax.x, bmax.y, bmax.z);
+    let i: Vec3 = v3(bmin.x, bmax.y, bmax.z);
+    line3_fast(f, cam, clip, a, b, col, true); line3_fast(f, cam, clip, b, c, col, true);
+    line3_fast(f, cam, clip, c, d, col, true); line3_fast(f, cam, clip, d, a, col, true);
+    line3_fast(f, cam, clip, e, g, col, true); line3_fast(f, cam, clip, g, h, col, true);
+    line3_fast(f, cam, clip, h, i, col, true); line3_fast(f, cam, clip, i, e, col, true);
+    line3_fast(f, cam, clip, a, e, col, true); line3_fast(f, cam, clip, b, g, col, true);
+    line3_fast(f, cam, clip, c, h, col, true); line3_fast(f, cam, clip, d, i, col, true);
 }
 
 // Box wireframe drawn through occluding geometry (ghost outline for hidden parts).
@@ -514,77 +647,120 @@ fn lerp_color(a: i64, b: i64, t: f64) i64 {
     return rr * 65536 + rg * 256 + rb;
 }
 
-fn vp_grid(f: *FB, cam: Cam, clip: Rect) void {
-    let ext: i32 = 48;
-    let mid: i32 = ext / 2;
+// Navigation keeps the design visible, but uses a deliberately lighter grid.
+// This avoids spending the orbit budget on a dense ground lattice that is
+// immediately re-rasterized again as the camera moves.
+fn vp_grid(f: *FB, cam: Cam, clip: Rect, motion_lod: bool) void {
+    // Camera-relative world grid: stable integer coordinates across the entire
+    // design space instead of one fixed 0..48 patch left behind at the origin.
+    // The canonical design lattice is always one integer cell.  The renderer
+    // chooses a coarser *display* interval as cells become sub-pixel sized;
+    // this avoids aliasing without changing placement precision.
+    let spacing: i32 = 1;
+    if (cam.dist > 24.0) { spacing = 2; }
+    if (cam.dist > 56.0) { spacing = 4; }
+    if (cam.dist > 112.0) { spacing = 8; }
+    if (cam.dist > 224.0) { spacing = 16; }
+    let radius: i32 = spacing * 40;
+    if (motion_lod) { radius = spacing * 8; }
+    let cx: i32 = ifloor(cam.eye.x / (spacing as f64)) * spacing;
+    let cz: i32 = ifloor(cam.eye.z / (spacing as f64)) * spacing;
+    let x0: i32 = cx - radius;
+    let x1: i32 = cx + radius;
+    let z0: i32 = cz - radius;
+    let z1: i32 = cz + radius;
     let major: i64 = rgb(62, 66, 79);
-    let bg: i64 = rgb(16, 16, 20);
-    let i: i32 = 0;
-    while (i <= ext) {
-        if (i % 8 == 0) {
-            // fade lines toward the grid edges so distant geometry recedes
-            let d: i32 = i - mid;
-            if (d < 0) { d = 0 - d; }
-            let col: i64 = lerp_color(major, bg, (d as f64) / (mid as f64) * 0.85);
-            line3_fast(f, cam, clip, v3(i as f64, 0.0, 0.0), v3(i as f64, 0.0, ext as f64), col, true);
-            line3_fast(f, cam, clip, v3(0.0, 0.0, i as f64), v3(ext as f64, 0.0, i as f64), col, true);
-        }
-        i = i + 1;
+    let minor: i64 = rgb(37, 41, 51);
+    let x: i32 = x0;
+    while (x <= x1) {
+        let col: i64 = minor;
+        if (x % (spacing * 8) == 0) { col = major; }
+        if (x == 0) { col = rgb(158, 74, 74); }
+        line3_fast(f, cam, clip, v3(x as f64, 0.0, z0 as f64),
+                   v3(x as f64, 0.0, z1 as f64), col, true);
+        x = x + spacing;
     }
-    // world axes from the origin (X red, Z blue, Y green) — the origin marker
-    line3_fast(f, cam, clip, v3(0.0, 0.0, 0.0), v3(ext as f64, 0.0, 0.0), rgb(158, 74, 74), true);
-    line3_fast(f, cam, clip, v3(0.0, 0.0, 0.0), v3(0.0, 0.0, ext as f64), rgb(74, 104, 172), true);
-    line3_fast(f, cam, clip, v3(0.0, 0.0, 0.0), v3(0.0, 4.0, 0.0), rgb(96, 186, 96), true);
-    vp_box(f, cam, clip, v3(0.0 - 0.16, 0.0 - 0.16, 0.0 - 0.16), v3(0.16, 0.16, 0.16), rgb(220, 220, 230), 256, false);
+    let z: i32 = z0;
+    while (z <= z1) {
+        let col2: i64 = minor;
+        if (z % (spacing * 8) == 0) { col2 = major; }
+        if (z == 0) { col2 = rgb(74, 104, 172); }
+        line3_fast(f, cam, clip, v3(x0 as f64, 0.0, z as f64),
+                   v3(x1 as f64, 0.0, z as f64), col2, true);
+        z = z + spacing;
+    }
+    if (x0 <= 0 && x1 >= 0 && z0 <= 0 && z1 >= 0) {
+        line3_fast(f, cam, clip, v3(0.0, 0.0, 0.0), v3(0.0, 6.0, 0.0), rgb(96, 186, 96), true);
+        vp_box(f, cam, clip, v3(-0.16, -0.16, -0.16), v3(0.16, 0.16, 0.16), rgb(220, 220, 230), 256, false);
+    }
 }
 
 // ── component rendering ───────────────────────────────────────────────────────
 
-fn draw_plate(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32) void {
+fn draw_plate(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32, m: DeviceModel) void {
     if (lod >= 2) {
-        draw_impostor(f, cam, clip, c);
+        draw_impostor(f, cam, clip, c, m);
         return;
     }
     let o: Vec3 = vx0(c.origin);
     let e: Vox = comp_ext(c);
-    // full-height substrate slab: components sit directly on its top face
+    // The substrate sits below the visible waffle surface. Alternate cells
+    // receive a raised cap; the others expose an actually lower pocket floor.
     let top: f64 = o.y + 0.97;
+    let pocket_floor: f64 = top - 0.09;
     let slab_min: Vec3 = v3(o.x + 0.04, o.y, o.z + 0.04);
-    let slab_max: Vec3 = v3(o.x + (e.x as f64) - 0.04, top, o.z + (e.z as f64) - 0.04);
+    let slab_max: Vec3 = v3(o.x + (e.x as f64) - 0.04, pocket_floor, o.z + (e.z as f64) - 0.04);
     vp_box(f, cam, clip, slab_min, slab_max, rgb(72, 78, 92), 256, true);
-    // waffle pockets: dark inset tops per lattice cell (lod 0 only)
+    // Waffle surface: caps and pocket bevels create a real depth cue instead
+    // of a flat checkerboard painted onto the plate.
     if (lod == 0) {
         let px: i32 = 0;
         while (px < e.x) {
             let pz: i32 = 0;
             while (pz < e.z) {
-                if ((px + pz) % 2 == 0) {
-                    let cx: f64 = o.x + (px as f64);
-                    let cz: f64 = o.z + (pz as f64);
+                let cx: f64 = o.x + (px as f64);
+                let cz: f64 = o.z + (pz as f64);
+                if ((px + pz) % 2 != 0) {
+                    vp_box(f, cam, clip,
+                        v3(cx + 0.05, pocket_floor, cz + 0.05),
+                        v3(cx + 0.95, top, cz + 0.95),
+                        rgb(78, 85, 100), 256, true);
+                } else {
+                    let ix0: f64 = cx + 0.17; let ix1: f64 = cx + 0.83;
+                    let iz0: f64 = cz + 0.17; let iz1: f64 = cz + 0.83;
+                    let fy: f64 = pocket_floor + 0.008;
                     quad3d(f, clip, cam,
-                        v3(cx + 0.15, top + 0.012, cz + 0.15),
-                        v3(cx + 0.85, top + 0.012, cz + 0.15),
-                        v3(cx + 0.85, top + 0.012, cz + 0.85),
-                        v3(cx + 0.15, top + 0.012, cz + 0.85),
-                        rgb(40, 43, 52), 256, true);
+                        v3(ix0, fy, iz0), v3(ix1, fy, iz0),
+                        v3(ix1, fy, iz1), v3(ix0, fy, iz1),
+                        vp_lit_col(rgb(38, 42, 52), v3(0.0, 1.0, 0.0)), 256, true);
+                    quad3d(f, clip, cam, v3(cx + 0.05, top, cz + 0.05), v3(cx + 0.95, top, cz + 0.05),
+                           v3(ix1, fy, iz0), v3(ix0, fy, iz0), vp_lit_col(rgb(63, 69, 82), v3(0.0, 0.5, -1.0)), 256, true);
+                    quad3d(f, clip, cam, v3(cx + 0.95, top, cz + 0.05), v3(cx + 0.95, top, cz + 0.95),
+                           v3(ix1, fy, iz1), v3(ix1, fy, iz0), vp_lit_col(rgb(58, 64, 76), v3(1.0, 0.5, 0.0)), 256, true);
+                    quad3d(f, clip, cam, v3(cx + 0.95, top, cz + 0.95), v3(cx + 0.05, top, cz + 0.95),
+                           v3(ix0, fy, iz1), v3(ix1, fy, iz1), vp_lit_col(rgb(49, 54, 65), v3(0.0, 0.5, 1.0)), 256, true);
+                    quad3d(f, clip, cam, v3(cx + 0.05, top, cz + 0.95), v3(cx + 0.05, top, cz + 0.05),
+                           v3(ix0, fy, iz0), v3(ix0, fy, iz1), vp_lit_col(rgb(45, 50, 60), v3(-1.0, 0.5, 0.0)), 256, true);
                 }
                 pz = pz + 1;
             }
             px = px + 1;
         }
     }
-    vp_box_wire(f, cam, clip, slab_min, slab_max, rgb(96, 104, 120));
+    vp_box_wire(f, cam, clip, slab_min,
+                v3(slab_max.x, top, slab_max.z), rgb(96, 104, 120));
 }
 
-fn draw_chamber(f: *FB, cam: Cam, clip: Rect, c: Comp, soh_n: i32, lod: i32) void {
+fn draw_chamber(f: *FB, cam: Cam, clip: Rect, c: Comp, soh_n: i32, lod: i32, m: DeviceModel) void {
     if (lod >= 2) {
-        draw_impostor(f, cam, clip, c);
+        draw_impostor(f, cam, clip, c, m);
         return;
     }
     let o: Vec3 = vx0(c.origin);
     let e: Vox = comp_ext(c);
     let mn: Vec3 = v3(o.x + 0.06, o.y, o.z + 0.06);
     let mx: Vec3 = v3(o.x + (e.x as f64) - 0.06, o.y + (e.y as f64) - 0.1, o.z + (e.z as f64) - 0.06);
+    vp_contact_shadow(f, cam, clip, mn, mx);
     if (lod == 0) {
         // dark cavity core (the hollow interior)
         let core_mn: Vec3 = v3(mn.x + 0.35, mn.y + 0.25, mn.z + 0.35);
@@ -619,9 +795,9 @@ fn draw_chamber(f: *FB, cam: Cam, clip: Rect, c: Comp, soh_n: i32, lod: i32) voi
     }
 }
 
-fn draw_soh(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32) void {
+fn draw_soh(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32, m: DeviceModel) void {
     if (lod >= 2) {
-        draw_impostor(f, cam, clip, c);
+        draw_impostor(f, cam, clip, c, m);
         return;
     }
     let o: Vec3 = vx0(c.origin);
@@ -632,6 +808,7 @@ fn draw_soh(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32) void {
         mn = v3(o.x + 0.08, o.y + 0.05, o.z + 0.3);
         mx = v3(o.x + (e.x as f64) - 0.08, o.y + (e.y as f64) - 0.1, o.z + (e.z as f64) - 0.3);
     }
+    vp_contact_shadow(f, cam, clip, mn, mx);
     vp_box(f, cam, clip, mn, mx, rgb(150, 226, 255), 92, false);
     vp_box_wire(f, cam, clip, mn, mx, rgb(196, 238, 255));
     if (lod == 0) {
@@ -644,18 +821,19 @@ fn draw_soh(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32) void {
     }
 }
 
-fn draw_emitter(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32) void {
+fn draw_emitter(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32, m: DeviceModel) void {
     if (lod >= 2) {
-        draw_impostor(f, cam, clip, c);
+        draw_impostor(f, cam, clip, c, m);
         return;
     }
     let o: Vec3 = vx0(c.origin);
     let e: Vox = comp_ext(c);
     let tw_mn: Vec3 = v3(o.x + 0.12, o.y, o.z + 0.12);
     let tw_mx: Vec3 = v3(o.x + (e.x as f64) - 0.12, o.y + 1.35, o.z + (e.z as f64) - 0.12);
+    vp_contact_shadow(f, cam, clip, tw_mn, tw_mx);
     vp_box(f, cam, clip, tw_mn, tw_mx, rgb(86, 84, 98), 256, true);
     vp_box_wire(f, cam, clip, tw_mn, tw_mx, rgb(116, 114, 130));
-    let wl: i64 = wavelength_color(c.wl_nm);
+    let wl: i64 = wavelength_color_model(c.wl_nm, m);
     if (lod >= 1) { return; }
     let hd_c: Vec3 = v3(o.x + (e.x as f64) * 0.5, o.y + 1.55, o.z + (e.z as f64) * 0.5);
     let hs: f64 = 0.3;
@@ -674,14 +852,15 @@ fn draw_emitter(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32) void {
     vp_box(f, cam, clip, bmn, bmx, wl, 130, false);
 }
 
-fn draw_detector(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32) void {
+fn draw_detector(f: *FB, cam: Cam, clip: Rect, c: Comp, lod: i32, m: DeviceModel) void {
     if (lod >= 2) {
-        draw_impostor(f, cam, clip, c);
+        draw_impostor(f, cam, clip, c, m);
         return;
     }
     let o: Vec3 = vx0(c.origin);
     let mn: Vec3 = v3(o.x + 0.08, o.y, o.z + 0.08);
     let mx: Vec3 = v3(o.x + 0.92, o.y + 0.14, o.z + 0.92);
+    vp_contact_shadow(f, cam, clip, mn, mx);
     vp_box(f, cam, clip, mn, mx, rgb(58, 48, 76), 256, true);
     if (lod == 0) {
         quad3d(f, clip, cam,
@@ -901,6 +1080,18 @@ fn draw_guide_base(f: *FB, cam: Cam, clip: Rect, g: Guide) void {
     draw_guide(f, cam, clip, dark, false);
 }
 
+// Active navigation only needs topology continuity, not tube volume. These
+// clipped, depth-tested center lines are deliberately cheap and restore the
+// full carrier bodies as soon as the camera settles.
+fn draw_guide_motion(f: *FB, cam: Cam, clip: Rect, g: Guide) void {
+    let i: i32 = 1;
+    while (i < g.path.len) {
+        line3_fast(f, cam, clip, vox_center(list.get[Vox](g.path, i - 1)),
+                   vox_center(list.get[Vox](g.path, i)), rgb(78, 88, 106), true);
+        i = i + 1;
+    }
+}
+
 // True when the section (clip) view hides this component: every part whose
 // base sits above the section level is omitted (Section 3.5).
 fn sect_hides_comp(sect_on: bool, sect_y: i32, c: Comp) bool {
@@ -924,9 +1115,68 @@ fn sect_hides_guide(sect_on: bool, sect_y: i32, g: Guide) bool {
 // Everything that only changes when the design (or camera) changes: grid,
 // culled components, guide bodies. Rasterized once into the viewport tile
 // cache; per-frame dynamics (live trits, selection, ghosts) overlay on top.
-fn vp_draw_static(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sect_on: bool, sect_y: i32) void {
+//
+// Most working designs are below the spatial-query threshold. Keep that hot
+// navigation path allocation-free: rebuilding a temporary visible-id list on
+// every orbit frame caused occasional allocator hitches despite low averages.
+// Motion LOD must remain visually coherent: it uses filled footprint
+// impostors, never debug-looking wireframe boxes.
+fn vp_draw_static_small(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sect_on: bool, sect_y: i32, motion_lod: bool) void {
     vp_clear(f, clip);
-    vp_grid(f, cam, clip);
+    if (!motion_lod) { vp_grid(f, cam, clip, false); }
+
+    let i: i32 = 0;
+    while (i < s.*.comps.len) {
+        let c: Comp = s.*.comps.data[i];
+        if (c.visible && !sect_hides_comp(sect_on, sect_y, c)) {
+            if (motion_lod) {
+                draw_impostor(f, cam, clip, c, s.*.model);
+            } else {
+                let lod: i32 = lod_level(cam, c);
+                if (c.kind == Kind.Plate) { draw_plate(f, cam, clip, c, lod, s.*.model); }
+                if (c.kind == Kind.Emitter) { draw_emitter(f, cam, clip, c, lod, s.*.model); }
+                if (c.kind == Kind.Detector) { draw_detector(f, cam, clip, c, lod, s.*.model); }
+            }
+        }
+        i = i + 1;
+    }
+
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) {
+        let g: Guide = s.*.guides.data[gi];
+        if (!sect_hides_guide(sect_on, sect_y, g)) {
+            if (motion_lod) { draw_guide_motion(f, cam, clip, g); }
+            else { draw_guide_base(f, cam, clip, g); }
+        }
+        gi = gi + 1;
+    }
+
+    let i2: i32 = 0;
+    while (i2 < s.*.comps.len) {
+        let c2: Comp = s.*.comps.data[i2];
+        if (!motion_lod && c2.visible && !sect_hides_comp(sect_on, sect_y, c2)) {
+            let lod2: i32 = lod_level(cam, c2);
+            if (motion_lod && lod2 < 2) { lod2 = 2; }
+            if (c2.kind == Kind.Chamber) {
+                let ni: i32 = sim_node_index(sim, c2.id);
+                let soh: i32 = 0;
+                if (ni >= 0) { soh = sim.*.nodes.data[ni].soh; }
+                else { soh = scene_soh_adjacent(s, c2.id); }
+                draw_chamber(f, cam, clip, c2, soh, lod2, s.*.model);
+            }
+            if (c2.kind == Kind.Soh) { draw_soh(f, cam, clip, c2, lod2, s.*.model); }
+        }
+        i2 = i2 + 1;
+    }
+}
+
+fn vp_draw_static(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sect_on: bool, sect_y: i32, motion_lod: bool) void {
+    if (s.*.comps.len <= vp_query_threshold()) {
+        vp_draw_static_small(f, cam, clip, s, sim, sect_on, sect_y, motion_lod);
+        return;
+    }
+    vp_clear(f, clip);
+    vp_grid(f, cam, clip, motion_lod);
 
     let ids: list.ArrayList[i32] = list.make[i32](128);
     let use_query: bool = vp_collect_visible(s, cam, clip, &ids);
@@ -940,9 +1190,13 @@ fn vp_draw_static(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sect_on: b
             let c: Comp = s.*.comps.data[ci];
             if (c.visible && !sect_hides_comp(sect_on, sect_y, c)) {
                 let lod: i32 = lod_level(cam, c);
-                if (c.kind == Kind.Plate) { draw_plate(f, cam, clip, c, lod); }
-                if (c.kind == Kind.Emitter) { draw_emitter(f, cam, clip, c, lod); }
-                if (c.kind == Kind.Detector) { draw_detector(f, cam, clip, c, lod); }
+                // While actively navigating, retain each component's form and
+                // guide context but defer micro-geometry until motion stops.
+                // The next settled frame restores full detail and ports.
+                if (motion_lod && lod < 2) { lod = 2; }
+                if (c.kind == Kind.Plate) { draw_plate(f, cam, clip, c, lod, s.*.model); }
+                if (c.kind == Kind.Emitter) { draw_emitter(f, cam, clip, c, lod, s.*.model); }
+                if (c.kind == Kind.Detector) { draw_detector(f, cam, clip, c, lod, s.*.model); }
             }
         }
         i = i + 1;
@@ -968,15 +1222,16 @@ fn vp_draw_static(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sect_on: b
             let c2: Comp = s.*.comps.data[ci2];
             if (c2.visible && !sect_hides_comp(sect_on, sect_y, c2)) {
                 let lod2: i32 = lod_level(cam, c2);
+                if (motion_lod && lod2 < 2) { lod2 = 2; }
                 if (c2.kind == Kind.Chamber) {
                     // soh depth from the compiled sim node (cached adjacency)
                     let ni: i32 = sim_node_index(sim, c2.id);
                     let soh: i32 = 0;
                     if (ni >= 0) { soh = sim.*.nodes.data[ni].soh; }
                     else { soh = scene_soh_adjacent(s, c2.id); }
-                    draw_chamber(f, cam, clip, c2, soh, lod2);
+                    draw_chamber(f, cam, clip, c2, soh, lod2, s.*.model);
                 }
-                if (c2.kind == Kind.Soh) { draw_soh(f, cam, clip, c2, lod2); }
+                if (c2.kind == Kind.Soh) { draw_soh(f, cam, clip, c2, lod2, s.*.model); }
             }
         }
         i2 = i2 + 1;
@@ -1010,7 +1265,11 @@ fn draw_guide_dir(f: *FB, cam: Cam, clip: Rect, g: Guide) void {
 // ── DYNAMIC overlay ───────────────────────────────────────────────────────────
 // Painted every frame over the blitted static layer (z-tested against its
 // cached depth): live carrier states and detector badges.
-fn vp_draw_live(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sel_guide: i32, sect_on: bool, sect_y: i32) void {
+fn vp_draw_live(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sel_guide: i32, sect_on: bool, sect_y: i32, motion_lod: bool) void {
+    // The interaction layer is already represented by motion silhouettes and
+    // centerlines. Avoid allocating query lists and repainting tube/badge
+    // detail mid-orbit; a settled frame restores exact live state instantly.
+    if (motion_lod) { return; }
     let use_query: bool = s.*.comps.len > vp_query_threshold();
     let b: VoxBounds = vp_viewport_bounds(cam, clip);
 
@@ -1051,9 +1310,13 @@ fn vp_draw_live(f: *FB, cam: Cam, clip: Rect, s: *Scene, sim: *Sim, sel_guide: i
                 let above: Vec3 = v3(ctr2.x, ctr2.y + 1.1, ctr2.z);
                 let pp: P3 = vp_proj(cam, clip, above);
                 if (pp.ok) {
+                    // The badge is a 2D chrome element, so it is drawn with the
+                    // logical primitives; the projection above is physical, so
+                    // map it back down before handing it to them.
+                    let ps: i32 = f.*.scale;
                     let t: i32 = sim_history(sim, c6.id, 0);
-                    let bx: i32 = (pp.x as i32) - 7;
-                    let by: i32 = (pp.y as i32) - 7;
+                    let bx: i32 = ((pp.x as i32) / ps) - 7;
+                    let by: i32 = ((pp.y as i32) / ps) - 7;
                     fill_rect(f, bx, by, 14, 14, trit_color(t));
                     rect_outline(f, bx, by, 14, 14, trit_rim(t));
                     draw_text(f, bx + 5, by + 4, trit_glyph(t), rgb(240, 240, 245));

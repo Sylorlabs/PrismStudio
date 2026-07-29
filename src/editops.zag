@@ -2,6 +2,7 @@
 // re-routing, duplicate support, the undo/redo journal, and .zpa design files.
 
 @import("../std/list.zag") as list
+@import("strutil.zag")
 @import("voxel.zag")
 @import("components.zag")
 @import("scene.zag")
@@ -179,6 +180,11 @@ struct UOp {
     relabel_ids: list.ArrayList[i32],  // 6: chambers whose op changed
     relabel_old: list.ArrayList[i32],  // 6: logic_op before
     relabel_new: list.ArrayList[i32],  // 6: logic_op after
+    opt_guides_before: list.ArrayList[Guide], // 6: rewritten guide snapshots
+    opt_guides_after: list.ArrayList[Guide],
+    move_ids: list.ArrayList[i32],     // 6: optimizer placement edits
+    move_old: list.ArrayList[Vox],
+    move_new: list.ArrayList[Vox],
 }
 
 struct Journal {
@@ -212,6 +218,11 @@ fn uop_empty() UOp {
         .relabel_ids = list.make[i32](1),
         .relabel_old = list.make[i32](1),
         .relabel_new = list.make[i32](1),
+        .opt_guides_before = list.make[Guide](1),
+        .opt_guides_after = list.make[Guide](1),
+        .move_ids = list.make[i32](1),
+        .move_old = list.make[Vox](1),
+        .move_new = list.make[Vox](1),
     };
 }
 
@@ -235,6 +246,21 @@ fn uop_free(op: *UOp) void {
     list.free[i32](&op.*.relabel_ids);
     list.free[i32](&op.*.relabel_old);
     list.free[i32](&op.*.relabel_new);
+    let ogi: i32 = 0;
+    while (ogi < op.*.opt_guides_before.len) {
+        list.free[Vox](&op.*.opt_guides_before.data[ogi].path);
+        ogi = ogi + 1;
+    }
+    let agi: i32 = 0;
+    while (agi < op.*.opt_guides_after.len) {
+        list.free[Vox](&op.*.opt_guides_after.data[agi].path);
+        agi = agi + 1;
+    }
+    list.free[Guide](&op.*.opt_guides_before);
+    list.free[Guide](&op.*.opt_guides_after);
+    list.free[i32](&op.*.move_ids);
+    list.free[Vox](&op.*.move_old);
+    list.free[Vox](&op.*.move_new);
 }
 
 fn journal_clear_redo(j: *Journal) void {
@@ -341,8 +367,10 @@ fn id_in_list(xs: list.ArrayList[i32], v: i32) bool {
 // Record an optimizer application (removed components + chamber relabels) as ONE
 // undoable op, then perform it. A single undo reverts the whole optimization.
 // Snapshots must be taken BEFORE the mutation. `relabel_ids[i]` gets `relabel_new[i]`.
-fn op_optimize(j: *Journal, s: *Scene, removed: list.ArrayList[i32],
-               relabel_ids: list.ArrayList[i32], relabel_new: list.ArrayList[i32]) void {
+fn op_optimize_full(j: *Journal, s: *Scene, removed: list.ArrayList[i32],
+               relabel_ids: list.ArrayList[i32], relabel_new: list.ArrayList[i32],
+               guide_after: list.ArrayList[Guide], move_ids: list.ArrayList[i32],
+               move_new: list.ArrayList[Vox]) void {
     let op: UOp = uop_empty();
     op.kind = 6;
     // removed components, with owned name copies
@@ -376,9 +404,45 @@ fn op_optimize(j: *Journal, s: *Scene, removed: list.ArrayList[i32],
         }
         r = r + 1;
     }
+    // Exact before/after snapshots for graph and placement rewrites.
+    let rg: i32 = 0;
+    while (rg < guide_after.len) {
+        let bgi: i32 = scene_guide_index(s, guide_after.data[rg].id);
+        if (bgi >= 0) {
+            list.push[Guide](&op.opt_guides_before, guide_clone(s.*.guides.data[bgi]));
+            list.push[Guide](&op.opt_guides_after, guide_clone(guide_after.data[rg]));
+        }
+        rg = rg + 1;
+    }
+    let mv: i32 = 0;
+    while (mv < move_ids.len && mv < move_new.len) {
+        let mci: i32 = scene_comp_index(s, move_ids.data[mv]);
+        if (mci >= 0) {
+            list.push[i32](&op.move_ids, move_ids.data[mv]);
+            list.push[Vox](&op.move_old, s.*.comps.data[mci].origin);
+            list.push[Vox](&op.move_new, move_new.data[mv]);
+        }
+        mv = mv + 1;
+    }
     journal_push(j, op);
 
-    // perform: relabel then remove (removals drop their incident guides)
+    // perform placement edits first; their incidental reroutes are replaced by
+    // exact verified guide snapshots after all removals.
+    let ma: i32 = 0;
+    while (ma < op.move_ids.len) {
+        let ci0: i32 = scene_comp_index(s, op.move_ids.data[ma]);
+        if (ci0 >= 0) {
+            let one: list.ArrayList[i32] = list.make[i32](1);
+            list.push[i32](&one, op.move_ids.data[ma]);
+            let oo: Vox = s.*.comps.data[ci0].origin;
+            let nn: Vox = op.move_new.data[ma];
+            let delta: Vox = vox(nn.x - oo.x, nn.y - oo.y, nn.z - oo.z);
+            if (group_can_move(s, &one, delta) == 0) { group_move(s, &one, delta); }
+            list.free[i32](&one);
+        }
+        ma = ma + 1;
+    }
+    // relabel then remove (removals drop their incident guides)
     let ra: i32 = 0;
     while (ra < op.relabel_ids.len) {
         let ci2: i32 = scene_comp_index(s, op.relabel_ids.data[ra]);
@@ -393,6 +457,21 @@ fn op_optimize(j: *Journal, s: *Scene, removed: list.ArrayList[i32],
         scene_remove(s, removed.data[d]);
         d = d + 1;
     }
+    let ga: i32 = 0;
+    while (ga < op.opt_guides_after.len) {
+        scene_remove_guide(s, op.opt_guides_after.data[ga].id);
+        scene_restore_guide(s, guide_clone(op.opt_guides_after.data[ga]));
+        ga = ga + 1;
+    }
+}
+
+fn op_optimize(j: *Journal, s: *Scene, removed: list.ArrayList[i32],
+               relabel_ids: list.ArrayList[i32], relabel_new: list.ArrayList[i32]) void {
+    let guides: list.ArrayList[Guide] = list.make[Guide](1);
+    let mids: list.ArrayList[i32] = list.make[i32](1);
+    let mnew: list.ArrayList[Vox] = list.make[Vox](1);
+    op_optimize_full(j, s, removed, relabel_ids, relabel_new, guides, mids, mnew);
+    list.free[Guide](&guides); list.free[i32](&mids); list.free[Vox](&mnew);
 }
 
 // Rotate a component and record it as an undoable op (kind 7). Returns the
@@ -529,7 +608,21 @@ fn journal_undo(j: *Journal, s: *Scene) bool {
         list.free[i32](&one);
     }
     if (op.kind == 6) {
-        // revert relabels, restore removed comps, then their guides
+        // restore placements, relabels, removed comps, then exact guide state
+        let mi: i32 = 0;
+        while (mi < op.move_ids.len) {
+            let mci: i32 = scene_comp_index(s, op.move_ids.data[mi]);
+            if (mci >= 0) {
+                let one: list.ArrayList[i32] = list.make[i32](1);
+                list.push[i32](&one, op.move_ids.data[mi]);
+                let cur: Vox = s.*.comps.data[mci].origin;
+                let old: Vox = op.move_old.data[mi];
+                let delta: Vox = vox(old.x - cur.x, old.y - cur.y, old.z - cur.z);
+                if (group_can_move(s, &one, delta) == 0) { group_move(s, &one, delta); }
+                list.free[i32](&one);
+            }
+            mi = mi + 1;
+        }
         let ri: i32 = 0;
         while (ri < op.relabel_ids.len) {
             let ci: i32 = scene_comp_index(s, op.relabel_ids.data[ri]);
@@ -548,8 +641,15 @@ fn journal_undo(j: *Journal, s: *Scene) bool {
         }
         let gi: i32 = 0;
         while (gi < op.guides.len) {
+            scene_remove_guide(s, op.guides.data[gi].id);
             scene_restore_guide(s, guide_clone(op.guides.data[gi]));
             gi = gi + 1;
+        }
+        let rgi: i32 = 0;
+        while (rgi < op.opt_guides_before.len) {
+            scene_remove_guide(s, op.opt_guides_before.data[rgi].id);
+            scene_restore_guide(s, guide_clone(op.opt_guides_before.data[rgi]));
+            rgi = rgi + 1;
         }
     }
     if (op.kind == 7) {
@@ -596,7 +696,21 @@ fn journal_redo(j: *Journal, s: *Scene) bool {
         list.free[i32](&one);
     }
     if (op.kind == 6) {
-        // re-apply relabels, then remove the comps again (drops their guides)
+        // re-apply placement/relabels/removals, then exact verified guide state
+        let mi: i32 = 0;
+        while (mi < op.move_ids.len) {
+            let mci: i32 = scene_comp_index(s, op.move_ids.data[mi]);
+            if (mci >= 0) {
+                let one: list.ArrayList[i32] = list.make[i32](1);
+                list.push[i32](&one, op.move_ids.data[mi]);
+                let cur: Vox = s.*.comps.data[mci].origin;
+                let nn: Vox = op.move_new.data[mi];
+                let delta: Vox = vox(nn.x - cur.x, nn.y - cur.y, nn.z - cur.z);
+                if (group_can_move(s, &one, delta) == 0) { group_move(s, &one, delta); }
+                list.free[i32](&one);
+            }
+            mi = mi + 1;
+        }
         let ri: i32 = 0;
         while (ri < op.relabel_ids.len) {
             let ci: i32 = scene_comp_index(s, op.relabel_ids.data[ri]);
@@ -610,6 +724,12 @@ fn journal_redo(j: *Journal, s: *Scene) bool {
         while (ci2 < op.comps.len) {
             scene_remove(s, op.comps.data[ci2].id);
             ci2 = ci2 + 1;
+        }
+        let rgi: i32 = 0;
+        while (rgi < op.opt_guides_after.len) {
+            scene_remove_guide(s, op.opt_guides_after.data[rgi].id);
+            scene_restore_guide(s, guide_clone(op.opt_guides_after.data[rgi]));
+            rgi = rgi + 1;
         }
     }
     if (op.kind == 7) {
@@ -1100,6 +1220,14 @@ fn design_save(s: *Scene, path: []u8) bool {
     ser_int(&out, (s.*.model.material_thermal_coefficient_ppm_c.value * 1000000.0) as i64);
     ser_int(&out, (s.*.model.port_bandwidth_ghz.value * 1000.0) as i64);
     ser_text(&out, "\n");
+    // Forward-compatible extension namespace. PrismStudio does not interpret
+    // these bounded records; it preserves them byte-for-byte across load/save.
+    let xi: i32 = 0;
+    while (xi < s.*.extensions.len) {
+        ser_text(&out, s.*.extensions.data[xi]);
+        ser_text(&out, "\n");
+        xi = xi + 1;
+    }
     let i: i32 = 0;
     while (i < s.*.comps.len) {
         let c: Comp = s.*.comps.data[i];
@@ -1232,6 +1360,12 @@ fn design_load_into(s: *Scene, path: []u8) bool {
                 if (!model_units_dims_valid(s.*.model)) { list.free[i64](&nums); return false; }
             }
         }
+        if (line.len > 2 && (line[0] as i32) == 'x' && (line[1] as i32) == 32) {
+            // `x` records are the only accepted opaque future-field namespace.
+            // The normal line/project limits bound memory use; ownership remains
+            // with the Scene so transactional load and cloning stay independent.
+            list.push[[]u8](&s.*.extensions, _zag_strdup(line));
+        }
         if (line.len > 2 && (line[0] as i32) == 'c' && (line[1] as i32) == 32) {
             let stop: i32 = 0;
             parse_line_ints(line, 1, &nums, &stop);
@@ -1336,7 +1470,9 @@ fn design_load(s: *Scene, path: []u8) bool {
 
 // Collect *.zpa filenames in the working directory.
 fn list_designs(out: *list.ArrayList[[]u8]) void {
-    out.*.len = 0;
+    // Entries are _zag_strdup-owned by the list; drop any previous generation
+    // without leaking before refilling (len = 0 alone would leak them all).
+    free_str_list(out);
     let dot: list.ArrayList[u8] = list.make[u8](2);
     list.push[u8](&dot, 46);   // "."
     list.push[u8](&dot, 0);

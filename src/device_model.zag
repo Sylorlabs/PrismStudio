@@ -114,7 +114,7 @@ fn model_param_at(m: DeviceModel, index: i32) PhysicalParam {
 fn physical_param(value: f64, units: []u8, method: []u8) PhysicalParam {
     return PhysicalParam{
         .value = value, .known = true, .units = units,
-        .source = "Triton illustrative reference fixture",
+        .source = "PrismStudio illustrative reference fixture",
         .source_version = "1", .date_ = "2026-07-07", .method = method,
         .uncertainty = 0.0, .confidence = EvidenceClass.Illustrative,
     };
@@ -131,7 +131,7 @@ fn physical_unknown(units: []u8) PhysicalParam {
 fn model_reference_illustrative() DeviceModel {
     return DeviceModel{
         .schema_version = 2,
-        .id = "triton.reference.illustrative.v2",
+        .id = "prismstudio.reference.illustrative.v2",
         .pitch_nm = physical_param(250.0, "nm", "illustrative CAD lattice"),
         .group_index = physical_param(2.1, "1", "illustrative waveguide model"),
         .emitter_rate_ghz = physical_param(110.0, "GHz", "illustrative EO response"),
@@ -313,7 +313,7 @@ fn model_apply_known_mask(m: *DeviceModel, mask: i64) void {
 
 fn model_prepare_schema1(m: *DeviceModel) void {
     m.*.schema_version = 1;
-    m.*.id = "triton.project.pinned.v1";
+    m.*.id = "prismstudio.project.pinned.v1";
     m.*.emitter_wavelength_max_nm = physical_unknown("nm");
     m.*.optical_bandwidth_ghz = physical_unknown("GHz");
     m.*.propagation_loss_db_cm = physical_unknown("dB/cm");
@@ -342,6 +342,6 @@ fn model_can_migrate(m: DeviceModel, target: i32) bool {
 fn model_migrate(m: *DeviceModel, target: i32) bool {
     if (!model_can_migrate(m.*, target)) { return false; }
     m.*.schema_version = 2;
-    m.*.id = "triton.project.migrated.v2";
+    m.*.id = "prismstudio.project.migrated.v2";
     return true;
 }

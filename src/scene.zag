@@ -9,8 +9,9 @@
 @import("components.zag")
 @import("world.zag")
 @import("limits.zag")
+@import("process_stack.zag")
 
-fn max_chambers_per_plate() i32 { return limit_env_or("TRITON_MAX_CHAMBERS_PER_PLATE", 64); }
+fn max_chambers_per_plate() i32 { return limit_env_or("PRISMSTUDIO_MAX_CHAMBERS_PER_PLATE", 64); }
 
 struct Comp {
     id: i32,
@@ -38,6 +39,7 @@ struct Guide {
 
 struct Scene {
     model: DeviceModel,
+    extensions: list.ArrayList[[]u8], // owned opaque `x ...` format records
     comps: list.ArrayList[Comp],
     guides: list.ArrayList[Guide],
     occ: hm.Int64Map[i32],          // vox_key -> component id
@@ -56,12 +58,15 @@ struct Scene {
     topo_dirty_ids: list.ArrayList[i32],  // comps needing incremental sim patch
     topo_guides_dirty: bool,        // waveguide graph changed
     topo_full_rebuild: bool,        // clear/load -> full sim recompile
+    opt_dirty_ids: list.ArrayList[i32], // optimizer affected-region queue source
+    opt_full_dirty: bool,
     render_rev: i64,                // bumped on any visual change (geometry,
 }                                   // visibility) -> viewport cache invalidates
 
 fn scene_new() *Scene {
     let s: *Scene = new(Scene{
         .model = model_reference_illustrative(),
+        .extensions = list.make[[]u8](4),
         .comps = list.make[Comp](32),
         .guides = list.make[Guide](16),
         .occ = hm.int64_make[i32](512),
@@ -80,6 +85,8 @@ fn scene_new() *Scene {
         .topo_dirty_ids = list.make[i32](8),
         .topo_guides_dirty = true,
         .topo_full_rebuild = true,
+        .opt_dirty_ids = list.make[i32](8),
+        .opt_full_dirty = true,
         .render_rev = 1,
     });
     let i: i32 = 0;
@@ -285,7 +292,9 @@ fn scene_chambers_on_plate(s: *Scene, plate_id: i32) i32 {
 
 // ── design-rule check ─────────────────────────────────────────────────────────
 // 0 ok / 1 occupied / 2 plate-must-sit-on-ground / 3 needs-GeSn-plate /
-// 4 chamber quota (64 execution chambers per board).
+// 4 chamber quota (64 execution chambers per board) / 7 process-stack layer
+// violation.  The integer Y coordinate is a physical process layer, not a
+// free-form height: the stack owns which layers may contain each device.
 
 // Parametric DRC. `ignore_id` skips one component's own cells (resize/move
 // revalidation); pass -1 for fresh placements. Base-support is face-exact:
@@ -298,6 +307,7 @@ fn scene_can_place_ext(s: *Scene, k: Kind, sz: Vox, origin: Vox, rot: i32, ignor
         origin.z + ext.z - 1 > 2047) { return 6; }
     if (kind_ground_only(k) && origin.y != 0) { return 2; }
     if (kind_needs_plate(k) && origin.y < 1) { return 3; }
+    if (!process_component_extent_allowed(k, origin.y, ext.y)) { return 7; }
 
     let cells: list.ArrayList[Vox] = list.make[Vox](8);
     scene_cells_ext(sz, origin, rot, &cells);
@@ -335,6 +345,7 @@ fn place_err_text(code: i32) []u8 {
     if (code == 4) { return "board full: 64 chambers max"; }
     if (code == 5) { return "resize would orphan mounted parts"; }
     if (code == 6) { return "outside lattice coordinate range"; }
+    if (code == 7) { return "component is not allowed in this process-stack layer"; }
     return "ok";
 }
 
@@ -670,6 +681,9 @@ fn scene_mark_render(s: *Scene) void {
 fn scene_mark_topo_comp(s: *Scene, id: i32) void {
     s.*.topo_dirty = true;
     scene_topo_unique_push(s, id);
+    let oi: i32 = 0; let found: bool = false;
+    while (oi < s.*.opt_dirty_ids.len) { if (s.*.opt_dirty_ids.data[oi] == id) { found = true; } oi = oi + 1; }
+    if (!found) { list.push[i32](&s.*.opt_dirty_ids, id); }
     scene_mark_render(s);
 }
 
@@ -683,6 +697,7 @@ fn scene_mark_topo_full(s: *Scene) void {
     s.*.topo_dirty = true;
     s.*.topo_full_rebuild = true;
     s.*.topo_guides_dirty = true;
+    s.*.opt_full_dirty = true;
     scene_mark_render(s);
 }
 
@@ -693,12 +708,23 @@ fn scene_topo_clear(s: *Scene) void {
     s.*.topo_full_rebuild = false;
 }
 
+fn scene_opt_dirty_clear(s: *Scene) void {
+    s.*.opt_dirty_ids.len = 0;
+    s.*.opt_full_dirty = false;
+}
+
 // Primary 32³ chunk for a component (origin voxel).
 fn scene_comp_chunk(c: Comp) ChunkCoords {
     return world_chunk_at(c.origin);
 }
 
 fn scene_clear(s: *Scene) void {
+    let xi: i32 = 0;
+    while (xi < s.*.extensions.len) {
+        _zag_str_free(s.*.extensions.data[xi]);
+        xi = xi + 1;
+    }
+    s.*.extensions.len = 0;
     let gi: i32 = 0;
     while (gi < s.*.guides.len) {
         list.free[Vox](&s.*.guides.data[gi].path);
@@ -733,6 +759,12 @@ fn scene_clear(s: *Scene) void {
 // Release a scene and every buffer it owns. The pointer must not be used
 // afterwards. Co-located with scene_new so the two stay field-for-field in sync.
 fn scene_free(s: *Scene) void {
+    let xi: i32 = 0;
+    while (xi < s.*.extensions.len) {
+        _zag_str_free(s.*.extensions.data[xi]);
+        xi = xi + 1;
+    }
+    list.free[[]u8](&s.*.extensions);
     let gi: i32 = 0;
     while (gi < s.*.guides.len) {
         list.free[Vox](&s.*.guides.data[gi].path);
@@ -753,6 +785,7 @@ fn scene_free(s: *Scene) void {
     hm.int_free[i32](&s.*.plate_chambers);
     list.free[i32](&s.*.made);
     list.free[i32](&s.*.topo_dirty_ids);
+    list.free[i32](&s.*.opt_dirty_ids);
     _zag_free(s as *i8);
 }
 
@@ -762,6 +795,11 @@ fn scene_free(s: *Scene) void {
 fn scene_clone(src: *Scene) *Scene {
     let d: *Scene = scene_new();
     d.*.model = src.*.model;
+    let xi: i32 = 0;
+    while (xi < src.*.extensions.len) {
+        list.push[[]u8](&d.*.extensions, _zag_strdup(src.*.extensions.data[xi]));
+        xi = xi + 1;
+    }
     let i: i32 = 0;
     while (i < src.*.comps.len) {
         let c: Comp = src.*.comps.data[i];
@@ -853,8 +891,12 @@ fn scene_validation_errors(s: *Scene) i32 {
             let pi: i32 = 0;
             while (pi < g.path.len) {
                 let v: Vox = g.path.data[pi];
-                if (v.y < limit_waveguide_layer_min() || v.y > limit_waveguide_layer_max() ||
-                    (pi > 0 && vox_manhattan(g.path.data[pi - 1], v) != 1)) { errors = errors + 1; }
+                if (!process_layer_is_waveguide(v.y)) { errors = errors + 1; }
+                if (pi > 0) {
+                    let prev: Vox = g.path.data[pi - 1];
+                    if (vox_manhattan(prev, v) != 1) { errors = errors + 1; }
+                    if (!process_transition_allowed(prev.y, v.y)) { errors = errors + 1; }
+                }
                 pi = pi + 1;
             }
         }

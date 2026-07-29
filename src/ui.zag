@@ -14,18 +14,21 @@ fn space_12() i32 { return 12; }
 fn space_16() i32 { return 16; }
 fn space_24() i32 { return 24; }
 
-// Typography roles for the current crisp bitmap face. The renderer has one
-// raster size; roles control line boxes and emphasis without blurry scaling.
-fn type_tiny_h() i32 { return 11; }
-fn type_body_h() i32 { return 14; }
-fn type_section_h() i32 { return 16; }
-fn type_viewport_h() i32 { return 14; }
-fn type_debug_h() i32 { return 13; }
+// Typography roles. The renderer (fb.zag) exposes five baked Fira Sans
+// faces (face_body, face_body_med, face_dense, face_section, face_title);
+// roles map semantic use to a face + line box, so layout code never
+// hardcodes a pixel height. Vertical centering uses text_cy(face, row_h).
+
+fn type_tiny_h() i32 { return fa_line_h(face_dense()); }    // 16
+fn type_body_h() i32 { return fa_line_h(face_body()); }     // 17
+fn type_section_h() i32 { return fa_line_h(face_section()); } // 19
+fn type_viewport_h() i32 { return fa_line_h(face_body()); }   // 17
+fn type_debug_h() i32 { return fa_line_h(face_dense()); }     // 16
 
 // Corner radii for the anti-aliased rounded chrome. Controls get a soft 3px,
 // panels/cards a slightly larger 5px — modern, not the old square CAD look.
-fn radius_control() i32 { return 3; }
-fn radius_panel() i32 { return 5; }
+fn radius_control() i32 { return 5; }
+fn radius_panel() i32 { return 8; }
 fn elevation_panel() i32 { return 1; }
 
 // Layout rules (Section 3.2): every panel uses the same interior padding, text
@@ -33,29 +36,29 @@ fn elevation_panel() i32 { return 1; }
 // one height so rows never jitter as content changes.
 fn pad_panel() i32 { return space_8(); }
 fn pad_text() i32 { return space_4(); }
-fn control_h() i32 { return 22; }
-fn row_h() i32 { return 16; }
+fn control_h() i32 { return 28; }
+fn row_h() i32 { return 22; }
 
 // Modern cool-dark palette: near-black blue-grey grounds, brighter text for
 // contrast, an indigo accent, and — critically — a SOFT light border instead
 // of the old hard black outline (hard 1px black is what read as 1990s).
-fn th_bg() i64 { return rgb(20, 21, 26); }
-fn th_panel() i64 { return rgb(28, 30, 37); }
-fn th_panel_alt() i64 { return rgb(38, 41, 50); }
-fn th_header() i64 { return rgb(33, 35, 43); }
-fn th_outline() i64 { return rgb(52, 56, 68); }        // subtle raised border
-fn th_outline_soft() i64 { return rgb(44, 47, 57); }   // barely-there divider
-fn th_text() i64 { return rgb(224, 226, 234); }
-fn th_text_dim() i64 { return rgb(142, 148, 162); }
-fn th_accent() i64 { return rgb(94, 124, 240); }       // indigo accent
-fn th_accent_hot() i64 { return rgb(124, 150, 255); }
+fn th_bg() i64 { return rgb(13, 16, 22); }
+fn th_panel() i64 { return rgb(21, 25, 33); }
+fn th_panel_alt() i64 { return rgb(31, 37, 48); }
+fn th_header() i64 { return rgb(25, 30, 40); }
+fn th_outline() i64 { return rgb(50, 59, 74); }        // subtle raised border
+fn th_outline_soft() i64 { return rgb(39, 46, 59); }   // barely-there divider
+fn th_text() i64 { return rgb(232, 236, 244); }
+fn th_text_dim() i64 { return rgb(148, 157, 176); }
+fn th_accent() i64 { return rgb(86, 116, 232); }       // restrained periwinkle
+fn th_accent_hot() i64 { return rgb(121, 148, 255); }
 fn th_select() i64 { return rgb(255, 178, 66); }       // selection amber
 fn th_danger() i64 { return rgb(236, 96, 96); }
 fn th_warning() i64 { return rgb(232, 172, 72); }
 fn th_ok() i64 { return rgb(96, 210, 140); }
 fn th_disabled() i64 { return rgb(78, 82, 94); }
 fn th_focus() i64 { return rgb(124, 150, 255); }
-fn th_vp_bg() i64 { return rgb(15, 16, 21); }
+fn th_vp_bg() i64 { return rgb(10, 13, 19); }
 
 // ── geometry ──────────────────────────────────────────────────────────────────
 
@@ -113,6 +116,7 @@ struct Input {
     wheel: i32,
     mods: i32,       // bit0 shift, bit1 ctrl, bit2 alt
     keys: list.ArrayList[i32],
+    keys_down: list.ArrayList[i32], // persistent key state, indexed by ASCII code
     w: i32,
     h: i32,
     capture: i32,
@@ -140,9 +144,10 @@ struct Input {
 }
 
 fn input_new() Input {
-    return Input{
+    let in: Input = Input{
         .mx = 0, .my = 0, .btn = 0, .prev_btn = 0, .wheel = 0, .mods = 0,
         .keys = list.make[i32](8),
+        .keys_down = list.make[i32](128),
         .w = 1440, .h = 900,
         .capture = 0,
         .quit = false,
@@ -162,6 +167,12 @@ fn input_new() Input {
         .focus_nav = false,
         .ui_elements = list.make[UiElement](128),
     };
+    in.keys_down.len = 128;
+    return in;
+}
+
+fn key_down(in: *Input, code: i32) bool {
+    return code >= 0 && code < in.*.keys_down.len && in.*.keys_down.data[code] != 0;
 }
 
 fn ui_catalog_begin(in: *Input) void { in.*.ui_elements.len = 0; }
@@ -293,7 +304,7 @@ fn ui_tip(in: *Input, r: Rect, text: []u8) void {
 fn ui_tip_flush(f: *FB, in: *Input) void {
     if (in.*.tip_dwell < 30 || in.*.tip_text.len == 0) { return; }
     let w: i32 = text_w(in.*.tip_text) + pad_text() * 2 + 2;
-    let h: i32 = 17;
+    let h: i32 = type_body_h() + pad_text() * 2;
     let x: i32 = in.*.tip_x;
     let y: i32 = in.*.tip_y;
     if (x + w > f.*.w - 2) { x = f.*.w - 2 - w; }
@@ -301,7 +312,7 @@ fn ui_tip_flush(f: *FB, in: *Input) void {
     draw_shadow(f, x, y, w, h, radius_control());
     fill_round_rect(f, x, y, w, h, radius_control(), rgb(18, 20, 27));
     round_rect_outline(f, x, y, w, h, radius_control(), th_outline());
-    draw_text(f, x + pad_text() + 1, y + 5, in.*.tip_text, th_text());
+    draw_text(f, x + pad_text() + 1, y + text_cy(face_body(), h), in.*.tip_text, th_text());
 }
 
 fn btn_down(in: *Input, bit: i32) bool {
@@ -370,10 +381,13 @@ fn hover(in: *Input, r: Rect) bool {
 // look is reserved for cards, controls, and overlays.
 fn ui_panel(f: *FB, r: Rect, title: []u8) Rect {
     fill_rect(f, r.x, r.y, r.w, r.h, th_panel());
-    fill_rect(f, r.x, r.y, r.w, 24, th_header());
-    hline(f, r.x, r.y + 24, r.w, th_outline_soft());
-    draw_text(f, r.x + pad_panel(), r.y + 9, title, th_text_dim());
-    return rect(r.x + 1, r.y + 25, r.w - 2, r.h - 26);
+    fill_rect(f, r.x, r.y, r.w, 30, th_header());
+    // A short accent rail gives each dock a clear title without the old
+    // full-width embossed CAD header treatment.
+    fill_round_rect(f, r.x + pad_panel(), r.y + 9, 3, 14, 1, th_accent());
+    draw_text_face(f, r.x + pad_panel() + 10, r.y + text_cy(face_section(), 30), face_section(), title, th_text_dim());
+    hline(f, r.x, r.y + 29, r.w, th_outline_soft());
+    return rect(r.x + 1, r.y + 31, r.w - 2, r.h - 32);
 }
 
 fn ui_button(f: *FB, in: *Input, r: Rect, label: []u8, active: bool) bool {
@@ -397,7 +411,7 @@ fn ui_button(f: *FB, in: *Input, r: Rect, label: []u8, active: bool) bool {
     let tw: i32 = text_w(label);
     let tcol: i64 = th_text();
     if (active) { tcol = rgb(245, 247, 252); }
-    draw_text(f, r.x + (r.w - tw) / 2, r.y + (r.h - 7) / 2, label, tcol);
+    draw_text(f, r.x + (r.w - tw) / 2, r.y + text_cy(face_body(), r.h), label, tcol);
     return (h && btn_released(in, 0)) || ui_key_activate(in, focused);
 }
 
@@ -407,7 +421,7 @@ fn ui_mini(f: *FB, in: *Input, r: Rect, label: []u8, tint: i64) bool {
     let focused: bool = ui_focusable(in, r, h);
     let _eid: i64 = ui_register(in, "button", "mini-control", label, r, true, false, focused);
     if (h) { fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), th_header()); }
-    draw_text(f, r.x + (r.w - text_w(label)) / 2, r.y + (r.h - 7) / 2, label, tint);
+    draw_text(f, r.x + (r.w - text_w(label)) / 2, r.y + text_cy(face_body(), r.h), label, tint);
     if (focused) { round_rect_outline(f, r.x, r.y, r.w, r.h, radius_control(), th_focus()); }
     return (h && btn_released(in, 0)) || ui_key_activate(in, focused);
 }
@@ -472,20 +486,22 @@ fn ui_textfield(f: *FB, in: *Input, r: Rect, te: *TextEdit, placeholder: []u8) b
     if (te.*.focus || focused) { oc = th_focus(); }
     else if (h) { oc = th_disabled(); }
     round_rect_outline(f, r.x, r.y, r.w, r.h, radius_control(), oc);
-    let ty: i32 = r.y + (r.h - 7) / 2;
+    let ty: i32 = r.y + text_cy(face_body(), r.h);
     if (te.*.buf.len > 0) {
         // right-anchor overflow so the caret end stays visible
-        let maxc: i32 = (r.w - pad_text() * 2 - 4) / 6;
+        let maxw: i32 = r.w - pad_text() * 2 - 4;
         let st: i32 = 0;
-        if (te.*.buf.len > maxc) { st = te.*.buf.len - maxc; }
+        while (st < te.*.buf.len && text_w(te.*.buf.data[st..te.*.buf.len]) > maxw) {
+            st = st + 1;
+        }
         draw_text(f, r.x + pad_text() + 1, ty, te.*.buf.data[st..te.*.buf.len], th_text());
         if (te.*.focus) {
             let cw: i32 = text_w(te.*.buf.data[st..te.*.buf.len]);
-            fill_rect(f, r.x + pad_text() + 2 + cw, r.y + 3, 1, r.h - 6, th_accent_hot());
+            fill_rect(f, r.x + pad_text() + 2 + cw, r.y + 4, 1, r.h - 8, th_accent_hot());
         }
     } else {
         if (placeholder.len > 0) { draw_text(f, r.x + pad_text() + 1, ty, placeholder, th_text_dim()); }
-        if (te.*.focus) { fill_rect(f, r.x + pad_text() + 2, r.y + 3, 1, r.h - 6, th_accent_hot()); }
+        if (te.*.focus) { fill_rect(f, r.x + pad_text() + 2, r.y + 4, 1, r.h - 8, th_accent_hot()); }
     }
     return changed;
 }
@@ -502,11 +518,12 @@ fn ui_section(f: *FB, in: *Input, x: i32, y: i32, w: i32, title: []u8, open: *i3
     if (hot > 0) { fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), mix(th_header(), th_panel(), hot)); }
     let arrow: []u8 = ">";
     if (open.* == 1) { arrow = "v"; }
-    draw_text(f, x + pad_text(), y + 4, arrow, th_text_dim());
-    draw_text(f, x + pad_text() + 12, y + 4, title, th_text());
+    let ty: i32 = y + text_cy(face_body(), row_h());
+    draw_text(f, x + pad_text(), ty, arrow, th_text_dim());
+    draw_text(f, x + pad_text() + 12, ty, title, th_text());
     if (count >= 0) {
         let cnt: []u8 = _zag_i64_to_str(count as i64);
-        draw_text(f, x + w - text_w(cnt) - pad_text() - 2, y + 4, cnt, th_text_dim());
+        draw_text(f, x + w - text_w(cnt) - pad_text() - 2, ty, cnt, th_text_dim());
     }
     if (focused) { round_rect_outline(f, r.x, r.y, r.w, r.h, radius_control(), th_focus()); }
     if ((h && btn_released(in, 0)) || ui_key_activate(in, focused)) {
@@ -518,7 +535,7 @@ fn ui_section(f: *FB, in: *Input, x: i32, y: i32, w: i32, title: []u8, open: *i3
 // ── empty state (Section 3.2) ─────────────────────────────────────────────────
 // Centered, quiet guidance instead of a dead panel.
 fn ui_empty_state(f: *FB, r: Rect, title: []u8, hint: []u8) void {
-    let cy: i32 = r.y + r.h / 2 - 20;
+    let cy: i32 = r.y + r.h / 2 - 24;
     if (cy < r.y + 8) { cy = r.y + 8; }
     let bx: i32 = r.x + (r.w - 22) / 2;
     round_rect_outline(f, bx, cy, 22, 16, 3, th_disabled());
@@ -529,7 +546,7 @@ fn ui_empty_state(f: *FB, r: Rect, title: []u8, hint: []u8) void {
     if (hint.len > 0) {
         let hx: i32 = r.x + (r.w - text_w(hint)) / 2;
         if (hx < r.x + pad_text()) { hx = r.x + pad_text(); }
-        draw_text(f, hx, cy + 38, hint, th_disabled());
+        draw_text(f, hx, cy + 24 + type_body_h() + 4, hint, th_disabled());
     }
 }
 
@@ -548,7 +565,7 @@ fn ui_numfield(f: *FB, in: *Input, r: Rect, value: []u8, unit: []u8, flash_key: 
     fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), bg);
     let vs: []u8 = value;
     if (unit.len > 0) { vs = _zag_str_concat(_zag_str_concat(value, " "), unit); }
-    draw_text(f, mid.x + (mid.w - text_w(vs)) / 2, r.y + (r.h - 7) / 2, vs, th_text());
+    draw_text(f, mid.x + (mid.w - text_w(vs)) / 2, r.y + text_cy(face_body(), r.h), vs, th_text());
     let dm: bool = hover(in, minus);
     let dp: bool = hover(in, plus);
     let fm: bool = ui_focusable(in, minus, dm);
@@ -558,8 +575,8 @@ fn ui_numfield(f: *FB, in: *Input, r: Rect, value: []u8, unit: []u8, flash_key: 
     if (dm) { fill_round_rect(f, minus.x, minus.y, minus.w, minus.h, radius_control(), th_header()); }
     if (dp) { fill_round_rect(f, plus.x, plus.y, plus.w, plus.h, radius_control(), th_header()); }
     round_rect_outline(f, r.x, r.y, r.w, r.h, radius_control(), th_outline());
-    draw_text(f, minus.x + 4, r.y + (r.h - 7) / 2, "-", th_text());
-    draw_text(f, plus.x + 4, r.y + (r.h - 7) / 2, "+", th_text());
+    draw_text(f, minus.x + 4, r.y + text_cy(face_body(), r.h), "-", th_text());
+    draw_text(f, plus.x + 4, r.y + text_cy(face_body(), r.h), "+", th_text());
     if (fm) { round_rect_outline(f, minus.x, minus.y, minus.w, minus.h, radius_control(), th_focus()); }
     if (fp) { round_rect_outline(f, plus.x, plus.y, plus.w, plus.h, radius_control(), th_focus()); }
     if ((dm && btn_released(in, 0)) || ui_key_activate(in, fm)) { return 0 - 1; }

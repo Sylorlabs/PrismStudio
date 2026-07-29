@@ -7,6 +7,14 @@
 //   2. One struct-returning call per statement, always assigned to a `let`;
 //      never nest a struct-returning call in another call's arguments or in
 //      a struct literal.
+//
+// CONSTANTS DISCIPLINE: pi and friends live here, once, at full f64 precision.
+// Never retype a truncated pi literal (1.5707963 has already shipped twice with
+// inconsistent digit counts); use pi(), pi_half(), two_pi().
+
+fn pi() f64 { return 3.14159265358979323846264338327950288; }
+fn pi_half() f64 { return 1.57079632679489661923132169163975144; }
+fn two_pi() f64 { return 6.28318530717958647692528676655900576; }
 
 struct Vec3 {
     x: f64,

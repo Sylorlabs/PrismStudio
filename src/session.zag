@@ -1,8 +1,8 @@
 // session.zag — live shared design: one .zpa for GUI + agent + MCP.
 //
-//   .triton/live.zpa   canonical design (auto-saved)
-//   .triton/live.rev   monotonic revision (reload when it changes)
-//   .triton/live.bus   GUI viewport/selection export for the agent
+//   .prismstudio/live.zpa   canonical design (auto-saved)
+//   .prismstudio/live.rev   monotonic revision (reload when it changes)
+//   .prismstudio/live.bus   GUI viewport/selection export for the agent
 
 @import("../std/list.zag") as list
 @import("../std/rt.zag")
@@ -11,18 +11,23 @@
 @import("demo.zag")
 @import("math3d.zag")
 
-fn session_default_zpa() []u8 { return ".triton/live.zpa"; }
-fn session_default_rev() []u8 { return ".triton/live.rev"; }
-fn session_default_bus() []u8 { return ".triton/live.bus"; }
+fn session_default_zpa() []u8 { return ".prismstudio/live.zpa"; }
+fn session_default_rev() []u8 { return ".prismstudio/live.rev"; }
+fn session_default_bus() []u8 { return ".prismstudio/live.bus"; }
+
+// Presentation state is deliberately versioned separately from the .zpa
+// circuit/model format. A PrismStudio update may need to refresh a user's
+// saved workspace without silently changing their photonic design.
+fn session_presentation_schema_current() i32 { return 2; }
 
 fn session_zpa_path() []u8 {
-    let env: []u8 = _zag_getenv("TRITON_SESSION");
+    let env: []u8 = _zag_getenv("PRISMSTUDIO_SESSION");
     if (env.len > 0) { return env; }
     return session_default_zpa();
 }
 
 fn session_rev_path() []u8 {
-    let env: []u8 = _zag_getenv("TRITON_SESSION");
+    let env: []u8 = _zag_getenv("PRISMSTUDIO_SESSION");
     if (env.len > 0) {
         return _zag_str_concat(env, ".rev");
     }
@@ -32,12 +37,50 @@ fn session_rev_path() []u8 {
 fn session_bus_path() []u8 { return session_default_bus(); }
 
 fn session_jrn_path() []u8 {
-    let env: []u8 = _zag_getenv("TRITON_SESSION");
+    let env: []u8 = _zag_getenv("PRISMSTUDIO_SESSION");
     if (env.len > 0) { return _zag_str_concat(env, ".jrn"); }
-    return ".triton/live.jrn";
+    return ".prismstudio/live.jrn";
 }
 
 fn session_idem_path() []u8 { return _zag_str_concat(session_zpa_path(), ".idem"); }
+
+// Per-session, next to the autosaved project. Missing means a project created
+// before this contract and is therefore eligible for the one-time migration.
+fn session_presentation_path() []u8 { return _zag_str_concat(session_zpa_path(), ".ui"); }
+
+fn session_presentation_schema_read() i32 {
+    let path: []u8 = session_presentation_path();
+    let raw: []u8 = _zag_read_file(path);
+    _zag_str_free(path);
+    if (raw.len <= 0) { return 0; }
+    let v: i32 = _zag_str_to_i64(raw) as i32;
+    _zag_str_free(raw);
+    return v;
+}
+
+fn session_presentation_schema_write() void {
+    let path: []u8 = session_presentation_path();
+    let text: []u8 = _zag_str_concat(_zag_i64_to_str(session_presentation_schema_current() as i64), "\n");
+    let _ok: bool = atomic_write_file(path, text);
+    _zag_str_free(text);
+    _zag_str_free(path);
+}
+
+// Upgrade only volatile workspace state. The circuit, routes, component
+// placement, journal, and physical model remain byte-for-byte the user's
+// project; the following autosave merely records the same valid design at a
+// new session revision after giving it a usable first view.
+fn session_presentation_migrate(a: *App) bool {
+    if (session_presentation_schema_read() >= session_presentation_schema_current()) { return false; }
+    sel_clear(a);
+    a.*.sel_guide = 0 - 1;
+    a.*.out_scroll = 0;
+    a.*.lib_scroll = 0;
+    a.*.out_drag_id = 0 - 1;
+    a.*.ctx_open = false;
+    app_frame_all(a);
+    return true;
+}
 
 fn session_recovery_path(slot: i32) []u8 {
     return _zag_str_concat(_zag_str_concat(session_zpa_path(), ".recovery."),
@@ -103,8 +146,8 @@ fn session_sync_journal(a: *App) void {
 }
 
 fn session_ensure_dir() void {
-    if (_zag_file_exists(".triton") == 1) { return; }
-    let _rc: i64 = _zag_raw_syscall(83, ".triton" as i64, 493, 0, 0, 0, 0);
+    if (_zag_file_exists(".prismstudio") == 1) { return; }
+    let _rc: i64 = _zag_raw_syscall(83, ".prismstudio" as i64, 493, 0, 0, 0, 0);
 }
 
 fn session_read_rev() i64 {
@@ -174,12 +217,18 @@ fn session_write_bus(a: *App) void {
     let cam_yaw: i64 = (cam.yaw * 10000.0) as i64;
     let cam_pitch: i64 = (cam.pitch * 10000.0) as i64;
     let cam_dist: i64 = (cam.dist * 100.0) as i64;
+    let cam_ex: i64 = (cam.eye.x * 100.0) as i64;
+    let cam_ey: i64 = (cam.eye.y * 100.0) as i64;
+    let cam_ez: i64 = (cam.eye.z * 100.0) as i64;
     session_append_i(&out, "cam_tx", cam_tx);
     session_append_i(&out, "cam_ty", cam_ty);
     session_append_i(&out, "cam_tz", cam_tz);
     session_append_i(&out, "cam_yaw", cam_yaw);
     session_append_i(&out, "cam_pitch", cam_pitch);
     session_append_i(&out, "cam_dist", cam_dist);
+    session_append_i(&out, "cam_eye_x_centi", cam_ex);
+    session_append_i(&out, "cam_eye_y_centi", cam_ey);
+    session_append_i(&out, "cam_eye_z_centi", cam_ez);
     _zag_write_file(session_bus_path(), out.data[0..out.len]);
     list.free[u8](&out);
 }
@@ -251,6 +300,16 @@ fn session_bind(a: *App) void {
             a.*.dirty = false;
             sim_reset(a.*.sim, a.*.scene);
             app_frame_all(a);
+            if (session_presentation_migrate(a)) {
+                // Keep a normal recovery snapshot before promoting the
+                // migrated autosave. If persistence fails, no marker is
+                // written, so the upgrade will safely retry next launch.
+                a.*.dirty = true;
+                session_push(a);
+                session_presentation_schema_write();
+                a.*.session_save_ms = _zag_clock_monotonic_ms();
+                app_log(a, "workspace presentation upgraded and framed");
+            }
             return;
         }
         app_show_recovery(a);
@@ -260,6 +319,7 @@ fn session_bind(a: *App) void {
     demo_load(a);
     a.*.dirty = true;
     session_push(a);
+    session_presentation_schema_write();
 }
 
 fn session_after_edit(a: *App) void {
@@ -334,15 +394,39 @@ fn session_agent_pick_rot() i32 {
     return r as i32;
 }
 
+// Writes the LOCAL, machine-specific MCP client config. This file embeds
+// absolute paths and a capability grant, so it must never be committed to git
+// (mcp-config.json is gitignored; committing it once leaked a developer's home
+// path and a silent CAPS=all grant).
+//
+// Capability default is deny-by-default: the generated config grants only
+// "read,inspect,simulate" unless the installer explicitly exported
+// PRISMSTUDIO_CAPS (e.g. `PRISMSTUDIO_CAPS=all ./zagpa --mcp-install "$(pwd)"`).
+// Do not "simplify" this back to a baked-in all: agents must widen authority
+// deliberately, per README "Automation with deliberate authority".
 fn session_write_mcp_config(root: []u8) void {
+    let caps: []u8 = _zag_getenv("PRISMSTUDIO_CAPS");
+    if (caps.len == 0) { caps = "read,inspect,simulate"; }
     let zagpa: []u8 = _zag_str_concat(root, "/zagpa");
-    let zpa: []u8 = _zag_str_concat(root, "/.triton/live.zpa");
-    let p1: []u8 = _zag_str_concat("{\n  \"mcpServers\": {\n    \"triton\": {\n      \"command\": \"", zagpa);
-    let p2: []u8 = _zag_str_concat(p1, "\",\n      \"args\": [\"--mcp\"],\n      \"env\": { \"TRITON_SESSION\": \"");
+    let zpa: []u8 = _zag_str_concat(root, "/.prismstudio/live.zpa");
+    let p1: []u8 = _zag_str_concat("{\n  \"mcpServers\": {\n    \"prismstudio\": {\n      \"command\": \"", zagpa);
+    let p2: []u8 = _zag_str_concat(p1, "\",\n      \"args\": [\"--mcp\"],\n      \"env\": { \"PRISMSTUDIO_SESSION\": \"");
     let p3: []u8 = _zag_str_concat(p2, zpa);
-    let p4: []u8 = _zag_str_concat(p3, "\", \"TRITON_CAPS\": \"all\", \"TRITON_ACTOR\": \"configured-mcp\" },\n      \"cwd\": \"");
-    let p5: []u8 = _zag_str_concat(p4, root);
-    let full: []u8 = _zag_str_concat(p5, "\"\n    }\n  }\n}\n");
+    let p4: []u8 = _zag_str_concat(p3, "\", \"PRISMSTUDIO_CAPS\": \"");
+    let p5: []u8 = _zag_str_concat(p4, caps);
+    let p6: []u8 = _zag_str_concat(p5, "\", \"PRISMSTUDIO_ACTOR\": \"configured-mcp\" },\n      \"cwd\": \"");
+    let p7: []u8 = _zag_str_concat(p6, root);
+    let full: []u8 = _zag_str_concat(p7, "\"\n    }\n  }\n}\n");
     _zag_write_file("mcp-config.json", full);
     _zag_write_file(".cursor/mcp.json", full);
+    _zag_str_free(zagpa);
+    _zag_str_free(zpa);
+    _zag_str_free(p1);
+    _zag_str_free(p2);
+    _zag_str_free(p3);
+    _zag_str_free(p4);
+    _zag_str_free(p5);
+    _zag_str_free(p6);
+    _zag_str_free(p7);
+    _zag_str_free(full);
 }
