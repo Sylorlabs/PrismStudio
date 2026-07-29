@@ -35,9 +35,9 @@ fn main() i32 {
         while (step < 4) { sim_step(sim, s); step = step + 1; }
 
         // save + reopen into a fresh scene
-        let saved: bool = design_save(s, "/tmp/triton_lifecycle.zpa");
+        let saved: bool = design_save(s, "/tmp/prismstudio_lifecycle.zpa");
         let s2: *Scene = scene_new();
-        let opened: bool = design_load_into(s2, "/tmp/triton_lifecycle.zpa");
+        let opened: bool = design_load_into(s2, "/tmp/prismstudio_lifecycle.zpa");
         if (!saved || !opened || scene_validation_errors(s2) != 0) { errors = errors + 1; }
 
         // close: release every handle

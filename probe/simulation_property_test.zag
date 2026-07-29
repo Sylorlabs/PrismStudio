@@ -120,9 +120,9 @@ fn main() i32 {
     while (warm < 8) { sim_step(inc, ds); warm = warm + 1; }
     let isolated: i32 = scene_place(ds, Kind.Plate, vox(500, 0, 500), 0);
     sim_recompile_region(inc, ds);
-    let saved: bool = design_save(ds, "/tmp/triton_sim_differential.zpa");
+    let saved: bool = design_save(ds, "/tmp/prismstudio_sim_differential.zpa");
     let fs: *Scene = scene_new();
-    let reloaded: bool = design_load(fs, "/tmp/triton_sim_differential.zpa");
+    let reloaded: bool = design_load(fs, "/tmp/prismstudio_sim_differential.zpa");
     let full: *Sim = sim_new();
     sim_recompile(full, fs);
     warm = 0;
@@ -153,9 +153,9 @@ fn main() i32 {
     check("equivalent shortest routing preserves simulation",
         alt_ok && scene_validation_errors(eq_b) == 0 && sim_state_equal(eq_sa, eq_sb), &failures);
 
-    check("metamorphic fixture saves", design_save(eq_a, "/tmp/triton_metamorphic.zpa"), &failures);
+    check("metamorphic fixture saves", design_save(eq_a, "/tmp/prismstudio_metamorphic.zpa"), &failures);
     let ser: *Scene = scene_new();
-    let ser_ok: bool = design_load(ser, "/tmp/triton_metamorphic.zpa");
+    let ser_ok: bool = design_load(ser, "/tmp/prismstudio_metamorphic.zpa");
     let ser_sim: *Sim = sim_new(); run_steps(ser_sim, ser, 32);
     check("benign serialization preserves simulation", ser_ok && sim_state_equal(eq_sa, ser_sim), &failures);
 

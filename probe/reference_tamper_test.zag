@@ -11,6 +11,19 @@ fn main() i32 {
     let s: *Scene = scene_new();
     check("canonical reference project loads", design_load(s, "examples/flash_photonic_massive.zpa"), &failures);
     check("canonical reference structure is valid", scene_validation_errors(s) == 0, &failures);
+    let plates: i32 = 0;
+    let ci: i32 = 0;
+    while (ci < s.*.comps.len) {
+        if (s.*.comps.data[ci].kind == Kind.Plate) { plates = plates + 1; }
+        ci = ci + 1;
+    }
+    check("canonical reference declares a substrate plate", plates > 0, &failures);
+    check("canonical reference declares its material stack",
+        s.*.model.substrate_thickness_nm.known &&
+        s.*.model.material_refractive_index.known &&
+        s.*.model.material_thermal_coefficient_ppm_c.known &&
+        s.*.model.substrate_thickness_nm.value > 0.0 &&
+        s.*.model.material_refractive_index.value >= 1.0, &failures);
     let sim: *Sim = sim_new();
 
     let old_origin: Vox = s.*.comps.data[1].origin;

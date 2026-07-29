@@ -20,8 +20,8 @@ fn main() i32 {
     let s: *Scene = scene_new();
     let _p: i32 = scene_place(s, Kind.Plate, vox(0, 0, 0), 0);
     let _e: i32 = scene_place(s, Kind.Emitter, vox(1, 1, 2), 0);
-    let good: bool = design_save(s, "/tmp/triton_persist_good.zpa");
-    let raw: []u8 = _zag_read_file("/tmp/triton_persist_good.zpa");
+    let good: bool = design_save(s, "/tmp/prismstudio_persist_good.zpa");
+    let raw: []u8 = _zag_read_file("/tmp/prismstudio_persist_good.zpa");
     check("valid project saved and read back", good && raw.len > 16, &failures);
 
     // an active scene we must not clobber on a failed load
@@ -30,9 +30,9 @@ fn main() i32 {
     let base: i32 = active.*.comps.len;
 
     // truncation (a partial write)
-    let _t: bool = write_bytes("/tmp/triton_persist_trunc.zpa", raw[0..raw.len / 2]);
+    let _t: bool = write_bytes("/tmp/prismstudio_persist_trunc.zpa", raw[0..raw.len / 2]);
     check("a truncated project is rejected",
-        !design_load(active, "/tmp/triton_persist_trunc.zpa"), &failures);
+        !design_load(active, "/tmp/prismstudio_persist_trunc.zpa"), &failures);
     check("rejected truncated load leaves the active scene intact",
         active.*.comps.len == base && scene_comp_index(active, ap) >= 0, &failures);
 
@@ -42,15 +42,15 @@ fn main() i32 {
     while (i < raw.len) { list.push[u8](&buf, raw[i]); i = i + 1; }
     let m: i32 = raw.len / 2;
     if (buf.data[m] == 88) { buf.data[m] = 89; } else { buf.data[m] = 88; }
-    let _c: bool = write_bytes("/tmp/triton_persist_corrupt.zpa", buf.data[0..buf.len]);
+    let _c: bool = write_bytes("/tmp/prismstudio_persist_corrupt.zpa", buf.data[0..buf.len]);
     check("a bit-corrupted project is rejected",
-        !design_load(active, "/tmp/triton_persist_corrupt.zpa"), &failures);
+        !design_load(active, "/tmp/prismstudio_persist_corrupt.zpa"), &failures);
     check("rejected corrupt load leaves the active scene intact",
         active.*.comps.len == base, &failures);
 
     // the untouched valid project still loads cleanly
     let target: *Scene = scene_new();
-    check("the valid project still loads", design_load(target, "/tmp/triton_persist_good.zpa"), &failures);
+    check("the valid project still loads", design_load(target, "/tmp/prismstudio_persist_good.zpa"), &failures);
 
     if (failures == 0) { _zag_println("PERSISTENCE: ALL PASS"); return 0; }
     _zag_println("PERSISTENCE: FAILURES"); return 1;

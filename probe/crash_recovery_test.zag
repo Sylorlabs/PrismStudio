@@ -22,9 +22,9 @@ fn copy_bytes(src: []u8) list.ArrayList[u8] {
 
 fn main() i32 {
     let failures: i32 = 0;
-    let good: []u8 = "/tmp/triton_crash_good.zpa";
-    let torn: []u8 = "/tmp/triton_crash_torn.zpa";
-    let trunc: []u8 = "/tmp/triton_crash_trunc.zpa";
+    let good: []u8 = "/tmp/prismstudio_crash_good.zpa";
+    let torn: []u8 = "/tmp/prismstudio_crash_torn.zpa";
+    let trunc: []u8 = "/tmp/prismstudio_crash_trunc.zpa";
 
     let a: *App = app_new(1024, 640);
     // build a real populated scene: a plate floor plus an emitter

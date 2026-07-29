@@ -1,0 +1,32 @@
+// session_presentation_test.zag — old autosaves get a safe, one-time
+// workspace refresh without changing their circuit model.
+
+@import("../src/workspace.zag")
+@import("../src/session.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let path: []u8 = session_zpa_path();
+    let seed: *App = app_new(1280, 800);
+    seed.*.file_ = _zag_strdup(path);
+    let _p0: i32 = scene_place(seed.*.scene, Kind.Plate, vox(0, 0, 0), 0);
+    let _p1: i32 = scene_place(seed.*.scene, Kind.Plate, vox(64, 0, 0), 0);
+    check("seed old autosave", design_save(seed.*.scene, path), &failures);
+
+    let migrated: *App = app_new(1280, 800);
+    session_bind(migrated);
+    check("missing presentation marker triggers one-time migration",
+        session_presentation_schema_read() == session_presentation_schema_current(), &failures);
+    check("migration preserves all design components", migrated.*.scene.*.comps.len == 2, &failures);
+    check("migration frames a usable design view", migrated.*.cam.dist < 100.0, &failures);
+    let dist_after: f64 = migrated.*.cam.dist;
+    check("current marker makes later launches idempotent", !session_presentation_migrate(migrated) && migrated.*.cam.dist == dist_after, &failures);
+
+    if (failures == 0) { _zag_println("SESSION PRESENTATION: ALL PASS"); return 0; }
+    _zag_println("SESSION PRESENTATION: FAILURES"); return 1;
+}

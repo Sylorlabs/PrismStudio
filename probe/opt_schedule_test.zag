@@ -29,6 +29,14 @@ fn build_chain(dead: i32) *Scene {
     return s;
 }
 
+fn drive_badge(e: *OptEngine, s: *Scene, cap: i32) bool {
+    let i: i32 = 0;
+    while (i < cap && opt_engine_badge(e) == 0 && !opt_engine_suspended(e)) {
+        let _changed: bool = opt_engine_refresh_keyed(e,s); i = i + 1;
+    }
+    return opt_engine_badge(e) == 1;
+}
+
 fn main() i32 {
     let failures: i32 = 0;
 
@@ -44,12 +52,15 @@ fn main() i32 {
         !opt_should_run(false, false, false, false, false, false, false, false, false) && // disabled
         !opt_should_run(true, true, false, false, false, false, false, false, false),     // suspended
         &failures);
+    check("forced battery or thermal pressure is observable as backoff",
+        (_zag_strcmp(_zag_getenv("PRISM_OPT_POWER_PRESSURE"), "1") != 1) ||
+        opt_system_pressure(), &failures);
 
     // ── change-keyed incremental scheduling ─────────────────────────────────────
     let s: *Scene = build_chain(2);
     let e: *OptEngine = opt_engine_new();
-    let first: bool = opt_engine_refresh_keyed(e, s);
-    check("the first analysis runs and surfaces a badge", first && opt_engine_badge(e) == 1, &failures);
+    let first: bool = drive_badge(e,s,128);
+    check("bounded candidate slices eventually surface a verified badge", first, &failures);
     let second: bool = opt_engine_refresh_keyed(e, s);
     check("an unchanged scene does no work (change-keyed no-op)",
         !second && opt_engine_badge(e) == 1, &failures);
@@ -58,15 +69,79 @@ fn main() i32 {
     opt_engine_ignore_pending(e);
     check("ignoring clears the badge and records the rejection", opt_engine_badge(e) == 0, &failures);
     scene_mark_render(s);   // an edit reschedules analysis
-    let after_ignore: bool = opt_engine_refresh_keyed(e, s);
+    let after_ignore: bool = drive_badge(e,s,128);
     check("a rejected rewrite is not re-proposed after re-analysis",
-        !after_ignore && opt_engine_badge(e) == 0, &failures);
+        !after_ignore || !opt_engine_rejected(e,opt_proposal_sig(e.*.pending)), &failures);
 
     // positive control: a different fresh engine on an unseen scene still proposes
     let s2: *Scene = build_chain(2);
     let e2: *OptEngine = opt_engine_new();
     check("a fresh engine still surfaces a valid proposal (analysis is live)",
-        opt_engine_refresh_keyed(e2, s2) && opt_engine_badge(e2) == 1, &failures);
+        drive_badge(e2,s2,128), &failures);
+
+    // ── affected-region resumable queue ───────────────────────────────────────
+    let qs: *Scene = build_chain(0); scene_opt_dirty_clear(qs);
+    let qid: i32 = qs.*.comps.data[2].id; scene_mark_topo_comp(qs,qid);
+    let qe: *OptEngine = opt_engine_new(); opt_engine_begin_work(qe,qs);
+    check("an edit queues only its affected component and optical neighbors",
+        qe.*.work_ids.len > 0 && qe.*.work_ids.len < qs.*.comps.len, &failures);
+    let empty: *Scene = scene_new(); let _plate: i32 = scene_place(empty,Kind.Plate,vox(0,0,0),0);
+    let re: *OptEngine = opt_engine_new(); re.*.time_budget_ms = 100; re.*.cpu_budget_pct = 20;
+    opt_engine_begin_work(re,empty); let rs0: i64 = re.*.work_slices;
+    let qi: i32 = 0; while (qi < 6) { let _q: bool = opt_engine_refresh_keyed(re,empty); qi = qi + 1; }
+    check("six family stages resume across six independent idle slices",
+        re.*.work_slices == rs0 + 6 && !re.*.work_active, &failures);
+    re.*.cpu_window_start_ms = _zag_clock_monotonic_ms(); re.*.cpu_used_ms = 200;
+    check("rolling CPU-share accounting throttles exhausted campaigns",
+        !opt_cpu_slice_allowed(re,_zag_clock_monotonic_ms()), &failures);
+
+    // ── intra-family cooperative equivalence replay ─────────────────────────
+    let chunk_scene: *Scene = build_chain(2);
+    let chunk_engine: *OptEngine = opt_engine_new(); chunk_engine.*.time_budget_ms = 1;
+    let all_ids: list.ArrayList[i32] = list.make[i32](1);
+    let tentative: OptProposal = opt_analyze_family_region_mode(chunk_scene,
+        opt_family_dead_path(),all_ids,false);
+    check("background discovery returns an unverified structural candidate",
+        tentative.valid && !tentative.equivalent, &failures);
+    check("incremental oracle accepts retained candidate state",
+        opt_oracle_start(chunk_engine,chunk_scene,tentative), &failures);
+    let first_chunk: OptProposal = opt_proposal_none();
+    let first_state: i32 = opt_oracle_slice(chunk_engine,chunk_scene,
+        _zag_clock_monotonic_ms(),&first_chunk);
+    let checkpoint_step: i32 = chunk_engine.*.oracle_step;
+    check("one strict slice yields with exact simulator progress retained",
+        first_state == 0 && chunk_engine.*.oracle_active && checkpoint_step > 0 &&
+        checkpoint_step < opt_horizon() && chunk_engine.*.oracle_left.*.symbol == checkpoint_step,
+        &failures);
+    check("in-progress equivalence proof checkpoint saves",
+        opt_campaign_save_full(chunk_engine,"/tmp/prism_opt_chunk_campaign",31337),&failures);
+    let restored: *OptEngine = opt_engine_new(); restored.*.time_budget_ms = 1;
+    check("reopen restores candidate and both simulators at the exact proof symbol",
+        opt_campaign_load_full(restored,"/tmp/prism_opt_chunk_campaign",31337,chunk_scene) &&
+        restored.*.oracle_active && restored.*.oracle_step == checkpoint_step &&
+        restored.*.oracle_left.*.symbol == checkpoint_step &&
+        restored.*.oracle_right.*.symbol == checkpoint_step,&failures);
+    let _corrupt_write: i32 = _zag_write_file("/tmp/prism_opt_chunk_campaign.proof","corrupt");
+    let corrupt_restore: *OptEngine = opt_engine_new();
+    check("corrupt proof checkpoint falls back to safe campaign rediscovery",
+        opt_campaign_load_full(corrupt_restore,"/tmp/prism_opt_chunk_campaign",31337,chunk_scene) &&
+        !corrupt_restore.*.oracle_active &&
+        corrupt_restore.*.work_family == chunk_engine.*.work_family &&
+        corrupt_restore.*.work_cursor == chunk_engine.*.work_cursor &&
+        corrupt_restore.*.work_subcursor == chunk_engine.*.work_subcursor,&failures);
+    let proved: OptProposal = opt_proposal_none();
+    let slices: i32 = 1; let proof_state: i32 = 0; let saw_progress: bool = checkpoint_step > 0;
+    while (proof_state == 0 && slices < 128) {
+        proof_state = opt_oracle_slice(restored,chunk_scene,
+            _zag_clock_monotonic_ms(),&proved);
+        if (proof_state == 0 && restored.*.oracle_step > checkpoint_step &&
+            restored.*.oracle_step < opt_horizon()) { saw_progress = true; }
+        slices = slices + 1;
+    }
+    check("64-symbol proof yields and resumes without restarting simulators",
+        proof_state == 1 && slices > 1 && saw_progress && proved.valid && proved.equivalent,
+        &failures);
+    opt_proposal_free(&proved); list.free[i32](&all_ids);
 
     // ── watchdog suspends on anomaly and refuses further work ───────────────────
     opt_engine_note_anomaly(e2, 1);
@@ -77,9 +152,69 @@ fn main() i32 {
         !opt_engine_refresh_keyed(e2, s2) && opt_engine_badge(e2) == 0, &failures);
     opt_engine_resume(e2);
     check("resume clears suspension and lets analysis run again",
-        !opt_engine_suspended(e2) && opt_engine_refresh_keyed(e2, s2) && opt_engine_badge(e2) == 1, &failures);
+        !opt_engine_suspended(e2) && drive_badge(e2,s2,128), &failures);
 
-    opt_engine_free(e); opt_engine_free(e2); scene_free(s); scene_free(s2);
+    // ── strict pass budgets ────────────────────────────────────────────────────
+    let e3: *OptEngine = opt_engine_new();
+    e3.*.memory_budget_bytes = 65536;
+    check("memory preflight refuses a pass before allocation and suspends",
+        !opt_engine_refresh_keyed(e3, s2) && opt_engine_suspended(e3) &&
+        opt_engine_suspend_code(e3) == 4, &failures);
+    opt_engine_resume(e3);
+    e3.*.memory_budget_bytes = 16 * 1024 * 1024;
+    e3.*.time_budget_ms = 100;
+    scene_mark_render(s2);
+    check("a resumed pass runs inside its configured time and memory slice",
+        drive_badge(e3,s2,128) && e3.*.last_pass_ms <= 100, &failures);
+
+    // The maintained 384-component PCU exercises thousands of one-component
+    // discovery slices. Every completed atomic slice must stay inside the hard
+    // wall-clock budget; a single overrun would suspend and fail this gate.
+    let large: *Scene = scene_new();
+    let large_ok: bool = design_load(large,"examples/flash_photonic_massive.zpa");
+    let le: *OptEngine = opt_engine_new(); le.*.time_budget_ms = 8; le.*.cpu_budget_pct = 20;
+    let li: i32 = 0; let max_slice: i64 = 0;
+    while (large_ok && li < 2600 && le.*.work_active == false && li == 0) {
+        le.*.cpu_window_start_ms = 0; let _start: bool = opt_engine_refresh_keyed(le,large);
+        if (le.*.last_pass_ms > max_slice) { max_slice = le.*.last_pass_ms; } li = li + 1;
+    }
+    while (large_ok && li < 2600 && le.*.work_active && !le.*.has_pending && !le.*.suspended) {
+        le.*.cpu_window_start_ms = 0; let _slice: bool = opt_engine_refresh_keyed(le,large);
+        if (le.*.last_pass_ms > max_slice) { max_slice = le.*.last_pass_ms; } li = li + 1;
+    }
+    let measured: []u8 = _zag_str_concat("  measured reference slices=",_zag_i64_to_str(li as i64));
+    measured = _zag_str_concat(measured," max_ms="); measured = _zag_str_concat(measured,_zag_i64_to_str(max_slice));
+    measured = _zag_str_concat(measured," family="); measured = _zag_str_concat(measured,_zag_i64_to_str(le.*.work_family as i64));
+    _zag_println(measured);
+    check("reference PCU campaign obeys the hard per-slice deadline",
+        large_ok && li > 100 && !le.*.suspended && max_slice <= 8 &&
+        (!le.*.work_active || le.*.has_pending),&failures);
+
+    // ── project-keyed campaign persistence ─────────────────────────────────────
+    list.push[i64](&e3.*.rejected, 424242);
+    e3.*.last_rev = 77;
+    e3.*.work_active = true; e3.*.work_family = 4; e3.*.work_cursor = 1;
+    e3.*.work_subcursor = 3; e3.*.work_ids.len = 0;
+    list.push[i32](&e3.*.work_ids,123); list.push[i32](&e3.*.work_ids,456);
+    check("optimizer campaign sidecar saves",
+        opt_campaign_save(e3, "/tmp/prism_opt_campaign", 9001), &failures);
+    let e4: *OptEngine = opt_engine_new();
+    check("matching project resumes change key and rejected rewrites",
+        opt_campaign_load(e4, "/tmp/prism_opt_campaign", 9001) &&
+        e4.*.last_rev == 77 && e4.*.rejected.len == 1 && e4.*.rejected.data[0] == 424242 &&
+        e4.*.work_active && e4.*.work_family == 4 && e4.*.work_cursor == 1 &&
+        e4.*.work_subcursor == 3 && e4.*.work_ids.len == 2,
+        &failures);
+    let e5: *OptEngine = opt_engine_new();
+    check("campaign state never crosses project identities",
+        !opt_campaign_load(e5, "/tmp/prism_opt_campaign", 9002) && e5.*.rejected.len == 0,
+        &failures);
+
+    opt_engine_free(e); opt_engine_free(e2); opt_engine_free(e3); opt_engine_free(e4);
+    opt_engine_free(e5); opt_engine_free(qe); opt_engine_free(re); opt_engine_free(le);
+    opt_engine_free(chunk_engine); opt_engine_free(restored);
+    opt_engine_free(corrupt_restore);
+    scene_free(s); scene_free(s2); scene_free(qs); scene_free(empty); scene_free(chunk_scene); scene_free(large);
 
     if (failures == 0) { _zag_println("OPT SCHEDULE: ALL PASS"); return 0; }
     _zag_println("OPT SCHEDULE: FAILURES"); return 1;

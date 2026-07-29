@@ -128,7 +128,7 @@ fn main() i32 {
 
     // present
     let t4: i64 = _zag_clock_monotonic_ms(); let k4: i32 = 0;
-    while (k4 < ITERS()) { fb_write_shm(&a.*.f, "/tmp/triton_bench_present.raw"); k4 = k4 + 1; }
+    while (k4 < ITERS()) { fb_write_shm(&a.*.f, "/tmp/prismstudio_bench_present.raw"); k4 = k4 + 1; }
     let m_present: i64 = _zag_clock_monotonic_ms() - t4;
     bench_row("present", &rep, m_present);
 

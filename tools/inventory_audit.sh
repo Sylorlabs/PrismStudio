@@ -7,6 +7,7 @@ fail() { echo "inventory-audit: FAIL: $1" >&2; exit 1; }
 for f in src/*.zag; do
   base=$(basename "$f")
   grep -q "\`$base\`" docs/INVENTORY.md || fail "$base is not in docs/INVENTORY.md"
+  grep -q "\`$base\`" docs/NUMERIC_CONSTANT_AUDIT.md || fail "$base is not in docs/NUMERIC_CONSTANT_AUDIT.md"
 done
 # the required inventory sections are present
 for sec in "Source modules" "Probes" "Generated artifacts" "Protocols" "Storage formats" "External dependencies"; do

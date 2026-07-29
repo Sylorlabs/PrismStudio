@@ -93,6 +93,15 @@ fn main() i32 {
     check("clicking a row executes it (Settings opened)",
         !a.*.palette_open && a.*.settings_open, &failures);
 
+    a.*.settings_open = false;
+    open_palette(a);
+    type_str(a, "tp 120 32 -48");
+    frame_keys1(a, key_enter(), 0);
+    check("tp x y z teleports the camera eye exactly",
+        !a.*.palette_open && fabs(a.*.cam.eye.x - 120.0) < 0.001 &&
+        fabs(a.*.cam.eye.y - 32.0) < 0.001 && fabs(a.*.cam.eye.z + 48.0) < 0.001,
+        &failures);
+
     if (failures == 0) { _zag_println("PALETTE: ALL PASS"); return 0; }
     _zag_println("PALETTE: FAILURES"); return 1;
 }

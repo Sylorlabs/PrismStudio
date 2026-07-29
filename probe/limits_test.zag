@@ -1,7 +1,7 @@
 // limits_test.zag — named, documented, configurable safety limits (Masterplan
 // Section 5.2): every component-count and delay cap is a named limit in one place,
 // enforced, and overridable via the environment. The gate runs this with
-// TRITON_LIMITS_TEST=777 set so the override path is exercised.
+// PRISMSTUDIO_LIMITS_TEST=777 set so the override path is exercised.
 
 @import("../std/list.zag") as list
 @import("../src/limits.zag")
@@ -28,11 +28,11 @@ fn main() i32 {
 
     // ── configurability: env override wins; missing env falls back to default ───
     check("a set environment override replaces the default",
-        limit_env_or("TRITON_LIMITS_TEST", 100) == 777, &failures);
+        limit_env_or("PRISMSTUDIO_LIMITS_TEST", 100) == 777, &failures);
     check("an unset environment variable falls back to the default",
-        limit_env_or("TRITON_LIMITS_DEFINITELY_UNSET_XYZ", 42) == 42, &failures);
+        limit_env_or("PRISMSTUDIO_LIMITS_DEFINITELY_UNSET_XYZ", 42) == 42, &failures);
     check("a non-positive or non-numeric override is ignored (safe fallback)",
-        limit_env_or("TRITON_LIMITS_DEFINITELY_UNSET_XYZ", 5) == 5, &failures);
+        limit_env_or("PRISMSTUDIO_LIMITS_DEFINITELY_UNSET_XYZ", 5) == 5, &failures);
 
     if (failures == 0) { _zag_println("LIMITS: ALL PASS"); return 0; }
     _zag_println("LIMITS: FAILURES"); return 1;

@@ -28,7 +28,7 @@ fn build(extra: i32) *Scene {
 
 fn main() i32 {
     let failures: i32 = 0;
-    let path: []u8 = "/tmp/triton_session_conflict.zpa";
+    let path: []u8 = "/tmp/prismstudio_session_conflict.zpa";
 
     // local session saves the project and records the content hash it last saw
     let local: *Scene = build(0);

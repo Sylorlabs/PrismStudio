@@ -43,23 +43,23 @@ fn main() i32 {
     let base_scene: *Scene = scene_new();
     let _p: i32 = scene_place(base_scene, Kind.Plate, vox(0, 0, 0), 0);
     let _e: i32 = scene_place(base_scene, Kind.Emitter, vox(1, 1, 2), 0);
-    check("fuzz seed serializes", design_save(base_scene, "/tmp/triton_fuzz_seed.zpa"), &failures);
-    let seed: []u8 = _zag_read_file("/tmp/triton_fuzz_seed.zpa");
+    check("fuzz seed serializes", design_save(base_scene, "/tmp/prismstudio_fuzz_seed.zpa"), &failures);
+    let seed: []u8 = _zag_read_file("/tmp/prismstudio_fuzz_seed.zpa");
     let fuzz_ok: bool = seed.len > 16;
     let round: i32 = 0;
     while (round < 32 && fuzz_ok) {
         let mutated: []u8 = _zag_strdup(seed);
         let at: i32 = 6 + ((round * 37) % (mutated.len - 6));
         mutated[at] = mutated[at] ^ ((round % 7) + 1) as u8;
-        _zag_write_file("/tmp/triton_fuzz_case.zpa", mutated);
+        _zag_write_file("/tmp/prismstudio_fuzz_case.zpa", mutated);
         let target: *Scene = scene_new();
         let keep2: i32 = scene_place(target, Kind.Plate, vox(500, 0, round * 8), 0);
-        let accepted: bool = design_load(target, "/tmp/triton_fuzz_case.zpa");
+        let accepted: bool = design_load(target, "/tmp/prismstudio_fuzz_case.zpa");
         if (!accepted && (target.*.comps.len != 1 || scene_comp_index(target, keep2) < 0)) { fuzz_ok = false; }
         if (accepted) {
-            if (!design_save(target, "/tmp/triton_fuzz_roundtrip.zpa")) { fuzz_ok = false; }
+            if (!design_save(target, "/tmp/prismstudio_fuzz_roundtrip.zpa")) { fuzz_ok = false; }
             let again: *Scene = scene_new();
-            if (!design_load(again, "/tmp/triton_fuzz_roundtrip.zpa")) { fuzz_ok = false; }
+            if (!design_load(again, "/tmp/prismstudio_fuzz_roundtrip.zpa")) { fuzz_ok = false; }
         }
         round = round + 1;
     }

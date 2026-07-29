@@ -1,6 +1,6 @@
 zagpa
 zagpa.new
-.triton/
+.prismstudio/
 untitled.zpa
 *.new
 probe/engine_test
@@ -28,6 +28,8 @@ probe/gpu_submit_test
 probe/gpu_compute_test
 probe/scale_test
 probe/*.bmp
+probe/*.bin
+probe/*_test
 !probe/smoke_app.bmp
 .cursor/
 tools/__pycache__/
@@ -35,6 +37,13 @@ probe/gpu_parallel_test
 probe/gpu_wg_test
 probe/gpu_fill_test
 tools/verify
+probe/gpu_raster_shadow_test
+probe/opt_soak_test
+gpu_fill_kernel.mlir
+examples/gpu_fill_kernel.zgk
+examples/gpu_depth_kernel.zgk
+examples/gpu_blend_kernel.zgk
+*.opt
 zagpa.baseline
 probe/*.baseline
 probe/shortcuts_test
@@ -85,3 +94,24 @@ probe/break_test
 probe/gpu_fill_test
 probe/gpu_parallel_test
 probe/gpu_wg_test
+
+# Generated per-machine MCP client config (absolute paths + capability grant).
+# Regenerate with: ./zagpa --mcp-install "$(pwd)"  (widens caps only if PRISMSTUDIO_CAPS is exported)
+mcp-config.json
+
+# Build artifacts — zag daemon caches and state files
+.zag-cache/
+.zagd.lock
+.zagd.status
+.zagd.semantic-ready
+
+# Generated smoke screenshot (root level)
+/smoke_app.bmp
+
+# GPU kernel bundle test artifacts
+*.scalar-add
+*.scalar3
+
+# Transient GPU evidence reports (generated, not committed)
+evidence/gpu-*.report
+evidence/gpu-*.state

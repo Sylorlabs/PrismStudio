@@ -248,7 +248,9 @@ fn main() i32 {
     sel_clear(a);
     frame_idle(a);
     let rz: Rect = zone_right(a);
-    let list_top: i32 = rz.y + 23 + pad_text() + control_h() + pad_text();
+    // Search field, then the pinned design-summary row added above the tree.
+    let list_top: i32 = rz.y + 23 + pad_text() + control_h() +
+                        pad_text() + row_h() + pad_text();
     let rx: i32 = rz.x + 1 + pad_text() + 10 + 30;
     let plate_row: i32 = list_top + 17;
     // headers+rows in kind order: plate hdr, plate row, chamber hdr, chamber

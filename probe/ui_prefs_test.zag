@@ -10,6 +10,10 @@ fn main() i32 {
     a.*.opt.*.min_gain_pct = 17;
     a.*.opt.*.family_dead_path = false;
     a.*.opt.*.family_const_collapse = true;
+    a.*.opt.*.family_cse = false;
+    a.*.opt.*.family_factoring = true;
+    a.*.opt.*.family_route = false;
+    a.*.opt.*.family_placement = true;
     a.*.opt.*.cpu_budget_pct = 9;
     a.*.opt.*.quiet_start_hour = 21;
     a.*.opt.*.quiet_end_hour = 6;
@@ -21,6 +25,8 @@ fn main() i32 {
     }
     if (b.*.opt.*.enabled || !b.*.opt.*.auto_apply || b.*.opt.*.min_gain_pct != 17 ||
         b.*.opt.*.family_dead_path || !b.*.opt.*.family_const_collapse ||
+        b.*.opt.*.family_cse || !b.*.opt.*.family_factoring ||
+        b.*.opt.*.family_route || !b.*.opt.*.family_placement ||
         b.*.opt.*.cpu_budget_pct != 9 || b.*.opt.*.quiet_start_hour != 21 ||
         b.*.opt.*.quiet_end_hour != 6) {
         _zag_println("UI PREFS: optimizer settings mismatch"); return 1;

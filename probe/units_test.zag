@@ -48,9 +48,9 @@ fn main() i32 {
     let bad: *Scene = scene_new();
     let _bp: i32 = scene_place(bad, Kind.Plate, vox(0, 0, 0), 0);
     bad.*.model.group_index.value = 0.5;
-    let saved: bool = design_save(bad, "/tmp/triton_bad_dims.zpa");
+    let saved: bool = design_save(bad, "/tmp/prismstudio_bad_dims.zpa");
 
-    let loaded: bool = design_load(active, "/tmp/triton_bad_dims.zpa");
+    let loaded: bool = design_load(active, "/tmp/prismstudio_bad_dims.zpa");
     check("load rejects a dimensionally-invalid model", saved && !loaded, &failures);
     check("rejected load leaves the active scene intact",
         active.*.comps.len == active_n && scene_comp_index(active, pid) >= 0, &failures);
@@ -58,9 +58,9 @@ fn main() i32 {
     // A valid model still loads.
     let good: *Scene = scene_new();
     let _gp: i32 = scene_place(good, Kind.Plate, vox(0, 0, 0), 0);
-    let gsaved: bool = design_save(good, "/tmp/triton_good_dims.zpa");
+    let gsaved: bool = design_save(good, "/tmp/prismstudio_good_dims.zpa");
     let target: *Scene = scene_new();
-    check("a valid model still loads", gsaved && design_load(target, "/tmp/triton_good_dims.zpa"), &failures);
+    check("a valid model still loads", gsaved && design_load(target, "/tmp/prismstudio_good_dims.zpa"), &failures);
 
     if (failures == 0) { _zag_println("UNITS: ALL PASS"); return 0; }
     _zag_println("UNITS: FAILURES"); return 1;

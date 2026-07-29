@@ -112,7 +112,7 @@ fn tok_i64(line: []u8, t: Tok) i64 {
 
 fn agent_help() void {
     agent_ok0();
-    _zag_println("# triton agent commands");
+    _zag_println("# prismstudio agent commands");
     _zag_println("ping | help | quit");
     _zag_println("new | demo | open <file.zpa> | save <file.zpa> | list_files");
     _zag_println("place <kind> <x> <y> <z> [rot] | delete <id> | route <fc> <fp> <tc> <tp>");

@@ -12,7 +12,7 @@ cmd="${1:-help}"
 shift || true
 
 mutate() {
-    key="${TRITON_IDEMPOTENCY:-zagctl-$$-$RANDOM}"
+    key="${PRISMSTUDIO_IDEMPOTENCY:-zagctl-$$-$RANDOM}"
     exec "$ZAGPA" --agent --once "request $key current $*"
 }
 

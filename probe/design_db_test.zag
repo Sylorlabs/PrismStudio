@@ -16,7 +16,7 @@ fn check(name_: []u8, ok: bool, failures: *i32) void {
 
 fn main() i32 {
     let failures: i32 = 0;
-    let path: []u8 = "/tmp/triton_designdb.zpa";
+    let path: []u8 = "/tmp/prismstudio_designdb.zpa";
 
     // ── stable IDs + typed component records (6.1) ──────────────────────────────
     let s: *Scene = scene_new();

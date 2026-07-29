@@ -1,4 +1,4 @@
-# Triton verification report v1
+# PrismStudio verification report v1
 verification_level = software-simulation
 fabricated_hardware = false
 laboratory_validated = false

@@ -1,0 +1,75 @@
+// commands.zag — the single registry of UI command identifiers.
+//
+// Every menu item, command-palette entry, toolbar button, or agent-triggered UI
+// action MUST reference one of these named functions. Never write a bare integer
+// command code anywhere else in the tree: a bare `app_action(a, 43)` or
+// `.code = 13` is a rejected shortcut — it desynchronizes menus from dispatch
+// and has already caused review failures. When adding a command:
+//   1. add a named fn here (keep ranges and grouping comments accurate),
+//   2. add the dispatch arm in workspace.zag app_action,
+//   3. reference this name from every menu/palette/button site.
+// Codes are stable once shipped: the palette "jump to object" range and the
+// placement-tool range are computed from these bases.
+
+// ── file (1..9) ──────────────────────────────────────────────────────────────
+fn cmd_new() i32 { return 1; }
+fn cmd_open() i32 { return 2; }
+fn cmd_save() i32 { return 3; }
+fn cmd_save_as() i32 { return 4; }
+fn cmd_quit() i32 { return 5; }
+
+// ── edit (10..19) ────────────────────────────────────────────────────────────
+fn cmd_undo() i32 { return 10; }
+fn cmd_redo() i32 { return 11; }
+fn cmd_duplicate() i32 { return 12; }
+fn cmd_delete() i32 { return 13; }
+fn cmd_deselect() i32 { return 14; }
+fn cmd_copy() i32 { return 15; }
+fn cmd_paste() i32 { return 16; }
+fn cmd_group() i32 { return 17; }
+fn cmd_ungroup() i32 { return 18; }
+fn cmd_rename() i32 { return 19; }
+
+// ── view (20..29) ────────────────────────────────────────────────────────────
+fn cmd_frame_selected() i32 { return 20; }
+fn cmd_frame_all() i32 { return 21; }
+fn cmd_view_top() i32 { return 22; }
+fn cmd_view_front() i32 { return 23; }
+fn cmd_view_right() i32 { return 24; }
+fn cmd_view_perspective() i32 { return 25; }
+fn cmd_toggle_ortho() i32 { return 26; }
+fn cmd_cycle_ui_scale() i32 { return 27; }
+fn cmd_reset_view() i32 { return 28; }
+fn cmd_section_view() i32 { return 29; }
+
+// ── help / project (30..39) ──────────────────────────────────────────────────
+fn cmd_shortcuts() i32 { return 30; }
+fn cmd_demo() i32 { return 31; }
+fn cmd_open_flash_reference() i32 { return 32; }
+fn cmd_model_provenance() i32 { return 33; }
+fn cmd_recover_autosave() i32 { return 34; }
+
+// ── tools / panels (40..49) ──────────────────────────────────────────────────
+fn cmd_tool_select() i32 { return 40; }
+fn cmd_tool_route() i32 { return 41; }
+fn cmd_sim_play_toggle() i32 { return 42; }
+fn cmd_optimizer() i32 { return 43; }
+fn cmd_settings() i32 { return 44; }
+fn cmd_palette() i32 { return 45; }
+fn cmd_tool_measure() i32 { return 46; }
+fn cmd_toggle_reduced_motion() i32 { return 47; }
+fn cmd_toggle_object_snap() i32 { return 48; }
+fn cmd_flash_workspace() i32 { return 49; }
+
+// ── computed ranges ──────────────────────────────────────────────────────────
+// Placement tools occupy [cmd_place_base(), cmd_place_base() + kind_count()).
+fn cmd_place_base() i32 { return 50; }
+// Palette "jump to object" occupies [cmd_palette_jump_base(), base + comp count).
+fn cmd_palette_jump_base() i32 { return 1000; }
+
+// ── context-menu-only (70..79) ───────────────────────────────────────────────
+fn cmd_toggle_visibility() i32 { return 70; }
+fn cmd_toggle_lock() i32 { return 71; }
+
+// Menu separator / no-action marker (never dispatched).
+fn cmd_none() i32 { return 0; }

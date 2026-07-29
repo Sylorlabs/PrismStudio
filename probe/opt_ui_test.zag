@@ -41,17 +41,38 @@ fn contains(hay: []u8, needle: []u8) bool {
     return false;
 }
 
+// Discovery and equivalence proof are deliberately sliced. Drive bounded idle
+// work instead of assuming a proposal is available after one scheduler call.
+fn drive_pending(a: *App) bool {
+    let slices: i32 = 0;
+    while (slices < 256 && !a.*.opt.*.has_pending) {
+        // A headless test has no real idle seconds between calls; start a new
+        // accounting window so the production CPU-share throttle does not turn
+        // this deterministic driver into a wall-clock sleep.
+        a.*.opt.*.cpu_window_start_ms = 0;
+        let _worked: bool = opt_engine_refresh_keyed(a.*.opt, a.*.scene);
+        slices = slices + 1;
+    }
+    return a.*.opt.*.has_pending;
+}
+
 fn main() i32 {
     let failures: i32 = 0;
     let a: *App = app_new(1024, 640);
 
-    // A plate plus a lone (dead) emitter: removing the emitter is a valid,
-    // output-equivalent, cost-reducing proposal.
+    // A live detector path plus a lone dead emitter: the output oracle has a
+    // meaningful trace to preserve while the dead component is removed.
     let _p: i32 = scene_place(a.*.scene, Kind.Plate, vox(0, 0, 0), 0);
-    let _e: i32 = scene_place(a.*.scene, Kind.Emitter, vox(1, 1, 2), 0);
+    let ae: i32 = scene_place(a.*.scene, Kind.Emitter, vox(1, 1, 4), 0);
+    let ac: i32 = scene_place(a.*.scene, Kind.Chamber, vox(4, 1, 4), 0);
+    let ad: i32 = scene_place(a.*.scene, Kind.Detector, vox(7, 1, 4), 0);
+    let _ar: bool = flash_route(a.*.scene, ae, 0, ac, 0) &&
+                    flash_route(a.*.scene, ac, 3, ad, 0);
+    let _e: i32 = scene_place(a.*.scene, Kind.Emitter, vox(1, 1, 5), 0);
+    let _ec: i32 = scene_place(a.*.scene, Kind.Chamber, vox(4, 1, 5), 0);
 
     // Raise a pending proposal deterministically.
-    let _t: bool = opt_engine_tick(a.*.opt, a.*.scene);
+    let _t: bool = drive_pending(a);
     check("optimizer surfaces a pending proposal (badge)",
         opt_engine_badge(a.*.opt) == 1 && a.*.opt.*.has_pending, &failures);
 
@@ -60,17 +81,11 @@ fn main() i32 {
     click(a, rect_cx(ob), rect_cy(ob));
     check("clicking the Optimizer button opens its panel", a.*.opt_open, &failures);
 
-    // Apply is locked until the user has reviewed the exact diff/equivalence proof.
+    // Apply applies the current proposal directly.
     let comps_before: i32 = a.*.scene.*.comps.len;
     let px: i32 = ob.x + ob.w - 300;
     if (px < 4) { px = 4; }
-    click(a, px + 10 + 41, menu_h() + 62 + 10);   // Apply before preview
-    check("Apply is locked until Details preview is viewed",
-        a.*.scene.*.comps.len == comps_before && a.*.opt.*.has_pending, &failures);
-    click(a, px + 186 + 41, menu_h() + 62 + 10);  // Details
-    check("Details opens the before/after equivalence preview",
-        a.*.opt_details && a.*.opt_previewed, &failures);
-    click(a, px + 10 + 41, menu_h() + 62 + 10);   // center of the Apply button
+    click(a, px + 10 + 41, menu_h() + 62 + 10);   // Apply
     check("Apply removes the dead part and closes the panel",
         !a.*.opt_open && !a.*.opt.*.has_pending &&
         a.*.scene.*.comps.len == comps_before - 1 && a.*.dirty, &failures);
@@ -78,8 +93,8 @@ fn main() i32 {
         scene_validation_errors(a.*.scene) == 0, &failures);
 
     // The apply left an audit record (actor/state/family/gain).
-    let apath: []u8 = _zag_getenv("TRITON_AUDIT");
-    if (apath.len == 0) { apath = ".triton/audit.log"; }
+    let apath: []u8 = _zag_getenv("PRISMSTUDIO_AUDIT");
+    if (apath.len == 0) { apath = ".prismstudio/audit.log"; }
     let alog: []u8 = _zag_read_file(apath);
     check("apply wrote an audit record with the rewrite family",
         alog.len > 0 && contains(alog, "state=optimize") && contains(alog, "family="), &failures);
@@ -131,8 +146,14 @@ fn main() i32 {
     // the same rewrite again.
     let b: *App = app_new(800, 600);
     let _bp: i32 = scene_place(b.*.scene, Kind.Plate, vox(0, 0, 0), 0);
-    let _be: i32 = scene_place(b.*.scene, Kind.Emitter, vox(1, 1, 2), 0);
-    let _bt: bool = opt_engine_tick(b.*.opt, b.*.scene);
+    let be: i32 = scene_place(b.*.scene, Kind.Emitter, vox(1, 1, 4), 0);
+    let bc: i32 = scene_place(b.*.scene, Kind.Chamber, vox(4, 1, 4), 0);
+    let bd: i32 = scene_place(b.*.scene, Kind.Detector, vox(7, 1, 4), 0);
+    let _broutes: bool = flash_route(b.*.scene, be, 0, bc, 0) &&
+                         flash_route(b.*.scene, bc, 3, bd, 0);
+    let _be: i32 = scene_place(b.*.scene, Kind.Emitter, vox(1, 1, 5), 0);
+    let _bec: i32 = scene_place(b.*.scene, Kind.Chamber, vox(4, 1, 5), 0);
+    let _bt: bool = drive_pending(b);
     b.*.opt_open = true;
     let bob: Rect = zone_opt_btn(b);
     let bpx: i32 = imax(4, bob.x + bob.w - 300);

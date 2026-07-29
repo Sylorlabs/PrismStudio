@@ -1,7 +1,8 @@
-// dpi_test.zag — HiDPI framebuffer upscale + UI-scale setting (Masterplan
-// Section 9.3 / Phase F). The whole UI renders at a logical resolution and is
-// upscaled to physical pixels; this verifies the upscale is pixel-exact and the
-// scale setting cycles.
+// dpi_test.zag — HiDPI framebuffer rendering + UI-scale setting (Masterplan
+// Section 9.3 / Phase F). The whole UI renders at logical coordinates into a
+// physical-resolution buffer (logical_w * scale × logical_h * scale);
+// this verifies the scale factor is applied correctly and the scale setting
+// cycles.
 
 @import("../std/list.zag") as list
 @import("../src/workspace.zag")
@@ -42,6 +43,34 @@ fn main() i32 {
     let small: FB = fb_new(3, 3);
     fb_upscale(&small, &src, 2);
     check("undersized destination upscale is a safe no-op", true, &failures);
+
+    // ── physical-resolution rendering (fb_new_scaled / fb_set_scale) ───────
+    // The FB's logical dimensions stay at w×h but the pixel buffer is
+    // (w*scale)×(h*scale). All primitives scale internally.
+    let f2: FB = fb_new_scaled(100, 60, 2);
+    check("fb_new_scaled: logical w=100", f2.w == 100, &failures);
+    check("fb_new_scaled: logical h=60", f2.h == 60, &failures);
+    check("fb_new_scaled: scale=2", f2.scale == 2, &failures);
+    check("fb_new_scaled: physical w=200", fb_pw(&f2) == 200, &failures);
+    check("fb_new_scaled: physical h=120", fb_ph(&f2) == 120, &failures);
+
+    // A fill_rect at scale 2 fills a 2×2 block per logical pixel.
+    fb_clip_reset(&f2);
+    fill_rect(&f2, 10, 10, 1, 1, rgb(255, 0, 0));
+    let pw2: i32 = fb_pw(&f2);
+    let red: i64 = rgb(255, 0, 0);
+    check("scale2 fill_rect: (20,20) is red", f2.px.data[20 * pw2 + 20] == red, &failures);
+    check("scale2 fill_rect: (21,21) is red", f2.px.data[21 * pw2 + 21] == red, &failures);
+    check("scale2 fill_rect: (22,22) is not red", f2.px.data[22 * pw2 + 22] != red, &failures);
+
+    // fb_set_scale changes the physical buffer size without changing logical.
+    let f3: FB = fb_new(80, 50);
+    check("fb_new: scale defaults to 1", f3.scale == 1, &failures);
+    fb_set_scale(&f3, 3);
+    check("fb_set_scale: scale=3", f3.scale == 3, &failures);
+    check("fb_set_scale: logical w unchanged=80", f3.w == 80, &failures);
+    check("fb_set_scale: physical w=240", fb_pw(&f3) == 240, &failures);
+    check("fb_set_scale: physical h=150", fb_ph(&f3) == 150, &failures);
 
     // UI-scale setting cycles 1 -> 2 -> 3 -> 1.
     let a: *App = app_new(1024, 640);

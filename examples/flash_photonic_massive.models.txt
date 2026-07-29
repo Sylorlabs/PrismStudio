@@ -1,28 +1,28 @@
-# Triton device model manifest v1
-schema = 2 
-id = triton.reference.illustrative.v2
-pitch_nm known=1 value_x1000000=250000000  units=nm class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative CAD lattice uncertainty_x1000000=0 
-group_index known=1 value_x1000000=2100000  units=1 class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative waveguide model uncertainty_x1000000=0 
-emitter_rate_ghz known=1 value_x1000000=110000000  units=GHz class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative EO response uncertainty_x1000000=0 
-chamber_rate_ghz known=1 value_x1000000=180000000  units=GHz class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative cavity response uncertainty_x1000000=0 
-detector_rate_ghz known=1 value_x1000000=140000000  units=GHz class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative detector response uncertainty_x1000000=0 
-emitter_wavelength_min_nm known=1 value_x1000000=1530000000  units=nm class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative C-band channel plan uncertainty_x1000000=0 
-emitter_wavelength_step_nm known=1 value_x1000000=800000  units=nm class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative WDM spacing uncertainty_x1000000=0 
-chamber_resonance_nm known=1 value_x1000000=1550000000  units=nm class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative cavity resonance uncertainty_x1000000=0 
-emitter_wavelength_max_nm known=1 value_x1000000=1565000000  units=nm class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative C-band upper bound uncertainty_x1000000=0 
-optical_bandwidth_ghz known=1 value_x1000000=50000000  units=GHz class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative usable optical bandwidth uncertainty_x1000000=0 
-propagation_loss_db_cm known=1 value_x1000000=1000000  units=dB/cm class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative waveguide attenuation uncertainty_x1000000=0 
-dispersion_ps_nm_km known=1 value_x1000000=10000000  units=ps/(nm*km) class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative group-velocity dispersion uncertainty_x1000000=0 
-switching_response_ps known=1 value_x1000000=4000000  units=ps class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative electro-optic response uncertainty_x1000000=0 
-detector_response_ps known=1 value_x1000000=5000000  units=ps class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative detector impulse response uncertainty_x1000000=0 
-min_feature_nm known=1 value_x1000000=80000000  units=nm class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative process minimum feature uncertainty_x1000000=0 
-max_feature_nm known=1 value_x1000000=100000000000  units=nm class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative die geometry bound uncertainty_x1000000=0 
-temperature_c known=1 value_x1000000=25000000  units=degC class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative nominal operating temperature uncertainty_x1000000=0 
-geometry_tolerance_nm known=1 value_x1000000=5000000  units=nm class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative process tolerance uncertainty_x1000000=0 
-bend_radius_nm known=1 value_x1000000=5000000000  units=nm class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative minimum waveguide bend uncertainty_x1000000=0 
-port_coupling_loss_db known=1 value_x1000000=500000  units=dB class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative port insertion loss uncertainty_x1000000=0 
-substrate_thickness_nm known=1 value_x1000000=220000000000  units=nm class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative substrate thickness uncertainty_x1000000=0 
-memory_retention_ps known=1 value_x1000000=1000000000  units=ps class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative optical memory retention uncertainty_x1000000=0 
-material_refractive_index known=1 value_x1000000=3480000  units=1 class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative material refractive index uncertainty_x1000000=0 
-material_thermal_coefficient_ppm_c known=1 value_x1000000=1860000  units=ppm/degC class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative thermo-optic coefficient uncertainty_x1000000=0 
-port_bandwidth_ghz known=1 value_x1000000=80000000  units=GHz class=Illustrative source=Triton illustrative reference fixture version=1 date=2026-07-07 method=illustrative port bandwidth uncertainty_x1000000=0 
+# PrismStudio device model manifest v1
+schema = 2
+id = prismstudio.reference.illustrative.v2
+pitch_nm known=1 value_x1000000=250000000  units=nm class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative CAD lattice uncertainty_x1000000=0
+group_index known=1 value_x1000000=2100000  units=1 class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative waveguide model uncertainty_x1000000=0
+emitter_rate_ghz known=1 value_x1000000=110000000  units=GHz class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative EO response uncertainty_x1000000=0
+chamber_rate_ghz known=1 value_x1000000=180000000  units=GHz class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative cavity response uncertainty_x1000000=0
+detector_rate_ghz known=1 value_x1000000=140000000  units=GHz class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative detector response uncertainty_x1000000=0
+emitter_wavelength_min_nm known=1 value_x1000000=1530000000  units=nm class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative C-band channel plan uncertainty_x1000000=0
+emitter_wavelength_step_nm known=1 value_x1000000=800000  units=nm class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative WDM spacing uncertainty_x1000000=0
+chamber_resonance_nm known=1 value_x1000000=1550000000  units=nm class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative cavity resonance uncertainty_x1000000=0
+emitter_wavelength_max_nm known=1 value_x1000000=1565000000  units=nm class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative C-band upper bound uncertainty_x1000000=0
+optical_bandwidth_ghz known=1 value_x1000000=50000000  units=GHz class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative usable optical bandwidth uncertainty_x1000000=0
+propagation_loss_db_cm known=1 value_x1000000=1000000  units=dB/cm class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative waveguide attenuation uncertainty_x1000000=0
+dispersion_ps_nm_km known=1 value_x1000000=10000000  units=ps/(nm*km) class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative group-velocity dispersion uncertainty_x1000000=0
+switching_response_ps known=1 value_x1000000=4000000  units=ps class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative electro-optic response uncertainty_x1000000=0
+detector_response_ps known=1 value_x1000000=5000000  units=ps class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative detector impulse response uncertainty_x1000000=0
+min_feature_nm known=1 value_x1000000=80000000  units=nm class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative process minimum feature uncertainty_x1000000=0
+max_feature_nm known=1 value_x1000000=100000000000  units=nm class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative die geometry bound uncertainty_x1000000=0
+temperature_c known=1 value_x1000000=25000000  units=degC class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative nominal operating temperature uncertainty_x1000000=0
+geometry_tolerance_nm known=1 value_x1000000=5000000  units=nm class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative process tolerance uncertainty_x1000000=0
+bend_radius_nm known=1 value_x1000000=5000000000  units=nm class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative minimum waveguide bend uncertainty_x1000000=0
+port_coupling_loss_db known=1 value_x1000000=500000  units=dB class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative port insertion loss uncertainty_x1000000=0
+substrate_thickness_nm known=1 value_x1000000=220000000000  units=nm class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative substrate thickness uncertainty_x1000000=0
+memory_retention_ps known=1 value_x1000000=1000000000  units=ps class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative optical memory retention uncertainty_x1000000=0
+material_refractive_index known=1 value_x1000000=3480000  units=1 class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative material refractive index uncertainty_x1000000=0
+material_thermal_coefficient_ppm_c known=1 value_x1000000=1860000  units=ppm/degC class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative thermo-optic coefficient uncertainty_x1000000=0
+port_bandwidth_ghz known=1 value_x1000000=80000000  units=GHz class=Illustrative source=PrismStudio illustrative reference fixture version=1 date=2026-07-07 method=illustrative port bandwidth uncertainty_x1000000=0

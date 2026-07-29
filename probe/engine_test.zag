@@ -20,6 +20,26 @@ fn check(name_: []u8, ok: bool, fails: *i32) void {
     }
 }
 
+fn paths_equal(a: list.ArrayList[Vox], b: list.ArrayList[Vox]) bool {
+    if (a.len != b.len) { return false; }
+    let i: i32 = 0;
+    while (i < a.len) {
+        if (!vox_eq(a.data[i], b.data[i])) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn bytes_contains(hay: []u8, needle: []u8) bool {
+    if (needle.len == 0) { return true; }
+    let i: i32 = 0;
+    while (i + needle.len <= hay.len) {
+        if (_zag_strcmp(hay[i..i + needle.len], needle) == 1) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
 fn main() i32 {
     let fails: i32 = 0;
     let s: *Scene = scene_new();
@@ -212,6 +232,22 @@ fn main() i32 {
     let mp: list.ArrayList[Vox] = list.make[Vox](32);
     check("move: routed", route_guide(s, comp_port_attach(mvec, 0), comp_port_attach(mvdc, 0), &mp), &fails);
     let mgid: i32 = scene_add_guide(s, mv_e, 0, mv_d, 0, mp);
+    // A separate manual route must remain byte-for-byte unchanged when moving a
+    // component outside that route. This is the incremental-reroute contract.
+    let keep_e: i32 = scene_place(s, Kind.Emitter, vox(121, 1, 5), 0);
+    let keep_d: i32 = scene_place(s, Kind.Detector, vox(125, 1, 5), 0);
+    let keep_path: list.ArrayList[Vox] = list.make[Vox](32);
+    check("move: unaffected parts placed", keep_e > 0 && keep_d > 0, &fails);
+    check("move: unaffected manual route created",
+        route_guide(s, comp_port_attach(s.*.comps.data[scene_comp_index(s, keep_e)], 0),
+            comp_port_attach(s.*.comps.data[scene_comp_index(s, keep_d)], 0), &keep_path), &fails);
+    let keep_gid: i32 = scene_add_guide(s, keep_e, 0, keep_d, 0, keep_path);
+    let keep_before: list.ArrayList[Vox] = list.make[Vox](32);
+    let kpi: i32 = 0;
+    while (kpi < s.*.guides.data[scene_guide_index(s, keep_gid)].path.len) {
+        list.push[Vox](&keep_before, s.*.guides.data[scene_guide_index(s, keep_gid)].path.data[kpi]);
+        kpi = kpi + 1;
+    }
     let ids: list.ArrayList[i32] = list.make[i32](2);
     list.push[i32](&ids, mv_d);
     check("move: DRC accepts shift", group_can_move(s, &ids, vox(1, 0, 1)) == 0, &fails);
@@ -226,11 +262,16 @@ fn main() i32 {
         check("move: guide re-routed to new port",
             vox_eq(list.get[Vox](g2.path, g2.path.len - 1), want_end), &fails);
     }
+    let keep_after_i: i32 = scene_guide_index(s, keep_gid);
+    let keep_same: bool = keep_after_i >= 0 &&
+        paths_equal(keep_before, s.*.guides.data[keep_after_i].path);
+    check("move: unaffected manual route remains byte-for-byte unchanged", keep_same, &fails);
+    list.free[Vox](&keep_before);
 
     // ── save / load roundtrip ──
-    check("save design", design_save(s, "/tmp/triton_engine_test.zpa"), &fails);
+    check("save design", design_save(s, "/tmp/prismstudio_engine_test.zpa"), &fails);
     let s2: *Scene = scene_new();
-    check("load design", design_load(s2, "/tmp/triton_engine_test.zpa"), &fails);
+    check("load design", design_load(s2, "/tmp/prismstudio_engine_test.zpa"), &fails);
     check("roundtrip: component count", s2.*.comps.len == s.*.comps.len, &fails);
     check("roundtrip: guide count", s2.*.guides.len == s.*.guides.len, &fails);
     let rt_ok: bool = true;
@@ -255,63 +296,90 @@ fn main() i32 {
     check("roundtrip: physical model values preserved",
         s2.*.model.pitch_nm.value == s.*.model.pitch_nm.value &&
         s2.*.model.emitter_rate_ghz.value == s.*.model.emitter_rate_ghz.value, &fails);
-    _zag_write_file("/tmp/triton_legacy_v1.zpa",
+    // Opaque future fields use the bounded `x` namespace and survive a
+    // transactional load/save cycle without PrismStudio interpreting them.
+    let base_raw: []u8 = _zag_read_file("/tmp/prismstudio_engine_test.zpa");
+    let hmark: i32 = 0 - 1;
+    let hs: i32 = 0;
+    while (hs + 2 < base_raw.len) {
+        if ((hs == 0 || (base_raw[hs - 1] as i32) == 10) &&
+            (base_raw[hs] as i32) == 'h' && (base_raw[hs + 1] as i32) == 32) { hmark = hs; }
+        hs = hs + 1;
+    }
+    let ext_scene: *Scene = scene_new();
+    if (hmark >= 0) {
+        let ext_bytes: []u8 = _zag_str_concat(base_raw[0..hmark], "x vendor.future gain_mode=adaptive\n");
+        let ext_hash: i64 = design_bytes_hash(ext_bytes);
+        ext_bytes = _zag_str_concat(ext_bytes, _zag_str_concat("h ", _zag_str_concat(_zag_i64_to_str(ext_hash), " \n")));
+        _zag_write_file("/tmp/prismstudio_engine_future.zpa", ext_bytes);
+    }
+    check("roundtrip: bounded unknown future extension loads",
+        design_load(ext_scene, "/tmp/prismstudio_engine_future.zpa"), &fails);
+    check("roundtrip: unknown future extension retained in memory",
+        ext_scene.*.extensions.len == 1 &&
+        _zag_strcmp(ext_scene.*.extensions.data[0], "x vendor.future gain_mode=adaptive") == 1, &fails);
+    check("roundtrip: future extension resaves",
+        design_save(ext_scene, "/tmp/prismstudio_engine_future_resaved.zpa"), &fails);
+    let ext_resaved: []u8 = _zag_read_file("/tmp/prismstudio_engine_future_resaved.zpa");
+    check("roundtrip: future extension preserved byte-for-byte",
+        bytes_contains(ext_resaved, "x vendor.future gain_mode=adaptive\n"), &fails);
+    _zag_write_file("/tmp/prismstudio_legacy_v1.zpa",
         "zpa 1\nc 1 0 120 0 0 0 1 0 1550000 0 |legacy-plate\nc 2 1 121 1 2 0 1 0 1550000 0 |legacy-emitter\n");
     let legacy: *Scene = scene_new();
-    check("roundtrip: legacy zpa1 loads", design_load(legacy, "/tmp/triton_legacy_v1.zpa"), &fails);
+    check("roundtrip: legacy zpa1 loads", design_load(legacy, "/tmp/prismstudio_legacy_v1.zpa"), &fails);
     check("roundtrip: legacy zpa1 component identity",
         legacy.*.comps.len == 2 && scene_comp_index(legacy, 1) >= 0 && scene_comp_index(legacy, 2) >= 0, &fails);
-    check("roundtrip: legacy zpa1 migrates to v2", design_save(legacy, "/tmp/triton_legacy_v1_migrated.zpa"), &fails);
-    let migrated_raw: []u8 = _zag_read_file("/tmp/triton_legacy_v1_migrated.zpa");
+    check("roundtrip: legacy zpa1 migrates to v2", design_save(legacy, "/tmp/prismstudio_legacy_v1_migrated.zpa"), &fails);
+    let migrated_raw: []u8 = _zag_read_file("/tmp/prismstudio_legacy_v1_migrated.zpa");
     check("roundtrip: migrated project has v2 header",
         migrated_raw.len > 5 && _zag_strcmp(migrated_raw[0..5], "zpa 2") == 1, &fails);
     let migrated: *Scene = scene_new();
-    check("roundtrip: migrated v2 reloads", design_load(migrated, "/tmp/triton_legacy_v1_migrated.zpa"), &fails);
+    check("roundtrip: migrated v2 reloads", design_load(migrated, "/tmp/prismstudio_legacy_v1_migrated.zpa"), &fails);
     check("roundtrip: migrated identity preserved",
         migrated.*.comps.len == legacy.*.comps.len && scene_comp_index(migrated, 1) >= 0 &&
         scene_comp_index(migrated, 2) >= 0, &fails);
     let logic_ci: i32 = scene_comp_index(s, ch);
     s.*.comps.data[logic_ci].logic_op = 5;
-    check("save Flash chamber operation", design_save(s, "/tmp/triton_engine_logic.zpa"), &fails);
+    check("save Flash chamber operation", design_save(s, "/tmp/prismstudio_engine_logic.zpa"), &fails);
     let s3: *Scene = scene_new();
-    check("load Flash chamber operation", design_load(s3, "/tmp/triton_engine_logic.zpa"), &fails);
+    check("load Flash chamber operation", design_load(s3, "/tmp/prismstudio_engine_logic.zpa"), &fails);
     check("roundtrip: Flash chamber operation preserved",
         s3.*.comps.data[scene_comp_index(s3, ch)].logic_op == 5, &fails);
     s.*.comps.data[logic_ci].logic_op = 0;
-    let corrupt: []u8 = _zag_read_file("/tmp/triton_engine_logic.zpa");
+    let corrupt: []u8 = _zag_read_file("/tmp/prismstudio_engine_logic.zpa");
     if (corrupt.len > 12) { corrupt[10] = corrupt[10] ^ 1; }
-    _zag_write_file("/tmp/triton_engine_corrupt.zpa", corrupt);
+    _zag_write_file("/tmp/prismstudio_engine_corrupt.zpa", corrupt);
     let s_bad: *Scene = scene_new();
-    check("corrupt project checksum rejected", !design_load(s_bad, "/tmp/triton_engine_corrupt.zpa"), &fails);
+    check("corrupt project checksum rejected", !design_load(s_bad, "/tmp/prismstudio_engine_corrupt.zpa"), &fails);
     let keep_id: i32 = scene_place(s_bad, Kind.Plate, vox(300, 0, 0), 0);
     let keep_count: i32 = s_bad.*.comps.len;
-    _zag_write_file("/tmp/triton_engine_hostile_coord.zpa",
+    _zag_write_file("/tmp/prismstudio_engine_hostile_coord.zpa",
         "zpa 1\nc 1 0 999999 0 0 0 1 0 1550000 0 |outside\n");
     check("hostile project coordinate rejected",
-        !design_load(s_bad, "/tmp/triton_engine_hostile_coord.zpa"), &fails);
+        !design_load(s_bad, "/tmp/prismstudio_engine_hostile_coord.zpa"), &fails);
     check("failed project load leaves active scene intact",
         s_bad.*.comps.len == keep_count && scene_comp_index(s_bad, keep_id) >= 0, &fails);
-    _zag_write_file("/tmp/triton_engine_hostile_kind.zpa",
+    _zag_write_file("/tmp/prismstudio_engine_hostile_kind.zpa",
         "zpa 1\nc 1 99 0 0 0 0 1 0 1550000 0 |bad-kind\n");
     check("hostile project kind rejected",
-        !design_load(s_bad, "/tmp/triton_engine_hostile_kind.zpa"), &fails);
+        !design_load(s_bad, "/tmp/prismstudio_engine_hostile_kind.zpa"), &fails);
     check("second failed load also rolls back",
         s_bad.*.comps.len == keep_count && scene_comp_index(s_bad, keep_id) >= 0, &fails);
-    let atomic_dir: list.ArrayList[u8] = io_cpath("/tmp/triton_atomic_target");
+    let atomic_dir: list.ArrayList[u8] = io_cpath("/tmp/prismstudio_atomic_target");
     let _mk_atomic_dir: i64 = _zag_raw_syscall(83, atomic_dir.data as i64, 493, 0, 0, 0, 0);
     list.free[u8](&atomic_dir);
-    check("failed atomic rename reports failure", !design_save(s, "/tmp/triton_atomic_target"), &fails);
+    check("failed atomic rename reports failure", !design_save(s, "/tmp/prismstudio_atomic_target"), &fails);
     check("failed atomic save removes temporary file",
-        _zag_file_exists("/tmp/triton_atomic_target.tmp") == 0, &fails);
+        _zag_file_exists("/tmp/prismstudio_atomic_target.tmp") == 0, &fails);
 
     // ── journal persistence ──
     let jj: Journal = journal_new();
     let _jp: i32 = scene_place(s, Kind.Plate, vox(140, 0, 0), 0);
     let jch: i32 = scene_place(s, Kind.Chamber, vox(140, 1, 0), 0);
     op_add_comp(&jj, s, jch);
-    check("journal: save", journal_save(&jj, "/tmp/triton_engine_test.jrn"), &fails);
+    check("journal: save", journal_save(&jj, "/tmp/prismstudio_engine_test.jrn"), &fails);
     let jj2: Journal = journal_new();
-    check("journal: load", journal_load(&jj2, "/tmp/triton_engine_test.jrn"), &fails);
+    check("journal: load", journal_load(&jj2, "/tmp/prismstudio_engine_test.jrn"), &fails);
     check("journal: roundtrip undo depth", jj2.undo.len == jj.undo.len, &fails);
     let comps_before: i32 = s.*.comps.len;
     check("journal: loaded undo works", journal_undo(&jj2, s) && s.*.comps.len == comps_before - 1, &fails);

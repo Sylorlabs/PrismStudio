@@ -12,11 +12,11 @@ fn main() i32 {
     a.*.opt_open = true;
     a.*.opt_details = true;
     app_frame(a, 0.016);
-    fb_write_bmp(&a.*.f, "/tmp/triton_opt_panel.bmp");
+    fb_write_bmp(&a.*.f, "/tmp/prismstudio_opt_panel.bmp");
     a.*.opt_open = false;
     a.*.settings_open = true;
     app_frame(a, 0.016);
-    fb_write_bmp(&a.*.f, "/tmp/triton_settings_panel.bmp");
+    fb_write_bmp(&a.*.f, "/tmp/prismstudio_settings_panel.bmp");
     _zag_println("wrote optimizer + settings panel screenshots");
     return 0;
 }

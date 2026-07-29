@@ -62,6 +62,28 @@ fn main() i32 {
     key1(a, key_space(), 0);
     check("Space pauses the simulation", a.*.sim.*.playing != p1, &failures);
 
+    // RMB fly mode owns held WASD/QE without leaking into edit shortcuts.
+    a.*.inp.mx = zone_center(a).x + zone_center(a).w / 2;
+    a.*.inp.my = zone_center(a).y + zone_center(a).h / 2;
+    a.*.inp.prev_btn = 0;
+    a.*.inp.btn = 4;
+    a.*.inp.keys_down.data['w' as i32] = 1;
+    let fly0: Vec3 = a.*.cam.target;
+    app_frame(a, 0.1);
+    check("RMB+W continuously flies forward", vlen(vsub(a.*.cam.target, fly0)) > 0.1, &failures);
+    a.*.inp.keys_down.data['w' as i32] = 0;
+
+    a.*.tool = tool_route();
+    a.*.inp.keys_down.data['q' as i32] = 1;
+    list.push[i32](&a.*.inp.keys, 'q' as i32);
+    let y0: f64 = a.*.cam.target.y;
+    app_frame(a, 0.1);
+    check("RMB+Q flies vertically without selecting a tool",
+        a.*.cam.target.y < y0 && a.*.tool == tool_route(), &failures);
+    a.*.inp.keys_down.data['q' as i32] = 0;
+    a.*.inp.keys.len = 0;
+    a.*.inp.btn = 0;
+
     if (failures == 0) { _zag_println("SHORTCUTS: ALL PASS"); return 0; }
     _zag_println("SHORTCUTS: FAILURES"); return 1;
 }

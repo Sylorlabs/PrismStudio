@@ -1,0 +1,137 @@
+// Verified graph/geometry rewrite families beyond constant/dead-path cleanup.
+@import("../std/list.zag") as list
+@import("../src/optimizer.zag")
+@import("../src/flash_ir.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn base_plate() *Scene {
+    let s: *Scene = scene_new(); let _p: i32 = scene_place(s, Kind.Plate, vox(0,0,0), 0); return s;
+}
+
+fn build_cse() *Scene {
+    let s: *Scene = base_plate();
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1,1,3), 0);
+    let a: i32 = scene_place(s, Kind.Chamber, vox(3,1,1), 0);
+    let b: i32 = scene_place(s, Kind.Chamber, vox(3,1,5), 0);
+    let da: i32 = scene_place(s, Kind.Detector, vox(7,1,2), 0);
+    let db: i32 = scene_place(s, Kind.Detector, vox(7,1,6), 0);
+    s.*.comps.data[scene_comp_index(s,a)].logic_op = 2;
+    s.*.comps.data[scene_comp_index(s,b)].logic_op = 2;
+    let _ok: bool = flash_route(s,e,0,a,0) && flash_route(s,e,0,b,0) &&
+        flash_route(s,a,3,da,0) && flash_route(s,b,3,db,0);
+    return s;
+}
+
+fn build_factoring() *Scene {
+    let s: *Scene = base_plate();
+    let x: i32 = scene_place(s, Kind.Emitter, vox(0,1,1), 0);
+    let c: i32 = scene_place(s, Kind.Emitter, vox(0,1,3), 0);
+    let y: i32 = scene_place(s, Kind.Emitter, vox(0,1,6), 0);
+    let m1: i32 = scene_place(s, Kind.Chamber, vox(3,1,1), 0);
+    let m2: i32 = scene_place(s, Kind.Chamber, vox(3,1,5), 0);
+    let add: i32 = scene_place(s, Kind.Chamber, vox(5,1,3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7,1,4), 0);
+    s.*.comps.data[scene_comp_index(s,c)].preset = 6; // constant +1: timing-safe factor
+    s.*.comps.data[scene_comp_index(s,m1)].logic_op = 5;
+    s.*.comps.data[scene_comp_index(s,m2)].logic_op = 5;
+    s.*.comps.data[scene_comp_index(s,add)].logic_op = 3;
+    let _ok: bool = flash_route(s,x,0,m1,0) && flash_route(s,c,0,m1,1) &&
+        flash_route(s,y,0,m2,0) && flash_route(s,c,0,m2,1) &&
+        flash_route(s,m1,3,add,0) && flash_route(s,m2,3,add,1) &&
+        flash_route(s,add,3,d,0);
+    return s;
+}
+
+fn build_detour() *Scene {
+    let s: *Scene = base_plate();
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1,1,2), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(4,1,3), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(7,1,4), 0);
+    s.*.comps.data[scene_comp_index(s,c)].logic_op = 2;
+    let _ok: bool = flash_route(s,e,0,c,0) && flash_route(s,c,3,d,0);
+    // Replace the first shortest route with a valid, deliberately longer manual
+    // detour. The optimizer must preserve its quantized delay semantics.
+    let g: *Guide = &s.*.guides.data[0];
+    let start: Vox = g.*.path.data[0]; let goal: Vox = g.*.path.data[g.*.path.len - 1];
+    g.*.path.len = 0;
+    list.push[Vox](&g.*.path, start);
+    list.push[Vox](&g.*.path, vox(start.x, start.y, start.z - 1));
+    list.push[Vox](&g.*.path, vox(start.x + 1, start.y, start.z - 1));
+    list.push[Vox](&g.*.path, vox(start.x + 1, start.y, start.z));
+    list.push[Vox](&g.*.path, goal);
+    g.*.length_nm = ((g.*.path.len - 1) as f64) * s.*.model.pitch_nm.value;
+    scene_mark_topo_guides(s);
+    return s;
+}
+
+fn build_balance() *Scene {
+    let s: *Scene = base_plate();
+    let e: i32 = scene_place(s, Kind.Emitter, vox(1,1,1), 0);
+    let d: i32 = scene_place(s, Kind.Detector, vox(1,1,6), 0);
+    let c: i32 = scene_place(s, Kind.Chamber, vox(5,1,3), 0);
+    s.*.comps.data[scene_comp_index(s,c)].logic_op = 2;
+    let _ok: bool = flash_route(s,e,0,c,0) && flash_route(s,c,3,d,0);
+    return s;
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+
+    let cse: *Scene = build_cse(); let cp: OptProposal = opt_proposal_none(); cp.before = opt_cost(cse);
+    check("CSE fixture is structurally valid", scene_validation_errors(cse) == 0, &failures);
+    check("CSE finds and verifies a shared chamber result", opt_find_cse(cse,&cp) && cp.valid && cp.guides.len > 0, &failures);
+    let cse_ref: *Scene = scene_clone(cse); let cc0: i32 = cse.*.comps.len;
+    check("CSE apply removes one duplicate and preserves every detector trace",
+        opt_apply(cse,&cp) && cse.*.comps.len == cc0 - 1 && opt_outputs_equal(cse,cse_ref,opt_horizon()), &failures);
+    opt_proposal_free(&cp); scene_free(cse); scene_free(cse_ref);
+
+    let cj: *Scene = build_cse(); let cjp: OptProposal = opt_proposal_none(); cjp.before = opt_cost(cj);
+    let _cfound: bool = opt_find_cse(cj,&cjp);
+    let rids: list.ArrayList[i32] = list.make[i32](1); let rnew: list.ArrayList[i32] = list.make[i32](1);
+    let gaf: list.ArrayList[Guide] = list.make[Guide](cjp.guides.len + 1);
+    let gg: i32 = 0; while (gg < cjp.guides.len) { list.push[Guide](&gaf,cjp.guides.data[gg].guide); gg = gg + 1; }
+    let mids: list.ArrayList[i32] = list.make[i32](1); let mnew: list.ArrayList[Vox] = list.make[Vox](1);
+    let jr: Journal = journal_new(); let jc0: i32 = cj.*.comps.len; let jg0: i32 = cj.*.guides.len;
+    op_optimize_full(&jr,cj,cjp.removed,rids,rnew,gaf,mids,mnew);
+    let jundo: bool = journal_undo(&jr,cj); let undo_ok: bool = jundo && cj.*.comps.len == jc0 && scene_validation_errors(cj) == 0;
+    check("graph rewrite undo restores removed component", jundo && cj.*.comps.len == jc0, &failures);
+    check("graph rewrite undo restores guide count", cj.*.guides.len == jg0, &failures);
+    check("graph rewrite undo restores valid guides", scene_validation_errors(cj) == 0, &failures);
+    let jredo: bool = journal_redo(&jr,cj);
+    check("graph rewrite redo reapplies exact valid structure",
+        jredo && cj.*.comps.len == jc0 - 1 && scene_validation_errors(cj) == 0, &failures);
+    opt_proposal_free(&cjp); list.free[i32](&rids); list.free[i32](&rnew); list.free[Guide](&gaf);
+    list.free[i32](&mids); list.free[Vox](&mnew); scene_free(cj);
+
+    let fac: *Scene = build_factoring(); let fp: OptProposal = opt_proposal_none(); fp.before = opt_cost(fac);
+    check("factoring fixture is structurally valid", scene_validation_errors(fac) == 0, &failures);
+    check("factoring proves a*c+b*c equals (a+b)*c", opt_find_factoring(fac,&fp) && fp.valid && fp.relabels.len == 2, &failures);
+    let fac_ref: *Scene = scene_clone(fac); let fc0: i32 = fac.*.comps.len;
+    check("factoring apply lowers chamber count with identical traces",
+        opt_apply(fac,&fp) && fac.*.comps.len == fc0 - 1 && opt_outputs_equal(fac,fac_ref,opt_horizon()), &failures);
+    opt_proposal_free(&fp); scene_free(fac); scene_free(fac_ref);
+
+    let route: *Scene = build_detour(); let rp: OptProposal = opt_proposal_none(); rp.before = opt_cost(route);
+    let old_len: f64 = route.*.guides.data[0].length_nm;
+    check("route consolidation finds a shorter equal-delay manual route",
+        opt_find_route_consolidation(route,&rp) && rp.valid && rp.guides.len == 1, &failures);
+    check("route consolidation applies the exact verified shorter path",
+        opt_apply(route,&rp) && route.*.guides.data[0].length_nm < old_len && scene_validation_errors(route) == 0, &failures);
+    opt_proposal_free(&rp); scene_free(route);
+
+    let bal: *Scene = build_balance(); let bp: OptProposal = opt_proposal_none(); bp.before = opt_cost(bal);
+    check("placement balancing finds a legal lower-cost chamber position",
+        opt_find_placement_balance(bal,&bp) && bp.valid && bp.moves.len == 1, &failures);
+    let bal_ref: *Scene = scene_clone(bal); let before_score: i64 = opt_cost_score(opt_cost(bal));
+    check("placement balancing applies with exact trace and cost improvement",
+        opt_apply(bal,&bp) && opt_cost_score(opt_cost(bal)) < before_score &&
+        opt_outputs_equal(bal,bal_ref,opt_horizon()) && scene_validation_errors(bal) == 0, &failures);
+    opt_proposal_free(&bp); scene_free(bal); scene_free(bal_ref);
+
+    if (failures == 0) { _zag_println("OPT FAMILIES: ALL PASS"); return 0; }
+    _zag_println("OPT FAMILIES: FAILURES"); return 1;
+}

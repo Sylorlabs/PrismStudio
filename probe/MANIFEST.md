@@ -6,7 +6,7 @@ probes, and from generated artifacts (Master plan §4.2). Generated binaries are
 never tracked in git (`.gitignore`); only `.zag` sources and this manifest live
 in `probe/`. The `probe-manifest-audit` gate fails if any probe is unclassified.
 
-## Production tests — gated by `tools/verify.zag` (80)
+## Production tests — gated by `tools/verify.zag` (92)
 
 - `agent.zag`
 - `ast.zag`
@@ -27,11 +27,19 @@ in `probe/`. The `probe-manifest-audit` gate fails if any probe is unclassified.
 - `frame_diff_test.zag`
 - `frame_overlay_test.zag`
 - `gizmo_test.zag`
+- `gpu_backend_choice_test.zag`
 - `gpu_kernel_test.zag`
+- `gpu_isa_vgpu_test.zag`
+- `gpu_isa_display_test.zag`
+- `gpu_isa_raster_test.zag`
 - `gpu_query_test.zag`
+- `gpu_promotion_test.zag`
+- `gpu_raster_shadow_test.zag`
+- `gpu_raster_pipeline_test.zag`
 - `gpu_safety_test.zag`
 - `gpu_uapi_test.zag`
 - `gpu_vgpu_test.zag`
+- `gpu_virtual_certification_test.zag`
 - `inspector_test.zag`
 - `json.zag`
 - `lifecycle_test.zag`
@@ -41,7 +49,9 @@ in `probe/`. The `probe-manifest-audit` gate fails if any probe is unclassified.
 - `main.zag`
 - `masterplan_evidence_test.zag`
 - `opt_report_test.zag`
+- `opt_families_test.zag`
 - `opt_schedule_test.zag`
+- `opt_soak_test.zag`
 - `opt_ui_test.zag`
 - `opt_verify_test.zag`
 - `optimizer_test.zag`
@@ -67,6 +77,7 @@ in `probe/`. The `probe-manifest-audit` gate fails if any probe is unclassified.
 - `scheduling_test.zag`
 - `security_regression_test.zag`
 - `session_conflict_test.zag`
+- `session_presentation_test.zag`
 - `shortcuts_test.zag`
 - `sim.zag`
 - `sim_semantics_test.zag`
@@ -105,7 +116,7 @@ in `probe/`. The `probe-manifest-audit` gate fails if any probe is unclassified.
 - `perf_test.zag`
 - `scale_test.zag`
 
-## Compiler probes — exercise a `znc` language feature, not Triton (2)
+## Compiler probes — exercise a `znc` language feature, not PrismStudio (2)
 
 - `_repro_znc1.zag`
 - `break_test.zag`

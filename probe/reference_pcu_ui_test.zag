@@ -21,6 +21,36 @@ fn main() i32 {
         &failures);
     check("reference-PCU command frames the loaded design", a.*.cam.dist > 1.0, &failures);
 
+    // Inspect the complete design through the same visible model/viewport state.
+    // Every route must be 3D-valid and every model row must expose provenance.
+    let routes_ok: bool = true;
+    let gi: i32 = 0;
+    while (gi < a.*.scene.*.guides.len && routes_ok) {
+        let g: Guide = a.*.scene.*.guides.data[gi];
+        if (g.path.len < 2) { routes_ok = false; }
+        let pi: i32 = 0;
+        while (pi < g.path.len && routes_ok) {
+            if (g.path.data[pi].y < layer_min() || g.path.data[pi].y > layer_max()) { routes_ok = false; }
+            pi = pi + 1;
+        }
+        gi = gi + 1;
+    }
+    check("UI-loaded reference exposes every valid layer and route", routes_ok && gi == 192, &failures);
+    app_action(a, 33);
+    app_frame(a, 0.016);
+    let provenance_ok: bool = true;
+    let mi: i32 = 0;
+    while (mi < model_param_count() && provenance_ok) {
+        let p: PhysicalParam = model_param_at(a.*.scene.*.model, mi);
+        if (p.units.len == 0 || p.source.len == 0 || p.method.len == 0 || p.date_.len == 0) {
+            provenance_ok = false;
+        }
+        mi = mi + 1;
+    }
+    check("visible Physical Model panel renders every provenance field",
+        a.*.model_open && !a.*.flash_open && provenance_ok && mi == model_param_count(), &failures);
+    a.*.model_open = false;
+
     // The existing Run control maps to this state, and app_frame drives the
     // exact production simulation update path used by the signal timeline.
     let before: i64 = a.*.sim.*.symbol;
@@ -30,12 +60,26 @@ fn main() i32 {
     check("visible Run control advances the reference-PCU simulation",
         a.*.sim.*.symbol > before, &failures);
 
-    a.*.file_ = "/tmp/triton_reference_pcu_ui.zpa";
+    // Visible edit actions: delete, undo, redo, then undo back to the canonical
+    // state before save/close/reopen. This uses the production journal path.
+    let edited_id: i32 = a.*.scene.*.comps.data[a.*.scene.*.comps.len - 1].id;
+    sel_set(a, edited_id);
+    let canonical_n: i32 = a.*.scene.*.comps.len;
+    app_action(a, 13);
+    check("visible Delete modifies the reference PCU", a.*.scene.*.comps.len == canonical_n - 1, &failures);
+    app_action(a, 10);
+    check("visible Undo restores the UI edit", a.*.scene.*.comps.len == canonical_n, &failures);
+    app_action(a, 11);
+    check("visible Redo reapplies the UI edit", a.*.scene.*.comps.len == canonical_n - 1, &failures);
+    app_action(a, 10);
+    check("second Undo restores canonical state before save", a.*.scene.*.comps.len == canonical_n, &failures);
+
+    a.*.file_ = "/tmp/prismstudio_reference_pcu_ui.zpa";
     app_save(a);
     let saved_n: i32 = a.*.scene.*.comps.len;
     app_new_design(a);
-    app_open_file(a, "/tmp/triton_reference_pcu_ui.zpa");
-    check("visible save then open preserves the reference PCU", a.*.scene.*.comps.len == saved_n,
+    app_open_file(a, "/tmp/prismstudio_reference_pcu_ui.zpa");
+    check("visible save, close/new, then open preserves the reference PCU", a.*.scene.*.comps.len == saved_n,
         &failures);
 
     // Flash FIR workspace: visible command, bounded import, source/operation

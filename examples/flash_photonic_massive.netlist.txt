@@ -1,4 +1,4 @@
-# Triton netlist v1
+# PrismStudio netlist v1
 component 1  plate xyz 0 0 0 logic_op 0 name GeSn Plate.1
 component 2  emitter xyz 0 1 1 logic_op 0 name WDM Emitter.1
 component 3  emitter xyz 0 1 5 logic_op 0 name WDM Emitter.2

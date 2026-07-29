@@ -8,8 +8,8 @@
 # commands and re-checks a valid/invalid pair end to end.
 set -e
 Z=./zagpa
-TMP=/tmp/triton_agent_matrix
-rm -f /tmp/triton_cancel
+TMP=/tmp/prismstudio_agent_matrix
+rm -f /tmp/prismstudio_cancel
 
 fail() { echo "agent-matrix: FAIL: $1" >&2; exit 1; }
 
@@ -29,9 +29,9 @@ AFTER=$($Z --agent "$TMP.tcmd" | grep -c '^C ')
 $Z --agent --once 'simstream 20' | grep -q 'DONE steps=20' || fail "simstream did not finish"
 P=$($Z --agent --once 'simstream 20' | grep -c 'PROGRESS')
 [ "$P" -ge 5 ] || fail "simstream did not stream progress (got $P lines)"
-printf x > /tmp/triton_cancel
+printf x > /tmp/prismstudio_cancel
 $Z --agent --once 'simstream 1000' | grep -q 'CANCELLED step=0' || fail "cancel sentinel not honored"
-rm -f /tmp/triton_cancel
+rm -f /tmp/prismstudio_cancel
 
 # ── malformed requests are rejected with stable codes ───────────────────────
 $Z --agent --once 'simstream' | grep -q 'E_SIMSTREAM' || fail "malformed simstream not rejected"

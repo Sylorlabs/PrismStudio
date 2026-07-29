@@ -1,0 +1,99 @@
+// strutil.zag — allocation-disciplined string helpers.
+//
+// MEMORY RULE (no shortcuts; the runtime has no GC):
+//   * _zag_str_concat / _zag_strdup / _zag_i64_to_str results are HEAP-OWNED.
+//     Each must reach _zag_str_free exactly once, or be stored for the owning
+//     object's lifetime and freed on replacement/destruction.
+//   * NEVER _zag_str_free a string literal or a _zag_getenv result: those are
+//     borrowed/static, and freeing them corrupts the allocator.
+//   * Chained _zag_str_concat(_zag_str_concat(a, b), c) leaks the inner
+//     temporary. Use s3/s4/s5 below: they free intermediates, so a built string
+//     costs exactly one owned buffer (the result, which the caller owns).
+//   * draw_text/fill_label-style callees COPY pixels out and never retain the
+//     string: free built strings immediately after the draw call.
+
+@import("../std/rt.zag")
+@import("../std/list.zag") as list
+
+fn s2(a: []u8, b: []u8) []u8 {
+    return _zag_str_concat(a, b);
+}
+
+fn s3(a: []u8, b: []u8, c: []u8) []u8 {
+    let t: []u8 = _zag_str_concat(a, b);
+    let r: []u8 = _zag_str_concat(t, c);
+    _zag_str_free(t);
+    return r;
+}
+
+fn s4(a: []u8, b: []u8, c: []u8, d: []u8) []u8 {
+    let t: []u8 = s3(a, b, c);
+    let r: []u8 = _zag_str_concat(t, d);
+    _zag_str_free(t);
+    return r;
+}
+
+fn s5(a: []u8, b: []u8, c: []u8, d: []u8, e: []u8) []u8 {
+    let t: []u8 = s4(a, b, c, d);
+    let r: []u8 = _zag_str_concat(t, e);
+    _zag_str_free(t);
+    return r;
+}
+
+// Owned decimal string for an integer.
+fn fmt_i(v: i64) []u8 {
+    return _zag_i64_to_str(v);
+}
+
+// Owned "v0 v1 v2 ..." space-join of integers. Every intermediate is freed;
+// exactly one owned buffer escapes (the result). Prefer this over hand-rolled
+// concat chains when emitting more than two numbers.
+fn join_i64s_sp(vals: *list.ArrayList[i64]) []u8 {
+    if (vals.*.len == 0) { return _zag_strdup(""); }
+    let out: []u8 = _zag_i64_to_str(vals.*.data[0]);
+    let i: i32 = 1;
+    while (i < vals.*.len) {
+        let ns: []u8 = _zag_i64_to_str(vals.*.data[i]);
+        let sp: []u8 = _zag_str_concat(out, " ");
+        _zag_str_free(out);
+        let grown: []u8 = _zag_str_concat(sp, ns);
+        _zag_str_free(sp);
+        _zag_str_free(ns);
+        out = grown;
+        i = i + 1;
+    }
+    return out;
+}
+
+// Frees every heap entry in a string list and empties it. Use before refilling
+// reusable lists (file dialogs) — resetting .len alone leaks every entry.
+fn free_str_list(l: *list.ArrayList[[]u8]) void {
+    let i: i32 = 0;
+    while (i < l.*.len) {
+        _zag_str_free(l.*.data[i]);
+        i = i + 1;
+    }
+    l.*.len = 0;
+}
+
+// One-decimal float formatter for provenance/inspector readouts.
+// Leak-free: every intermediate reaches _zag_str_free.
+fn fmt_f1(v: f64) []u8 {
+    let neg: bool = v < 0.0;
+    let av: f64 = v;
+    if (neg) { av = 0.0 - av; }
+    let ip: i64 = av as i64;
+    let dp: i64 = ((av - (ip as f64)) * 10.0 + 0.5) as i64;
+    if (dp >= 10) { ip = ip + 1; dp = 0; }
+    let ips: []u8 = _zag_i64_to_str(ip);
+    let dps: []u8 = _zag_i64_to_str(dp);
+    let s: []u8 = s3(ips, ".", dps);
+    _zag_str_free(ips);
+    _zag_str_free(dps);
+    if (neg) {
+        let ns: []u8 = _zag_str_concat("-", s);
+        _zag_str_free(s);
+        return ns;
+    }
+    return s;
+}

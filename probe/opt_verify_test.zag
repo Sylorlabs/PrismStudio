@@ -84,7 +84,7 @@ fn family_property_holds(s: *Scene, produced: *i32) bool {
     let ok: bool = true;
     if (p.family != opt_family_none()) {
         produced.* = produced.* + 1;
-        let cand: *Scene = opt_build_candidate(s, p.removed, p.relabels);
+        let cand: *Scene = opt_build_candidate(s, p.removed, p.relabels, p.guides, p.moves);
         if (!opt_verify(s, &p)) { ok = false; }
         if (!opt_outputs_equal(s, cand, opt_horizon())) { ok = false; }
         if (opt_cost_score(opt_cost(cand)) > opt_cost_score(opt_cost(s))) { ok = false; }
@@ -109,7 +109,7 @@ fn main() i32 {
     // ── independent differential oracle: optimized == original outputs (20.6) ───
     let s2: *Scene = build_chain(2);
     let p2: OptProposal = opt_analyze(s2);
-    let cand2: *Scene = opt_build_candidate(s2, p2.removed, p2.relabels);
+    let cand2: *Scene = opt_build_candidate(s2, p2.removed, p2.relabels, p2.guides, p2.moves);
     check("an independent detector-trace diff confirms optimized == original",
         traces_match(s2, cand2, opt_horizon()), &failures);
     scene_free(cand2); opt_proposal_free(&p2); scene_free(s2);
@@ -150,7 +150,7 @@ fn main() i32 {
     let pf: OptProposal = opt_analyze(fc);   // must terminate despite the cycle
     let fc_ok: bool = fc.*.comps.len == fccount;
     if (pf.family != opt_family_none()) {
-        let cf: *Scene = opt_build_candidate(fc, pf.removed, pf.relabels);
+        let cf: *Scene = opt_build_candidate(fc, pf.removed, pf.relabels, pf.guides, pf.moves);
         if (!opt_outputs_equal(fc, cf, opt_horizon())) { fc_ok = false; }
         scene_free(cf);
     }

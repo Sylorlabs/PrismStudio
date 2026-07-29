@@ -1,4 +1,4 @@
-# Triton deterministic bill of materials
+# PrismStudio deterministic bill of materials
 plate = 64 
 chamber = 64 
 soh = 64 

@@ -25,8 +25,8 @@ if [ "$needs_build" -eq 1 ]; then
 fi
 
 ROOT="$(pwd)"
-mkdir -p .triton
-export TRITON_SESSION="${TRITON_SESSION:-$ROOT/.triton/live.zpa}"
+mkdir -p .prismstudio
+export PRISMSTUDIO_SESSION="${PRISMSTUDIO_SESSION:-$ROOT/.prismstudio/live.zpa}"
 if [ ! -f .cursor/mcp.json ]; then
     ./zagpa --mcp-install "$ROOT" >/dev/null 2>&1 || true
 fi

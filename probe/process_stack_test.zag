@@ -1,0 +1,26 @@
+// process_stack_test.zag — exact Y-layer process-stack contract regression.
+
+@import("../src/process_stack.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let substrate: ProcessLayer = process_layer_for_y(0);
+    let active: ProcessLayer = process_layer_for_y(1);
+    let upper: ProcessLayer = process_layer_for_y(12);
+
+    check("stack exposes the declared Y=0..12 process band", process_layer_count() == 13 && process_stack_schema_version() == 1, &failures);
+    check("Y=0 is an illustrative GeSn substrate with a real unit", substrate.role == ProcessLayerRole.Substrate && substrate.thickness_nm.known && substrate.thickness_nm.units.len == 2, &failures);
+    check("Y=1 is the active port and guide plane", active.role == ProcessLayerRole.ActiveDevice && process_layer_is_waveguide(1), &failures);
+    check("upper declared layer is guide-only", upper.role == ProcessLayerRole.Waveguide && process_layer_is_waveguide(12) && !process_layer_is_component_origin(Kind.Chamber, 12), &failures);
+    check("outside the declared stack remains explicitly unknown", process_layer_for_y(13).status == ProcessKnowledge.Unknown && !process_layer_is_waveguide(13), &failures);
+    check("devices begin on Y=1 and stay inside the declared device volume", process_component_extent_allowed(Kind.Chamber, 1, 2) && !process_component_extent_allowed(Kind.Chamber, 2, 2), &failures);
+    check("routing permits only adjacent Y transitions", process_transition_allowed(1, 2) && !process_transition_allowed(1, 3) && !process_transition_allowed(0, 1), &failures);
+
+    if (failures == 0) { _zag_println("PROCESS STACK: ALL PASS"); return 0; }
+    _zag_println("PROCESS STACK: FAILURES"); return 1;
+}

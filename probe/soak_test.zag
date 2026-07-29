@@ -12,6 +12,11 @@ fn check(name_: []u8, ok: bool, failures: *i32) void {
     _zag_println(name_);
 }
 
+fn push_text(out: *list.ArrayList[u8], s: []u8) void {
+    let i: i32 = 0;
+    while (i < s.len) { list.push[u8](out, s[i]); i = i + 1; }
+}
+
 fn main() i32 {
     let failures: i32 = 0;
     let a: *App = app_new(1024, 640);
@@ -24,6 +29,7 @@ fn main() i32 {
     let over16: i32 = 0;     // frames slower than a 60fps budget
     let bad: i32 = 0;        // validity-check failures at checkpoints
     let base: i32 = a.*.scene.*.comps.len;
+    let samples: list.ArrayList[i64] = list.make[i64](n);
 
     let f: i32 = 0;
     while (f < n) {
@@ -53,6 +59,7 @@ fn main() i32 {
         app_frame(a, 0.016);
 
         let ms: i64 = a.*.frame_ms;
+        list.push[i64](&samples, ms);
         sum_ms = sum_ms + ms;
         if (ms > max_ms) { max_ms = ms; }
         if (ms > 16) { over16 = over16 + 1; }
@@ -60,10 +67,46 @@ fn main() i32 {
         f = f + 1;
     }
 
+    // Statistical release budget: retain every raw frame sample and fail on the
+    // p95 distribution, not a cherry-picked average. The generous hard maximum
+    // remains a separate hang/stall guard for noisy shared machines.
+    let hist: list.ArrayList[i32] = list.make[i32](500);
+    let hi: i32 = 0;
+    while (hi < 500) { list.push[i32](&hist, 0); hi = hi + 1; }
+    let si: i32 = 0;
+    while (si < samples.len) {
+        let bucket: i32 = samples.data[si] as i32;
+        if (bucket < 0) { bucket = 0; }
+        if (bucket > 499) { bucket = 499; }
+        hist.data[bucket] = hist.data[bucket] + 1;
+        si = si + 1;
+    }
+    let target: i32 = (n * 95 + 99) / 100;
+    let cumulative: i32 = 0;
+    let p95_ms: i32 = 0;
+    let bi: i32 = 0;
+    while (bi < 500 && cumulative < target) {
+        cumulative = cumulative + hist.data[bi];
+        p95_ms = bi;
+        bi = bi + 1;
+    }
+    let raw: list.ArrayList[u8] = list.make[u8](samples.len * 8 + 128);
+    push_text(&raw, "frame,ms\n");
+    si = 0;
+    while (si < samples.len) {
+        push_text(&raw, _zag_i64_to_str(si as i64));
+        push_text(&raw, ",");
+        push_text(&raw, _zag_i64_to_str(samples.data[si]));
+        push_text(&raw, "\n");
+        si = si + 1;
+    }
+    atomic_write_file("evidence/soak-samples.csv", raw.data[0..raw.len]);
+
     // frame-time distribution
     _zag_print("soak frames="); _zag_print(_zag_i64_to_str(n as i64));
     _zag_print(" avg_ms="); _zag_print(_zag_i64_to_str(sum_ms / (n as i64)));
     _zag_print(" max_ms="); _zag_print(_zag_i64_to_str(max_ms));
+    _zag_print(" p95_ms="); _zag_print(_zag_i64_to_str(p95_ms as i64));
     _zag_print(" over16="); _zag_println(_zag_i64_to_str(over16 as i64));
 
     check("soak completed every frame without crashing", f == n, &failures);
@@ -72,6 +115,13 @@ fn main() i32 {
     check("undo/redo/copy/paste churn did not leak the scene unbounded",
         a.*.scene.*.comps.len < base + 40, &failures);
     check("frame time stayed bounded", max_ms < 500, &failures);
+    check("p95 frame time meets the measured 16 ms interaction budget", p95_ms <= 16, &failures);
+    check("all raw frame samples were retained", samples.len == n &&
+        _zag_file_exists("evidence/soak-samples.csv") == 1, &failures);
+
+    list.free[i32](&hist);
+    list.free[i64](&samples);
+    list.free[u8](&raw);
 
     if (failures == 0) { _zag_println("SOAK: ALL PASS"); return 0; }
     _zag_println("SOAK: FAILURES"); return 1;

@@ -85,11 +85,11 @@ fn main() i32 {
     check("dead-path analysis finds exactly the two orphan parts", dead_ids.len == 2, &failures);
 
     // Observer guarantee: analyze must not change a single byte of the project.
-    let before: bool = design_save(s, "/tmp/triton_opt_before.zpa");
+    let before: bool = design_save(s, "/tmp/prismstudio_opt_before.zpa");
     let p: OptProposal = opt_analyze(s);
-    let after: bool = design_save(s, "/tmp/triton_opt_after.zpa");
+    let after: bool = design_save(s, "/tmp/prismstudio_opt_after.zpa");
     check("analyze is a strict observer (bytes unchanged)",
-        before && after && files_equal("/tmp/triton_opt_before.zpa", "/tmp/triton_opt_after.zpa"), &failures);
+        before && after && files_equal("/tmp/prismstudio_opt_before.zpa", "/tmp/prismstudio_opt_after.zpa"), &failures);
 
     check("proposal is valid and output-equivalent", p.valid && p.equivalent, &failures);
     check("proposal is dead-path elimination", p.family == opt_family_dead_path(), &failures);
@@ -227,12 +227,12 @@ fn main() i32 {
     let d0: *Scene = build_with_dead();
     let deng: *OptEngine = opt_engine_new();
     deng.*.enabled = false;
-    let db0: bool = design_save(d0, "/tmp/triton_opt_disabled_before.zpa");
+    let db0: bool = design_save(d0, "/tmp/prismstudio_opt_disabled_before.zpa");
     let dch: bool = opt_engine_tick(deng, d0);
-    let db1: bool = design_save(d0, "/tmp/triton_opt_disabled_after.zpa");
+    let db1: bool = design_save(d0, "/tmp/prismstudio_opt_disabled_after.zpa");
     check("disabled engine does nothing and touches no bytes",
         !dch && opt_engine_badge(deng) == 0 && db0 && db1 &&
-        files_equal("/tmp/triton_opt_disabled_before.zpa", "/tmp/triton_opt_disabled_after.zpa"), &failures);
+        files_equal("/tmp/prismstudio_opt_disabled_before.zpa", "/tmp/prismstudio_opt_disabled_after.zpa"), &failures);
     opt_engine_free(deng);
     scene_free(d0);
 
