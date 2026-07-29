@@ -28,10 +28,47 @@ fn main() i32 {
     pr("compute_units", g.cu_active);
     pr("engine_clock_khz", g.engine_clock_khz);
     pr("memory_clock_khz", g.memory_clock_khz);
+    pr("render_minor", g.render_minor as i64);
+    pr("gfx_ip_major", g.gfx_ip_major as i64);
+    pr("gfx_ip_minor", g.gfx_ip_minor as i64);
+    pr("gfx_ring_mask", g.gfx_rings);
+    pr("gfx_ip_discovery", g.gfx_ip_discovery);
+    pr("gfx_discovery_major", (g.gfx_ip_discovery / 65536) & 255);
+    pr("gfx_discovery_minor", (g.gfx_ip_discovery / 256) & 255);
+    pr("gfx_discovery_revision", g.gfx_ip_discovery & 255);
+    pr("compute_ip_major", g.compute_ip_major as i64);
+    pr("compute_ip_minor", g.compute_ip_minor as i64);
+    pr("compute_ring_mask", g.compute_rings);
+    pr("compute_ip_discovery", g.compute_ip_discovery);
+    pr("compute_discovery_major", (g.compute_ip_discovery / 65536) & 255);
+    pr("compute_discovery_minor", (g.compute_ip_discovery / 256) & 255);
+    pr("compute_discovery_revision", g.compute_ip_discovery & 255);
+    pr("mec_firmware_version", g.fw_mec_ver);
+    pr("sdma_firmware_version", g.fw_sdma_ver);
+    pr("vram_total_bytes", g.vram_total);
+    pr("vram_usable_bytes", g.vram_usable);
+    pr("gtt_total_bytes", g.gtt_total);
+    pr("gtt_usable_bytes", g.gtt_usable);
+    pr("ras_enabled_mask", g.ras_enabled);
+    let faultq: i64 = 0;
+    if (g.fault_query_ok) { faultq = 1; }
+    pr("fault_query_ok", faultq);
+    pr("fault_status", g.fault_status);
 
     let fails: i32 = 0;
     if (g.device_id == 0) { _zag_println("  XX  device_id zero (query failed)"); fails = fails + 1; }
     else { _zag_println("  ok  device queried over pure-Zag ioctl"); }
+    if (g.gfx_ip_major > 0 && g.gfx_rings > 0 &&
+        g.compute_ip_major > 0 && g.compute_rings > 0) {
+        _zag_println("  ok  live GFX/compute IP and ring masks discovered");
+    } else { _zag_println("  XX  live IP/ring discovery incomplete"); fails = fails + 1; }
+    if (g.fw_mec_ver > 0 && g.fw_sdma_ver > 0) {
+        _zag_println("  ok  live MEC/SDMA firmware versions discovered");
+    } else { _zag_println("  XX  live firmware discovery incomplete"); fails = fails + 1; }
+    if (g.vram_total > 0 && g.vram_usable > 0 &&
+        g.gtt_total > 0 && g.gtt_usable > 0) {
+        _zag_println("  ok  live VRAM/GTT heap sizes discovered");
+    } else { _zag_println("  XX  live memory-heap discovery incomplete"); fails = fails + 1; }
 
     // allocate a 1 MiB CPU-visible GTT buffer and round-trip a pattern
     let n: i64 = 1048576;

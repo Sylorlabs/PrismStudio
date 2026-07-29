@@ -1,0 +1,28 @@
+@import("../src/gpu_backend.zag")
+
+fn check(name:[]u8,ok:bool,failures:*i32)void{if(ok){_zag_print("  ok  ");}else{_zag_print("  XX  ");failures.*=failures.*+1;}_zag_println(name);}
+
+fn main()i32{
+    let failures:i32=0;
+    let cpu:PrismGpuBackendStatus=prism_gpu_backend_resolve("cpu");
+    check("explicit CPU choice does not probe DRM",cpu.choice.ok&&cpu.choice.selected==zag_gpu_backend_cpu()&&!cpu.drm_probed,&failures);
+    check("Prism consumes Zag's custom RDNA code-format contract",
+        cpu.platform_code_format==zag_gpu_code_rdna_native(),&failures);
+    check("Prism consumes Zag's existing Linux AMDGPU driver boundary",
+        cpu.platform_driver_abi==zag_gpu_driver_linux_amdgpu(),&failures);
+    check("Prism's Zag-native compiler and strict virtual runtime are implemented",
+        cpu.platform_virtual_implemented==1,&failures);
+    check("Prism's physical runtime remains fail-closed until certification completes",
+        cpu.platform_physical_implemented==0,&failures);
+    check("Prism never claims to rewrite the privileged GPU driver",
+        cpu.platform_rewrites_driver==0,&failures);
+    let virtual:PrismGpuBackendStatus=prism_gpu_backend_resolve("virtual");
+    check("explicit virtual choice does not probe DRM",virtual.choice.ok&&virtual.choice.selected==zag_gpu_backend_virtual()&&!virtual.drm_probed,&failures);
+    let auto:PrismGpuBackendStatus=prism_gpu_backend_resolve("auto");
+    check("auto safely selects virtual while physical certification is absent",auto.choice.ok&&auto.choice.selected==zag_gpu_backend_virtual()&&auto.drm_probed,&failures);
+    let physical:PrismGpuBackendStatus=prism_gpu_backend_resolve("physical");
+    check("shared physical choice is retained but requires acknowledgement",!physical.choice.ok&&physical.choice.code==204,&failures);
+    let invalid:PrismGpuBackendStatus=prism_gpu_backend_resolve("banana");
+    check("unknown backend fails with a stable actionable code",!invalid.choice.ok&&invalid.choice.code==201,&failures);
+    if(failures==0){_zag_println("GPU BACKEND CHOICE: ALL PASS");return 0;}_zag_println("GPU BACKEND CHOICE: FAILURES");return 1;
+}

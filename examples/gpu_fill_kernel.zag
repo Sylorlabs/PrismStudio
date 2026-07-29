@@ -1,0 +1,13 @@
+// Compiler-owned source for PrismStudio's experimental fill kernel.
+// `./znc --target gpu-amd` currently emits AMD ROCDL MLIR. Promotion to the
+// runtime remains blocked until znc emits a reviewed gfx1010 code object plus
+// resource-register metadata; the handwritten RDNA fixture is not production.
+
+fn fillKernel(out: []i32, value: i32, count: i32) void @kernel {
+    let i: i32 = @gpuBlockIdx(0) * @gpuBlockDim(0) + @gpuThreadIdx(0);
+    if (i < count) { out[i] = value; }
+}
+
+fn main() void {
+    print_i32(0);
+}

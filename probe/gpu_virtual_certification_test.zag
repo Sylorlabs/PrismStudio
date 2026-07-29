@@ -1,0 +1,14 @@
+@import("../src/gpu_virtual_cert.zag")
+
+fn check(name:[]u8,ok:bool,failures:*i32)void{if(ok){_zag_print("  ok  ");}else{_zag_print("  XX  ");failures.*=failures.*+1;}_zag_println(name);}
+
+fn main()i32{
+    let failures:i32=0;let r:PrismVirtualGpuRun=prism_virtual_gpu_certify();let c:ZagGpuVirtualCertification=r.certification;
+    check("virtual campaign opens no DRM and carries a non-promotable decision code",r.ok&&r.decision.code==100,&failures);
+    check("at least 10000 fills and ownership transfers complete",c.fills>=10000&&c.ownership_transfers>=10000,&failures);
+    check("one million actual queue submissions retire exact fences",c.dispatches>=1000000&&c.memory_sync_verified,&failures);
+    check("a full logical day advances through real virtual submissions",c.logical_soak_seconds==86400,&failures);
+    check("golden and 64 randomized complete raster scenes match",c.golden_scenes==1&&c.randomized_scenes==64,&failures);
+    check("the virtual campaign records zero anomalies",c.mismatches==0&&c.timeouts==0&&c.resets==0&&c.faults==0&&c.leaks==0,&failures);
+    if(failures==0){_zag_println("GPU VIRTUAL CERTIFICATION: ALL PASS");return 0;}_zag_println("GPU VIRTUAL CERTIFICATION: FAILURES");return 1;
+}

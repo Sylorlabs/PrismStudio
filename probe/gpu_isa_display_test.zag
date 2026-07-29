@@ -1,0 +1,39 @@
+@import("../src/gpu_isa_display.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if(ok){_zag_print("  ok  ");}else{_zag_print("  XX  ");failures.*=failures.*+1;}_zag_println(name_);
+}
+
+fn main() i32 {
+    let failures:i32=0;let w:i32=96;let h:i32=64;
+    let d:GpuIsaDisplay=gpu_isa_display_open("examples/gpu_fill_kernel.zgk",w,h);
+    let out:FB=fb_new(w,h);let oracle:FB=fb_new(w,h);
+    check("virtual display loads only compiler-owned validated code",d.ok,&failures);
+    check("an incomplete frame cannot be presented",!gpu_isa_display_present(&d,&out),&failures);
+    let built:bool=gpu_isa_display_begin(&d)&&gpu_isa_display_fill(&d,0,w*h,rgb(9,12,18));
+    fill_rect(&oracle,0,0,w,h,rgb(9,12,18));
+    let y:i32=0;while(y<h&&built){
+        let x:i32=0;while(x<w&&built){
+            if(((x/12)+(y/8))%2==0){
+                built=gpu_isa_display_fill_rect(&d,x,y,12,8,rgb(30+(x*2),70+(y*2),180));
+                fill_rect(&oracle,x,y,12,8,rgb(30+(x*2),70+(y*2),180));
+            }
+            x=x+12;
+        }
+        y=y+8;
+    }
+    check("compiler ISA executes a multi-rectangle virtual display",built&&gpu_isa_display_end(&d),&failures);
+    check("only a completed fenced frame is presented",gpu_isa_display_present(&d,&out),&failures);
+    let exact:bool=true;let i:i32=0;while(i<w*h){if(out.px.data[i]!=oracle.px.data[i]){exact=false;}i=i+1;}
+    check("virtual display is pixel-identical to the CPU oracle",exact,&failures);
+    check("each row fill retired through monotonic queue fences",d.queue.submissions>1&&d.next_fence==d.queue.submissions+1,&failures);
+    check("out-of-range rectangles fail before queue submission",!gpu_isa_display_begin(&d)||!gpu_isa_display_fill_rect(&d,w-2,h-2,8,8,1),&failures);
+    fb_write_bmp(&out,"/tmp/prism_zag_virtual_gpu_checker.bmp");
+    check("completed virtual display frame is archived",_zag_file_exists("/tmp/prism_zag_virtual_gpu_checker.bmp")==1,&failures);
+    let source:FB=fb_new(128,96);fb_test_pattern(&source);
+    let shadow:FB=fb_new(128,96);let d2:GpuIsaDisplay=gpu_isa_display_open("examples/gpu_fill_kernel.zgk",128,96);
+    let shadow_ok:bool=gpu_isa_display_begin(&d2)&&gpu_isa_display_upload_frame(&d2,&source)&&gpu_isa_display_end(&d2)&&gpu_isa_display_present(&d2,&shadow);
+    check("a complete CPU frame traverses the compiler-ISA shadow path",shadow_ok&&d2.queue.submissions>0,&failures);
+    check("shadow presentation requires full-frame pixel equality",gpu_isa_display_equal(&source,&shadow),&failures);
+    if(failures==0){_zag_println("GPU ISA DISPLAY: ALL PASS");return 0;}_zag_println("GPU ISA DISPLAY: FAILURES");return 1;
+}

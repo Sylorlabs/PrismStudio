@@ -7,7 +7,6 @@
 
 @import("../std/list.zag") as list
 @import("gpu_rt.zag")
-@import("rdna.zag")
 
 extern fn _zag_memcpy(dst: *i8, src: *i8, n: i32) void;
 
@@ -17,12 +16,12 @@ extern fn _zag_memcpy(dst: *i8, src: *i8, n: i32) void;
 fn gpu_fill_u32(
     g: *Gpu, ctx: i64,
     target: *GpuBuf, shader: *GpuBuf, ib: *GpuBuf,
+    kernel: *GpuKernel,
+    user_fence: *GpuBuf, syncobj: i64, point: *i64,
     value: i64, count: i64,
 ) bool {
-    let code: list.ArrayList[u8] = list.make[u8](64);
-    let _n: i32 = rdna_emit_fill_kernel(&code);
-    _zag_memcpy(shader.*.cpu_addr as *i8, code.data as *i8, code.len);
-    list.free[u8](&code);
+    if (!kernel.*.ok || count < 1) { return false; }
+    _zag_memcpy(shader.*.cpu_addr as *i8, kernel.*.code as *i8, kernel.*.code.len);
 
     let ud: list.ArrayList[i64] = list.make[i64](3);
     list.push[i64](&ud, target.*.gpu_va & 0xFFFFFFFF);
@@ -31,8 +30,11 @@ fn gpu_fill_u32(
 
     let pm4: list.ArrayList[u8] = list.make[u8](128);
     // one thread per workgroup; `count` workgroups cover the buffer
-    pm4_build_dispatch_wg(&pm4, shader.*.gpu_va, ud, 1, 1, 1, count, 1, 1);
-    let ok: bool = gpu_run_pm4(g, ctx, ib, pm4, HW_IP_COMPUTE());
+    pm4_build_dispatch_meta(&pm4, shader.*.gpu_va, ud, kernel.*,
+        count, 1, 1);
+    point.* = point.* + 1;
+    let ok: bool = gpu_run_pm4_ordered(g, ctx, target, shader, ib, user_fence,
+        syncobj, point.*, pm4, HW_IP_COMPUTE());
     list.free[u8](&pm4);
     list.free[i64](&ud);
     return ok;
@@ -45,25 +47,42 @@ struct GpuCompute {
     ctx: i64,
     shader: GpuBuf,
     ib: GpuBuf,
+    kernel: GpuKernel,
+    user_fence: GpuBuf,
+    syncobj: i64,
+    timeline_point: i64,
     ok: bool,
 }
 
 fn gpu_compute_open() GpuCompute {
     let g: Gpu = gpu_open();
     if (!g.ok) {
-        return GpuCompute{ .g = g, .ctx = 0, .shader = gpu_buf_bad(), .ib = gpu_buf_bad(), .ok = false };
+        return GpuCompute{ .g = g, .ctx = 0, .shader = gpu_buf_bad(), .ib = gpu_buf_bad(),
+            .kernel = gpu_kernel_bad(), .user_fence = gpu_buf_bad(), .syncobj = 0,
+            .timeline_point = 0, .ok = false };
     }
     let ctx: i64 = gpu_ctx_create(&g);
     let shader: GpuBuf = gpu_alloc(&g, 4096);
     let ib: GpuBuf = gpu_alloc(&g, 4096);
-    let ok: bool = ctx != 0 && shader.ok && ib.ok
-        && gpu_map_exec(&g, &shader) && gpu_map_exec(&g, &ib);
-    return GpuCompute{ .g = g, .ctx = ctx, .shader = shader, .ib = ib, .ok = ok };
+    let kernel: GpuKernel = gpu_kernel_load("examples/gpu_fill_kernel.zgk");
+    let user_fence: GpuBuf = gpu_alloc(&g, 4096);
+    let syncobj: i64 = gpu_syncobj_create(&g);
+    let map_point: i64 = 0;
+    let ok: bool = ctx != 0 && shader.ok && ib.ok && user_fence.ok && syncobj != 0
+        && kernel.ok && gpu_map_exec_ordered(&g, &shader, syncobj, &map_point)
+        && gpu_map_exec_ordered(&g, &ib, syncobj, &map_point)
+        && gpu_map_data_ordered(&g, &user_fence, syncobj, &map_point)
+        && gpu_syncobj_timeline_wait(&g, syncobj, map_point);
+    return GpuCompute{ .g = g, .ctx = ctx, .shader = shader, .ib = ib,
+        .kernel = kernel, .user_fence = user_fence, .syncobj = syncobj,
+        .timeline_point = map_point, .ok = ok };
 }
 
 fn gpu_compute_close(c: *GpuCompute) void {
     if (c.*.ib.ok) { gpu_free(&c.*.g, &c.*.ib); }
     if (c.*.shader.ok) { gpu_free(&c.*.g, &c.*.shader); }
+    if (c.*.user_fence.ok) { gpu_free(&c.*.g, &c.*.user_fence); }
+    if (c.*.syncobj != 0) { gpu_syncobj_destroy(&c.*.g, c.*.syncobj); }
     if (c.*.ctx != 0) { gpu_ctx_free(&c.*.g, c.*.ctx); }
     if (c.*.g.ok) { gpu_close(&c.*.g); }
     c.*.ok = false;

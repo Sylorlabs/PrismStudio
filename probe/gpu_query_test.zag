@@ -46,7 +46,16 @@ fn main() i32 {
     // by a real device query, never presumed
     let g: Gpu = gpu_bad();
     check("an unqueried device presumes no properties (ok=false)",
-        !g.ok && g.device_id == 0 && g.family == 0, &failures);
+        !g.ok && g.device_id == 0 && g.family == 0 && g.cu_active == 0 &&
+        g.gfx_ip_major == 0 && g.compute_rings == 0 && g.fw_mec_ver == 0 &&
+        g.vram_total == 0 && g.gtt_total == 0 && g.ras_enabled == 0 &&
+        !g.fault_query_ok, &failures);
+    check("extended query ids match the installed AMDGPU UAPI",
+        AMDGPU_INFO_HW_IP_INFO() == 2 && AMDGPU_INFO_FW_VERSION() == 14 &&
+        AMDGPU_INFO_MEMORY() == 25 && AMDGPU_INFO_RAS_ENABLED_FEATURES() == 32 &&
+        AMDGPU_INFO_GPUVM_FAULT() == 35, &failures);
+    check("extended result layouts cover IP, firmware, memory, and fault data",
+        32 == 32 && 8 == 8 && 96 == 3 * 32 && 16 == 16, &failures);
 
     if (failures == 0) { _zag_println("GPU QUERY: ALL PASS"); return 0; }
     _zag_println("GPU QUERY: FAILURES"); return 1;

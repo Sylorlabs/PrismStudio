@@ -57,7 +57,13 @@ fn main() i32 {
     let magic: i64 = 0xCAFEF00D;
     let tag: i64 = 0x42;
     let code: list.ArrayList[u8] = list.make[u8](64);
+    let dynamic: bool = _zag_strcmp(_zag_getenv("PRISM_GPU_COMPUTE_PROFILE"), "dynamic-store") == 1;
+    let saddr: bool = _zag_strcmp(_zag_getenv("PRISM_GPU_COMPUTE_PROFILE"), "saddr-store") == 1;
+    let tgid: bool = _zag_strcmp(_zag_getenv("PRISM_GPU_COMPUTE_PROFILE"), "tgid-store") == 1;
     let dwords: i32 = rdna_emit_store_kernel(&code, magic, tag);
+    if (dynamic) { code.len = 0; dwords = rdna_emit_dynamic_store_kernel(&code); }
+    if (saddr) { code.len = 0; dwords = rdna_emit_saddr_store_kernel(&code); }
+    if (tgid) { code.len = 0; dwords = rdna_emit_tgid_store_kernel(&code); }
     _zag_print("  ..  kernel emitted (");
     _zag_print(_zag_i64_to_str(dwords as i64));
     _zag_println(" dwords of RDNA1 machine code)");
@@ -70,7 +76,18 @@ fn main() i32 {
 
     // build + submit the dispatch (1 thread, 1 workgroup)
     let pm4: list.ArrayList[u8] = list.make[u8](128);
-    pm4_build_dispatch(&pm4, shader.gpu_va, data.gpu_va, 1, 1, 1, 1, 1, 1);
+    if (dynamic || saddr || tgid) {
+        let ud: list.ArrayList[i64] = list.make[i64](4);
+        list.push[i64](&ud, data.gpu_va & 0xFFFFFFFF);
+        list.push[i64](&ud, (data.gpu_va / 0x100000000) & 0xFFFFFFFF);
+        list.push[i64](&ud, magic);
+        if (saddr) { list.push[i64](&ud, 0); }
+        if (tgid) { pm4_build_dispatch_wg(&pm4, shader.gpu_va, ud, 1, 1, 1, 1, 1, 1); }
+        else { pm4_build_dispatch_ud(&pm4, shader.gpu_va, ud, 1, 1, 1, 1, 1, 1); }
+        list.free[i64](&ud);
+    } else {
+        pm4_build_dispatch(&pm4, shader.gpu_va, data.gpu_va, 1, 1, 1, 1, 1, 1);
+    }
     let ok: bool = gpu_run_pm4(&g, ctx, &ib, pm4, HW_IP_COMPUTE());
     list.free[u8](&pm4);
 
@@ -79,7 +96,7 @@ fn main() i32 {
 
     let w0: i64 = read_u32(data.cpu_addr, 0);
     let w1: i64 = read_u32(data.cpu_addr, 4);
-    if (w0 == magic && w1 == tag) {
+    if (((dynamic || saddr || tgid) && w0 == magic) || (!dynamic && !saddr && !tgid && w0 == magic && w1 == tag)) {
         _zag_println("  ok  shader cores wrote both outputs — GPU compute verified");
     } else {
         _zag_print("  XX  wrong output: [0]=");

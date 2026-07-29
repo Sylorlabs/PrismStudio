@@ -28,7 +28,8 @@ fn main() i32 {
     if (!c.ok) { _zag_println("gpu: no render node / setup failed (skipping)"); return 0; }
 
     let data: GpuBuf = gpu_alloc(&c.g, pixels * 4);
-    let mapped: bool = gpu_map_data(&c.g, &data);
+    let mapped: bool = gpu_map_data_ordered(&c.g, &data, c.syncobj, &c.timeline_point) &&
+        gpu_syncobj_timeline_wait(&c.g, c.syncobj, c.timeline_point);
     if (!data.ok || !mapped) { _zag_println("  XX  buffer alloc/map failed"); gpu_compute_close(&c); return 1; }
 
     // poison so only the shader can produce the fill color
@@ -42,7 +43,8 @@ fn main() i32 {
     }
     list.free[u8](&poison);
 
-    let ok: bool = gpu_fill_u32(&c.g, c.ctx, &data, &c.shader, &c.ib, color, pixels);
+    let ok: bool = gpu_fill_u32(&c.g, c.ctx, &data, &c.shader, &c.ib,
+        &c.kernel, &c.user_fence, c.syncobj, &c.timeline_point, color, pixels);
 
     let fails: i32 = 0;
     if (!ok) { _zag_println("  XX  dispatch/fence failed"); fails = fails + 1; }

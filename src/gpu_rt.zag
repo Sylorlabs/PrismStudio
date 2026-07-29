@@ -76,15 +76,26 @@ fn DRM_CMD_BASE() i64 { return 64; }   // 0x40
 
 fn IOCTL_VERSION() i64 { return ioc_wr(0, 64); }                       // struct drm_version
 fn IOCTL_AMDGPU_INFO() i64 { return ioc_w(DRM_CMD_BASE() + 5, 32); }   // drm_amdgpu_info
-fn IOCTL_AMDGPU_GEM_CREATE() i64 { return ioc_wr(DRM_CMD_BASE() + 0, 32); }
+fn IOCTL_AMDGPU_GEM_CREATE() i64 { return ioc_wr(DRM_CMD_BASE(), 32); }
 fn IOCTL_AMDGPU_GEM_MMAP() i64 { return ioc_wr(DRM_CMD_BASE() + 1, 8); }
 fn IOCTL_AMDGPU_CTX() i64 { return ioc_wr(DRM_CMD_BASE() + 2, 16); }   // union drm_amdgpu_ctx
+fn IOCTL_AMDGPU_BO_LIST() i64 { return ioc_wr(DRM_CMD_BASE() + 3, 24); }
 fn IOCTL_AMDGPU_CS() i64 { return ioc_wr(DRM_CMD_BASE() + 4, 24); }    // union drm_amdgpu_cs
 fn IOCTL_AMDGPU_GEM_VA() i64 { return ioc_w(DRM_CMD_BASE() + 8, 64); } // drm_amdgpu_gem_va
 fn IOCTL_AMDGPU_WAIT_CS() i64 { return ioc_wr(DRM_CMD_BASE() + 9, 32); }
 fn IOCTL_GEM_CLOSE() i64 { return ioc_w(9, 8); }                       // drm_gem_close
+fn IOCTL_SYNCOBJ_CREATE() i64 { return ioc_wr(0xBF, 8); }
+fn IOCTL_SYNCOBJ_DESTROY() i64 { return ioc_wr(0xC0, 8); }
+fn IOCTL_SYNCOBJ_TIMELINE_WAIT() i64 { return ioc_wr(0xCA, 48); }
 
 fn AMDGPU_INFO_DEV_INFO() i32 { return 22; }         // 0x16
+fn AMDGPU_INFO_HW_IP_INFO() i32 { return 2; }
+fn AMDGPU_INFO_FW_VERSION() i32 { return 14; }
+fn AMDGPU_INFO_MEMORY() i32 { return 25; }
+fn AMDGPU_INFO_RAS_ENABLED_FEATURES() i32 { return 32; }
+fn AMDGPU_INFO_GPUVM_FAULT() i32 { return 35; }
+fn AMDGPU_INFO_FW_GFX_MEC() i32 { return 8; }
+fn AMDGPU_INFO_FW_SDMA() i32 { return 11; }
 fn GEM_DOMAIN_GTT() i64 { return 2; }
 fn GEM_DOMAIN_VRAM() i64 { return 4; }
 fn GEM_CREATE_CPU_ACCESS() i64 { return 1; }
@@ -99,6 +110,12 @@ fn VM_PAGE_EXECUTABLE() i64 { return 8; }
 fn HW_IP_GFX() i64 { return 0; }
 fn HW_IP_COMPUTE() i64 { return 1; }
 fn CHUNK_ID_IB() i64 { return 1; }
+fn CHUNK_ID_FENCE() i64 { return 2; }
+fn CHUNK_ID_TIMELINE_WAIT() i64 { return 8; }
+fn CHUNK_ID_TIMELINE_SIGNAL() i64 { return 9; }
+fn IB_FLAG_EMIT_MEM_SYNC() i64 { return 64; }
+fn BO_LIST_CREATE() i64 { return 0; }
+fn BO_LIST_DESTROY() i64 { return 1; }
 
 // ── little-endian byte-buffer pokes/peeks ─────────────────────────────────────
 fn buf_zero(n: i32) list.ArrayList[u8] {
@@ -157,6 +174,25 @@ struct Gpu {
     engine_clock_khz: i64,
     memory_clock_khz: i64,
     render_minor: i32,
+    gfx_ip_major: i32,
+    gfx_ip_minor: i32,
+    gfx_rings: i64,
+    gfx_ip_discovery: i64,
+    compute_ip_major: i32,
+    compute_ip_minor: i32,
+    compute_rings: i64,
+    compute_ip_discovery: i64,
+    fw_mec_ver: i64,
+    fw_sdma_ver: i64,
+    vram_total: i64,
+    vram_usable: i64,
+    gtt_total: i64,
+    gtt_usable: i64,
+    ras_enabled: i64,
+    fault_addr: i64,
+    fault_status: i64,
+    fault_vmhub: i64,
+    fault_query_ok: bool,
     va_base: i64,       // first GPU virtual address usable by userspace
     va_cursor: i64,     // bump pointer for handing out VAs
 }
@@ -166,8 +202,84 @@ fn gpu_bad() Gpu {
         .fd = 0 - 1, .ok = false, .device_id = 0, .family = 0,
         .shader_engines = 0, .cu_active = 0,
         .engine_clock_khz = 0, .memory_clock_khz = 0,
-        .render_minor = 0, .va_base = 0, .va_cursor = 0,
+        .render_minor = 0,
+        .gfx_ip_major = 0, .gfx_ip_minor = 0, .gfx_rings = 0, .gfx_ip_discovery = 0,
+        .compute_ip_major = 0, .compute_ip_minor = 0, .compute_rings = 0,
+        .compute_ip_discovery = 0,
+        .fw_mec_ver = 0, .fw_sdma_ver = 0,
+        .vram_total = 0, .vram_usable = 0, .gtt_total = 0, .gtt_usable = 0,
+        .ras_enabled = 0, .fault_addr = 0, .fault_status = 0,
+        .fault_vmhub = 0, .fault_query_ok = false,
+        .va_base = 0, .va_cursor = 0,
     };
+}
+
+// Issue one bounded AMDGPU_INFO query. Subquery dwords occupy the UAPI union at
+// offsets 16..28. Tests validate these layouts without opening hardware.
+fn gpu_info_query(fd: i64, query: i32, out: *list.ArrayList[u8],
+                  sub0: i64, sub1: i64, sub2: i64) bool {
+    let req: list.ArrayList[u8] = buf_zero(32);
+    poke64(&req, 0, out.*.data as i64);
+    poke32(&req, 8, out.*.len as i64);
+    poke32(&req, 12, query as i64);
+    poke32(&req, 16, sub0);
+    poke32(&req, 20, sub1);
+    poke32(&req, 24, sub2);
+    let rc: i64 = g_ioctl(fd, IOCTL_AMDGPU_INFO(), req.data as i64);
+    list.free[u8](&req);
+    return rc == 0;
+}
+
+fn gpu_query_ip(fd: i64, ip_type: i32, major: *i32, minor: *i32,
+                rings: *i64, discovery: *i64) bool {
+    let out: list.ArrayList[u8] = buf_zero(32);
+    let ok: bool = gpu_info_query(fd, AMDGPU_INFO_HW_IP_INFO(), &out, ip_type as i64, 0, 0);
+    if (ok) {
+        major.* = peek32(out, 0) as i32;
+        minor.* = peek32(out, 4) as i32;
+        rings.* = peek32(out, 24);
+        discovery.* = peek32(out, 28);
+    }
+    list.free[u8](&out);
+    return ok;
+}
+
+fn gpu_query_fw(fd: i64, fw_type: i32) i64 {
+    let out: list.ArrayList[u8] = buf_zero(8);
+    let ok: bool = gpu_info_query(fd, AMDGPU_INFO_FW_VERSION(), &out, fw_type as i64, 0, 0);
+    let ver: i64 = 0;
+    if (ok) { ver = peek32(out, 0); }
+    list.free[u8](&out);
+    return ver;
+}
+
+fn gpu_query_extended(fd: i64, g: *Gpu) void {
+    let _gfx: bool = gpu_query_ip(fd, 0, &g.*.gfx_ip_major, &g.*.gfx_ip_minor,
+                                  &g.*.gfx_rings, &g.*.gfx_ip_discovery);
+    let _compute: bool = gpu_query_ip(fd, 1, &g.*.compute_ip_major, &g.*.compute_ip_minor,
+                                      &g.*.compute_rings, &g.*.compute_ip_discovery);
+    g.*.fw_mec_ver = gpu_query_fw(fd, AMDGPU_INFO_FW_GFX_MEC());
+    g.*.fw_sdma_ver = gpu_query_fw(fd, AMDGPU_INFO_FW_SDMA());
+
+    let mem: list.ArrayList[u8] = buf_zero(96);
+    if (gpu_info_query(fd, AMDGPU_INFO_MEMORY(), &mem, 0, 0, 0)) {
+        g.*.vram_total = peek64(mem, 0); g.*.vram_usable = peek64(mem, 8);
+        g.*.gtt_total = peek64(mem, 64); g.*.gtt_usable = peek64(mem, 72);
+    }
+    list.free[u8](&mem);
+    let ras: list.ArrayList[u8] = buf_zero(8);
+    if (gpu_info_query(fd, AMDGPU_INFO_RAS_ENABLED_FEATURES(), &ras, 0, 0, 0)) {
+        g.*.ras_enabled = peek64(ras, 0);
+    }
+    list.free[u8](&ras);
+    let fault: list.ArrayList[u8] = buf_zero(16);
+    g.*.fault_query_ok = gpu_info_query(fd, AMDGPU_INFO_GPUVM_FAULT(), &fault, 0, 0, 0);
+    if (g.*.fault_query_ok) {
+        g.*.fault_addr = peek64(fault, 0);
+        g.*.fault_status = peek32(fault, 8);
+        g.*.fault_vmhub = peek32(fault, 12);
+    }
+    list.free[u8](&fault);
 }
 
 // NUL-terminated discovered render-node path (open() wants a C string).
@@ -209,9 +321,18 @@ fn gpu_open() Gpu {
                     .engine_clock_khz = peek64(devinfo, 32),
                     .memory_clock_khz = peek64(devinfo, 40),
                     .render_minor = minor,
+                    .gfx_ip_major = 0, .gfx_ip_minor = 0, .gfx_rings = 0,
+                    .gfx_ip_discovery = 0,
+                    .compute_ip_major = 0, .compute_ip_minor = 0, .compute_rings = 0,
+                    .compute_ip_discovery = 0,
+                    .fw_mec_ver = 0, .fw_sdma_ver = 0,
+                    .vram_total = 0, .vram_usable = 0, .gtt_total = 0, .gtt_usable = 0,
+                    .ras_enabled = 0, .fault_addr = 0, .fault_status = 0,
+                    .fault_vmhub = 0, .fault_query_ok = false,
                     .va_base = peek64(devinfo, 144), .va_cursor = 0,
                 };
                 out.va_cursor = out.va_base + 0x1000000;
+                gpu_query_extended(fd, &out);
                 list.free[u8](&devinfo);
                 list.free[u8](&req);
                 return out;
@@ -237,11 +358,12 @@ struct GpuBuf {
     size: i64,
     cpu_addr: i64,   // mmap'd host pointer, or 0
     gpu_va: i64,     // GPU virtual address once VM-mapped, or 0
+    owner: i32,      // 0 CPU, 1 GPU; transitions are fenced and ordered
     ok: bool,
 }
 
 fn gpu_buf_bad() GpuBuf {
-    return GpuBuf{ .handle = 0, .size = 0, .cpu_addr = 0, .gpu_va = 0, .ok = false };
+    return GpuBuf{ .handle = 0, .size = 0, .cpu_addr = 0, .gpu_va = 0, .owner = 0, .ok = false };
 }
 
 // Allocate a CPU-accessible GTT buffer of `size` bytes and mmap it into the
@@ -274,7 +396,7 @@ fn gpu_alloc(g: *Gpu, size: i64) GpuBuf {
     if (addr < 0 && addr > 0 - 4096) {          // negative = -errno
         return gpu_free_handle(g, handle);
     }
-    return GpuBuf{ .handle = handle, .size = size, .cpu_addr = addr, .gpu_va = 0, .ok = true };
+    return GpuBuf{ .handle = handle, .size = size, .cpu_addr = addr, .gpu_va = 0, .owner = 0, .ok = true };
 }
 
 fn gpu_free_handle(g: *Gpu, handle: i64) GpuBuf {
@@ -294,6 +416,21 @@ fn gpu_free(g: *Gpu, b: *GpuBuf) void {
     if (b.*.ok) { let _x: GpuBuf = gpu_free_handle(g, b.*.handle); }
     b.*.ok = false;
     b.*.cpu_addr = 0;
+    b.*.owner = 0;
+}
+
+fn gpu_release_to_device(b: *GpuBuf) bool {
+    if (!b.*.ok || b.*.owner != 0) { return false; }
+    @memoryFence();
+    b.*.owner = 1;
+    return true;
+}
+
+fn gpu_acquire_from_device(b: *GpuBuf) bool {
+    if (!b.*.ok || b.*.owner != 1) { return false; }
+    @memoryFence();
+    b.*.owner = 0;
+    return true;
 }
 
 // Host pointer to the buffer's mapped bytes (for _zag_memcpy in/out).
@@ -326,6 +463,19 @@ fn gpu_va_op(g: *Gpu, b: *GpuBuf, va: i64, flags: i64, op: i64) i64 {
     return rc;
 }
 
+fn gpu_va_op_ordered(g: *Gpu, b: *GpuBuf, va: i64, flags: i64, op: i64,
+                     syncobj: i64, wait_for_prior: bool, point: i64) i64 {
+    let inputs: list.ArrayList[u8] = buf_zero(4);
+    poke32(&inputs, 0, syncobj);
+    let r: list.ArrayList[u8] = buf_zero(64);
+    poke32(&r, 0, b.*.handle); poke32(&r, 8, op); poke32(&r, 12, flags);
+    poke64(&r, 16, va); poke64(&r, 24, 0); poke64(&r, 32, b.*.size);
+    poke64(&r, 40, point); poke32(&r, 48, syncobj);
+    if (wait_for_prior) { poke32(&r, 52, 1); poke64(&r, 56, inputs.data as i64); }
+    let rc: i64 = g_ioctl(g.*.fd, IOCTL_AMDGPU_GEM_VA(), r.data as i64);
+    list.free[u8](&inputs); list.free[u8](&r); return rc;
+}
+
 // Bind a data buffer read/write into the VM; stores the chosen VA on the buffer.
 fn gpu_map_data(g: *Gpu, b: *GpuBuf) bool {
     let va: i64 = gpu_next_va(g, b.*.size);
@@ -342,6 +492,26 @@ fn gpu_map_exec(g: *Gpu, b: *GpuBuf) bool {
     if (rc != 0) { return false; }
     b.*.gpu_va = va;
     return true;
+}
+
+fn gpu_map_ordered(g: *Gpu, b: *GpuBuf, flags: i64,
+                   syncobj: i64, point: *i64) bool {
+    if (syncobj == 0) { return false; }
+    let va: i64 = gpu_next_va(g, b.*.size);
+    point.* = point.* + 1;
+    let rc: i64 = gpu_va_op_ordered(g, b, va, flags, VA_OP_MAP(),
+        syncobj, point.* > 1, point.*);
+    if (rc != 0) { return false; }
+    b.*.gpu_va = va;
+    return true;
+}
+
+fn gpu_map_data_ordered(g: *Gpu, b: *GpuBuf, syncobj: i64, point: *i64) bool {
+    return gpu_map_ordered(g, b, VM_PAGE_READABLE() + VM_PAGE_WRITEABLE(), syncobj, point);
+}
+
+fn gpu_map_exec_ordered(g: *Gpu, b: *GpuBuf, syncobj: i64, point: *i64) bool {
+    return gpu_map_ordered(g, b, VM_PAGE_READABLE() + VM_PAGE_EXECUTABLE(), syncobj, point);
 }
 
 // ── GPU context ───────────────────────────────────────────────────────────────
@@ -362,6 +532,62 @@ fn gpu_ctx_free(g: *Gpu, ctx_id: i64) void {
     poke32(&r, 8, ctx_id);                      // in.ctx_id @8
     let _rc: i64 = g_ioctl(g.*.fd, IOCTL_AMDGPU_CTX(), r.data as i64);
     list.free[u8](&r);
+}
+
+fn gpu_bo_list_create(g: *Gpu, handles: list.ArrayList[i64]) i64 {
+    if (!g.*.ok || handles.len < 1 || handles.len > 64) { return 0; }
+    let entries: list.ArrayList[u8] = buf_zero(handles.len * 8);
+    let i: i32 = 0;
+    while (i < handles.len) {
+        poke32(&entries, i * 8, handles.data[i]);
+        poke32(&entries, i * 8 + 4, 0); // normal migration priority
+        i = i + 1;
+    }
+    let req: list.ArrayList[u8] = buf_zero(24);
+    poke32(&req, 0, BO_LIST_CREATE());
+    poke32(&req, 8, handles.len as i64);
+    poke32(&req, 12, 8);
+    poke64(&req, 16, entries.data as i64);
+    let rc: i64 = g_ioctl(g.*.fd, IOCTL_AMDGPU_BO_LIST(), req.data as i64);
+    let handle: i64 = 0;
+    if (rc == 0) { handle = peek32(req, 0); }
+    list.free[u8](&entries); list.free[u8](&req);
+    return handle;
+}
+
+fn gpu_bo_list_destroy(g: *Gpu, handle: i64) void {
+    if (!g.*.ok || handle == 0) { return; }
+    let req: list.ArrayList[u8] = buf_zero(24);
+    poke32(&req, 0, BO_LIST_DESTROY()); poke32(&req, 4, handle);
+    let _rc: i64 = g_ioctl(g.*.fd, IOCTL_AMDGPU_BO_LIST(), req.data as i64);
+    list.free[u8](&req);
+}
+
+fn gpu_syncobj_create(g: *Gpu) i64 {
+    if (!g.*.ok) { return 0; }
+    let req: list.ArrayList[u8] = buf_zero(8);
+    let rc: i64 = g_ioctl(g.*.fd, IOCTL_SYNCOBJ_CREATE(), req.data as i64);
+    let handle: i64 = 0; if (rc == 0) { handle = peek32(req, 0); }
+    list.free[u8](&req); return handle;
+}
+
+fn gpu_syncobj_destroy(g: *Gpu, handle: i64) void {
+    if (!g.*.ok || handle == 0) { return; }
+    let req: list.ArrayList[u8] = buf_zero(8); poke32(&req, 0, handle);
+    let _rc: i64 = g_ioctl(g.*.fd, IOCTL_SYNCOBJ_DESTROY(), req.data as i64);
+    list.free[u8](&req);
+}
+
+fn gpu_syncobj_timeline_wait(g: *Gpu, handle: i64, point: i64) bool {
+    let handles: list.ArrayList[u8] = buf_zero(4); poke32(&handles, 0, handle);
+    let points: list.ArrayList[u8] = buf_zero(8); poke64(&points, 0, point);
+    let req: list.ArrayList[u8] = buf_zero(48);
+    poke64(&req, 0, handles.data as i64); poke64(&req, 8, points.data as i64);
+    poke64(&req, 16, g_now_ns() + 3000000000); poke32(&req, 24, 1);
+    poke32(&req, 28, 3); // WAIT_ALL | WAIT_FOR_SUBMIT
+    let rc: i64 = g_ioctl(g.*.fd, IOCTL_SYNCOBJ_TIMELINE_WAIT(), req.data as i64);
+    list.free[u8](&handles); list.free[u8](&points); list.free[u8](&req);
+    return rc == 0;
 }
 
 // ── command submission ────────────────────────────────────────────────────────
@@ -403,6 +629,49 @@ fn gpu_submit_ib(g: *Gpu, ctx_id: i64, ib: *GpuBuf, ib_dwords: i64, ip_type: i64
     return fence;
 }
 
+fn gpu_submit_ordered(g: *Gpu, ctx_id: i64, ib: *GpuBuf, ib_dwords: i64,
+                      ip_type: i64, bo_list: i64, syncobj: i64,
+                      wait_point: i64, signal_point: i64,
+                      user_fence: *GpuBuf) i64 {
+    let ibc: list.ArrayList[u8] = buf_zero(32);
+    poke32(&ibc, 4, IB_FLAG_EMIT_MEM_SYNC());
+    poke64(&ibc, 8, ib.*.gpu_va); poke32(&ibc, 16, ib_dwords * 4);
+    poke32(&ibc, 20, ip_type);
+
+    let wait: list.ArrayList[u8] = buf_zero(16);
+    poke32(&wait, 0, syncobj); poke64(&wait, 8, wait_point);
+    let signal: list.ArrayList[u8] = buf_zero(16);
+    poke32(&signal, 0, syncobj); poke64(&signal, 8, signal_point);
+    let fence_data: list.ArrayList[u8] = buf_zero(8);
+    poke32(&fence_data, 0, user_fence.*.handle); poke32(&fence_data, 4, 0);
+
+    let cib: list.ArrayList[u8] = buf_zero(16);
+    poke32(&cib, 0, CHUNK_ID_IB()); poke32(&cib, 4, 8); poke64(&cib, 8, ibc.data as i64);
+    let cwait: list.ArrayList[u8] = buf_zero(16);
+    poke32(&cwait, 0, CHUNK_ID_TIMELINE_WAIT()); poke32(&cwait, 4, 4); poke64(&cwait, 8, wait.data as i64);
+    let csig: list.ArrayList[u8] = buf_zero(16);
+    poke32(&csig, 0, CHUNK_ID_TIMELINE_SIGNAL()); poke32(&csig, 4, 4); poke64(&csig, 8, signal.data as i64);
+    let cfence: list.ArrayList[u8] = buf_zero(16);
+    poke32(&cfence, 0, CHUNK_ID_FENCE()); poke32(&cfence, 4, 2); poke64(&cfence, 8, fence_data.data as i64);
+
+    let nchunks: i32 = 3; if (wait_point > 0) { nchunks = 4; }
+    let carr: list.ArrayList[u8] = buf_zero(nchunks * 8);
+    let ci: i32 = 0; poke64(&carr, ci * 8, cib.data as i64); ci = ci + 1;
+    if (wait_point > 0) { poke64(&carr, ci * 8, cwait.data as i64); ci = ci + 1; }
+    poke64(&carr, ci * 8, csig.data as i64); ci = ci + 1;
+    poke64(&carr, ci * 8, cfence.data as i64);
+
+    let cs: list.ArrayList[u8] = buf_zero(24);
+    poke32(&cs, 0, ctx_id); poke32(&cs, 4, bo_list);
+    poke32(&cs, 8, nchunks); poke64(&cs, 16, carr.data as i64);
+    let rc: i64 = g_ioctl(g.*.fd, IOCTL_AMDGPU_CS(), cs.data as i64);
+    let fence: i64 = 0 - 1; if (rc == 0) { fence = peek64(cs, 0); }
+    list.free[u8](&ibc); list.free[u8](&wait); list.free[u8](&signal);
+    list.free[u8](&fence_data); list.free[u8](&cib); list.free[u8](&cwait);
+    list.free[u8](&csig); list.free[u8](&cfence); list.free[u8](&carr); list.free[u8](&cs);
+    return fence;
+}
+
 // ── PM4 command-stream builder ────────────────────────────────────────────────
 // The command processor executes a stream of PM4 packets. We build the stream
 // in a host byte buffer (dwords, little-endian) and memcpy it into the IB.
@@ -433,13 +702,95 @@ fn gpu_kernel_hash(code: []u8) i64 {
     return h;
 }
 
-// The fixed manifest: hashes of the only kernels Triton will run. Any kernel whose
+// The fixed manifest: hashes of the only kernels PrismStudio will run. Any kernel whose
 // hash is not listed is rejected — no arbitrary machine code reaches the GPU.
 fn gpu_kernel_manifest_fill_hash() i64 { return 3356428357; }
+fn gpu_kernel_manifest_depth_hash() i64 { return 2301167924; }
+fn gpu_kernel_manifest_blend_hash() i64 { return 3498694752; }
 
 fn gpu_kernel_allowed(code: []u8) bool {
     let h: i64 = gpu_kernel_hash(code);
-    return h == gpu_kernel_manifest_fill_hash();
+    return h == gpu_kernel_manifest_fill_hash() || h == gpu_kernel_manifest_depth_hash() ||
+        h == gpu_kernel_manifest_blend_hash();
+}
+
+// Compiler-owned ZGK1 kernel bundle. Metadata is emitted by Zag's supported
+// `amdgpu-gfx1010` target and validated before any code bytes can be copied to
+// an executable GPU buffer. The runtime therefore consumes neither handwritten
+// production opcodes nor guessed resource-register values.
+struct GpuKernel {
+    raw: []u8,
+    code: []u8,
+    user_sgprs: i64,
+    system_sgprs: i64,
+    vgprs: i64,
+    lds_bytes: i64,
+    scratch_bytes: i64,
+    wave_size: i64,
+    rsrc1: i64,
+    rsrc2: i64,
+    workgroup_x: i64,
+    workgroup_y: i64,
+    workgroup_z: i64,
+    dispatch_initiator: i64,
+    pm4_profile: i64,
+    ok: bool,
+}
+
+fn gpu_u32_at(b: []u8, off: i32) i64 {
+    if (off < 0 || off + 4 > b.len) { return 0; }
+    return (b[off] as i64) + (b[off + 1] as i64) * 256 +
+        (b[off + 2] as i64) * 65536 + (b[off + 3] as i64) * 16777216;
+}
+
+fn gpu_kernel_bad() GpuKernel {
+    return GpuKernel{ .raw = "", .code = "", .user_sgprs = 0,
+        .system_sgprs = 0, .vgprs = 0, .lds_bytes = 0, .scratch_bytes = 0,
+        .wave_size = 0, .rsrc1 = 0, .rsrc2 = 0, .workgroup_x = 0,
+        .workgroup_y = 0, .workgroup_z = 0, .dispatch_initiator = 0,
+        .pm4_profile = 0, .ok = false };
+}
+
+fn gpu_kernel_load(path: []u8) GpuKernel {
+    let raw: []u8 = _zag_read_file(path);
+    if (raw.len < 80 || raw[0] != 90 || raw[1] != 71 || raw[2] != 75 || raw[3] != 49) {
+        return gpu_kernel_bad();
+    }
+    let version: i64 = gpu_u32_at(raw, 4);
+    let arch: i64 = gpu_u32_at(raw, 8);
+    let header: i32 = gpu_u32_at(raw, 12) as i32;
+    let code_len: i32 = gpu_u32_at(raw, 16) as i32;
+    let entry: i64 = gpu_u32_at(raw, 20);
+    if (version != 2 || arch != 1010 || header != 80 || entry != 0 ||
+        code_len <= 0 || header + code_len != raw.len) { return gpu_kernel_bad(); }
+    let code: []u8 = raw[header..header + code_len];
+    let user: i64 = gpu_u32_at(raw, 24);
+    let system: i64 = gpu_u32_at(raw, 28);
+    let vgprs: i64 = gpu_u32_at(raw, 32);
+    let lds: i64 = gpu_u32_at(raw, 36);
+    let scratch: i64 = gpu_u32_at(raw, 40);
+    let wave: i64 = gpu_u32_at(raw, 44);
+    let rsrc1: i64 = gpu_u32_at(raw, 48);
+    let rsrc2: i64 = gpu_u32_at(raw, 52);
+    let wx: i64 = gpu_u32_at(raw, 56);
+    let wy: i64 = gpu_u32_at(raw, 60);
+    let wz: i64 = gpu_u32_at(raw, 64);
+    let hash: i64 = gpu_u32_at(raw, 68);
+    let initiator: i64 = gpu_u32_at(raw, 72);
+    let pm4_profile: i64 = gpu_u32_at(raw, 76);
+    let meta_ok: bool = user >= 1 && user <= 16 && system <= 8 && vgprs >= 1 && vgprs <= 256 &&
+        lds <= 65536 && scratch == 0 && (wave == 32 || wave == 64) &&
+        wx >= 1 && wy >= 1 && wz >= 1 && wx * wy * wz <= 1024 &&
+        initiator == 1 && pm4_profile == 1 && rsrc2 == user * 2 + 128;
+    if (!meta_ok || hash != gpu_kernel_hash(code) || !gpu_kernel_allowed(code)) {
+        return gpu_kernel_bad();
+    }
+    return GpuKernel{ .raw = raw, .code = code, .user_sgprs = user,
+        .system_sgprs = system, .vgprs = vgprs, .lds_bytes = lds,
+        .scratch_bytes = scratch, .wave_size = wave, .rsrc1 = rsrc1,
+        .rsrc2 = rsrc2, .workgroup_x = wx, .workgroup_y = wy,
+        .workgroup_z = wz, .dispatch_initiator = initiator,
+        .pm4_profile = pm4_profile, .ok = true };
 }
 
 // ── submission fault taxonomy (Section 12.1) ──────────────────────────────────
@@ -479,7 +830,7 @@ fn gpu_dispatch_valid(nx: i64, ny: i64, nz: i64, gx: i64, gy: i64, gz: i64, shad
     return true;
 }
 
-// Reviewed/allowed PM4 type-3 opcodes for Triton's fixed compute path. Anything
+// Reviewed/allowed PM4 type-3 opcodes for PrismStudio's fixed compute path. Anything
 // else is rejected — no opcode sweeps, no arbitrary machine code (Section 12.1).
 fn pm4_opcode_allowed(op: i64) bool {
     return op == 0x76 ||   // SET_SH_REG
@@ -545,11 +896,18 @@ fn pm4_set_sh_reg_hdr(s: *list.ArrayList[u8], reg: i64, n: i64) void {
 
 // DISPATCH_DIRECT (PACKET3 0x15): launch grid (gx,gy,gz) workgroups.
 fn pm4_dispatch_direct(s: *list.ArrayList[u8], gx: i64, gy: i64, gz: i64) void {
+    pm4_dispatch_direct_contract(s, gx, gy, gz, 1);
+}
+
+// The compiler-owned dispatch contract supplies the initiator; consumers may
+// not infer it from the ISA or replace it with a local default.
+fn pm4_dispatch_direct_contract(s: *list.ArrayList[u8], gx: i64, gy: i64, gz: i64,
+                                initiator: i64) void {
     pm4_dw(s, pm4_type3(0x15, 4));
     pm4_dw(s, gx);
     pm4_dw(s, gy);
     pm4_dw(s, gz);
-    pm4_dw(s, 1);                                // DISPATCH_INITIATOR: SHADER_EN
+    pm4_dw(s, initiator);
 }
 
 // Build the PM4 to configure and launch a compute kernel.
@@ -639,6 +997,28 @@ fn pm4_build_dispatch_wg(
     pm4_dispatch_direct(s, gx, gy, gz);
 }
 
+// Compiler-metadata-owned dispatch. Resource registers and required local size
+// come from the validated ZGK1 bundle rather than being duplicated in runtime
+// source. The grid remains a bounded caller input.
+fn pm4_build_dispatch_meta(
+    s: *list.ArrayList[u8], shader_va: i64, ud: list.ArrayList[i64],
+    kernel: GpuKernel, gx: i64, gy: i64, gz: i64,
+) void {
+    pm4_set_sh_reg_hdr(s, REG_COMPUTE_START_X(), 3);
+    pm4_dw(s, 0); pm4_dw(s, 0); pm4_dw(s, 0);
+    pm4_set_sh_reg_hdr(s, REG_COMPUTE_NUM_THREAD_X(), 3);
+    pm4_dw(s, kernel.workgroup_x); pm4_dw(s, kernel.workgroup_y); pm4_dw(s, kernel.workgroup_z);
+    let pgm: i64 = shader_va / 256;
+    pm4_set_sh_reg_hdr(s, REG_COMPUTE_PGM_LO(), 2);
+    pm4_dw(s, pgm & 0xFFFFFFFF); pm4_dw(s, (pgm / 0x100000000) & 0xFFFFFFFF);
+    pm4_set_sh_reg_hdr(s, REG_COMPUTE_PGM_RSRC1(), 2);
+    pm4_dw(s, kernel.rsrc1); pm4_dw(s, kernel.rsrc2);
+    pm4_set_sh_reg_hdr(s, REG_COMPUTE_USER_DATA_0(), ud.len as i64);
+    let u: i32 = 0;
+    while (u < ud.len) { pm4_dw(s, ud.data[u] & 0xFFFFFFFF); u = u + 1; }
+    pm4_dispatch_direct_contract(s, gx, gy, gz, kernel.dispatch_initiator);
+}
+
 // Copy a host PM4 stream into an exec-mapped IB and submit it. Returns true on
 // fenced completion.
 fn gpu_run_pm4(g: *Gpu, ctx_id: i64, ib: *GpuBuf, pm4: list.ArrayList[u8], ip_type: i64) bool {
@@ -649,13 +1029,34 @@ fn gpu_run_pm4(g: *Gpu, ctx_id: i64, ib: *GpuBuf, pm4: list.ArrayList[u8], ip_ty
     return gpu_wait(g, ctx_id, ip_type, fence);
 }
 
+fn gpu_run_pm4_ordered(g: *Gpu, ctx_id: i64, target: *GpuBuf,
+                        shader: *GpuBuf, ib: *GpuBuf, user_fence: *GpuBuf,
+                        syncobj: i64, point: i64,
+                        pm4: list.ArrayList[u8], ip_type: i64) bool {
+    if (syncobj == 0 || point < 1 || !gpu_release_to_device(target)) { return false; }
+    _zag_memcpy(ib.*.cpu_addr as *i8, pm4.data as *i8, pm4.len);
+    let handles: list.ArrayList[i64] = list.make[i64](4);
+    list.push[i64](&handles, target.*.handle); list.push[i64](&handles, shader.*.handle);
+    list.push[i64](&handles, ib.*.handle); list.push[i64](&handles, user_fence.*.handle);
+    let bolist: i64 = gpu_bo_list_create(g, handles); list.free[i64](&handles);
+    if (bolist == 0) { target.*.owner = 0; return false; }
+    let fence: i64 = gpu_submit_ordered(g, ctx_id, ib, (pm4.len / 4) as i64,
+        ip_type, bolist, syncobj, point - 1, point, user_fence);
+    let done: bool = fence >= 0 && gpu_syncobj_timeline_wait(g, syncobj, point) &&
+        gpu_wait(g, ctx_id, ip_type, fence);
+    gpu_bo_list_destroy(g, bolist);
+    if (!done) { return false; }
+    return gpu_acquire_from_device(target);
+}
+
 // Block until fence `seq` on (ctx, ip_type) retires. Returns true if the CS
 // completed (status 0), false on timeout/error.
 fn gpu_wait(g: *Gpu, ctx_id: i64, ip_type: i64, seq: i64) bool {
     let r: list.ArrayList[u8] = buf_zero(32);   // union drm_amdgpu_wait_cs
     poke64(&r, 0, seq);                         // handle
-    // Bounded absolute timeout (now + 3s). A hung dispatch fails the wait
-    // instead of wedging us; amdgpu's timeout detector recovers the queue.
+    // Bounded userspace wait (now + 3s). This prevents an infinite host wait,
+    // but cannot guarantee that shared GPU firmware, display, or the device will
+    // recover. Physical submission still requires independent reset isolation.
     poke64(&r, 8, g_now_ns() + 3000000000);     // timeout
     poke32(&r, 16, ip_type);                    // ip_type
     poke32(&r, 28, ctx_id);                     // ctx_id @28

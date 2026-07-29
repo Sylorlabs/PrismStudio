@@ -1,0 +1,158 @@
+// process_stack.zag — versioned, explicit physical Y-stack contract.
+//
+// PrismStudio geometry is an integer voxel lattice, but a voxel Y coordinate is
+// not itself a material claim.  This file maps the usable Y band to the current
+// *illustrative* process plan.  Unknowns remain unknown; this is deliberately
+// not a fabrication recipe or a claim that these layers have been measured.
+
+@import("device_model.zag")
+@import("components.zag")
+
+enum ProcessLayerRole {
+    Substrate,
+    ActiveDevice,
+    DeviceCap,
+    Waveguide,
+    Reserved,
+}
+
+enum ProcessKnowledge {
+    Unknown,
+    Illustrative,
+    Characterized,
+}
+
+// Bit set describing what may occupy a lattice layer.  Kept independent of
+// component kinds so the stack can later grow new devices without a schema
+// rewrite.
+fn process_content_substrate() i32 { return 1; }
+fn process_content_waveguide() i32 { return 2; }
+fn process_content_active() i32 { return 4; }
+fn process_content_device_volume() i32 { return 8; }
+fn process_content_detector() i32 { return 16; }
+
+struct ProcessLayer {
+    y: i32,
+    role: ProcessLayerRole,
+    material: []u8,
+    thickness_nm: PhysicalParam,
+    content_mask: i32,
+    status: ProcessKnowledge,
+    note: []u8,
+}
+
+fn process_stack_schema_version() i32 { return 1; }
+fn process_layer_count() i32 { return 13; }
+
+fn process_knowledge_name(k: ProcessKnowledge) []u8 {
+    return switch (k) {
+        .Unknown => "unknown",
+        .Illustrative => "illustrative",
+        .Characterized => "characterized",
+    };
+}
+
+fn process_layer_role_name(r: ProcessLayerRole) []u8 {
+    return switch (r) {
+        .Substrate => "substrate",
+        .ActiveDevice => "active device",
+        .DeviceCap => "device cap",
+        .Waveguide => "waveguide",
+        .Reserved => "reserved",
+    };
+}
+
+fn process_layer_content_summary(p: ProcessLayer) []u8 {
+    if (p.role == ProcessLayerRole.Substrate) { return "substrate"; }
+    if (p.role == ProcessLayerRole.ActiveDevice) { return "active devices + guides"; }
+    if (p.role == ProcessLayerRole.DeviceCap) { return "device volume + guides"; }
+    if (p.role == ProcessLayerRole.Waveguide) { return "guides"; }
+    return "none";
+}
+
+fn process_illustrative_thickness(value_nm: f64, note: []u8) PhysicalParam {
+    return physical_param(value_nm, "nm", note);
+}
+
+fn process_reserved(y: i32) ProcessLayer {
+    return ProcessLayer{
+        .y = y, .role = ProcessLayerRole.Reserved, .material = "unassigned",
+        .thickness_nm = physical_unknown("nm"), .content_mask = 0,
+        .status = ProcessKnowledge.Unknown,
+        .note = "outside the declared process stack",
+    };
+}
+
+// Returns the declared layer for an exact integer Y coordinate.  The 250 nm
+// lattice pitch is a layout unit; values below are per-layer physical-thickness
+// placeholders with explicit illustrative provenance until a foundry stack is
+// imported and characterized.
+fn process_layer_for_y(y: i32) ProcessLayer {
+    if (y == 0) {
+        return ProcessLayer{ .y = 0, .role = ProcessLayerRole.Substrate,
+            .material = "GeSn substrate", .thickness_nm = process_illustrative_thickness(220000.0, "illustrative GeSn substrate thickness"),
+            .content_mask = process_content_substrate(), .status = ProcessKnowledge.Illustrative,
+            .note = "mechanical substrate; plates are anchored here" };
+    }
+    if (y == 1) {
+        return ProcessLayer{ .y = 1, .role = ProcessLayerRole.ActiveDevice,
+            .material = "GeSn active photonic film", .thickness_nm = process_illustrative_thickness(250.0, "illustrative active-film thickness"),
+            .content_mask = process_content_waveguide() | process_content_active() | process_content_device_volume() | process_content_detector(),
+            .status = ProcessKnowledge.Illustrative,
+            .note = "device origins, ports, and primary waveguide plane" };
+    }
+    if (y >= 2 && y <= 8) {
+        return ProcessLayer{ .y = y, .role = ProcessLayerRole.DeviceCap,
+            .material = "dielectric device volume", .thickness_nm = process_illustrative_thickness(250.0, "illustrative device-volume layer thickness"),
+            .content_mask = process_content_waveguide() | process_content_device_volume() | process_content_detector(),
+            .status = ProcessKnowledge.Illustrative,
+            .note = "vertical device volume and crossover-capable guide plane" };
+    }
+    if (y >= 9 && y <= 12) {
+        return ProcessLayer{ .y = y, .role = ProcessLayerRole.Waveguide,
+            .material = "dielectric-clad guide layer", .thickness_nm = process_illustrative_thickness(250.0, "illustrative waveguide-layer thickness"),
+            .content_mask = process_content_waveguide(), .status = ProcessKnowledge.Illustrative,
+            .note = "routing-only optical crossover plane" };
+    }
+    return process_reserved(y);
+}
+
+fn process_layer_at(index: i32) ProcessLayer { return process_layer_for_y(index); }
+fn process_layer_name(y: i32) []u8 { return process_layer_role_name(process_layer_for_y(y).role); }
+
+fn process_layer_has(y: i32, content: i32) bool {
+    return (process_layer_for_y(y).content_mask & content) == content;
+}
+
+// The route band deliberately includes the active plane: all current ports
+// attach at y=1.  Higher layers represent exact, lattice-addressable crossovers.
+fn process_layer_is_waveguide(y: i32) bool { return process_layer_has(y, process_content_waveguide()); }
+
+// Vertical routing is intentionally constrained to adjacent declared guide
+// layers.  A future foundry stack can tighten this to named vias/transitions.
+fn process_transition_allowed(from_y: i32, to_y: i32) bool {
+    if (!process_layer_is_waveguide(from_y) || !process_layer_is_waveguide(to_y)) { return false; }
+    let d: i32 = from_y - to_y;
+    return d >= 0 - 1 && d <= 1;
+}
+
+fn process_layer_is_component_origin(k: Kind, y: i32) bool {
+    if (k == Kind.Plate) { return y == 0 && process_layer_has(y, process_content_substrate()); }
+    return y == 1 && process_layer_has(y, process_content_active());
+}
+
+// Every occupied cell must have a declared compatible process role.  This
+// preserves today’s 1..8-cell-tall editable devices while preventing a device
+// from silently extending into routing-only or unassigned layers.
+fn process_component_extent_allowed(k: Kind, origin_y: i32, height: i32) bool {
+    if (height <= 0 || !process_layer_is_component_origin(k, origin_y)) { return false; }
+    let required: i32 = process_content_device_volume();
+    if (k == Kind.Detector) { required = process_content_detector(); }
+    if (k == Kind.Plate) { required = process_content_substrate(); }
+    let y: i32 = origin_y;
+    while (y < origin_y + height) {
+        if (!process_layer_has(y, required)) { return false; }
+        y = y + 1;
+    }
+    return true;
+}

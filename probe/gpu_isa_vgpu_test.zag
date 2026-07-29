@@ -1,0 +1,61 @@
+// Executes PrismStudio's real compiler bundle and PM4 stream through Zag's
+// strict virtual GFX10.1 command processor, then presents the resulting virtual
+// GPU memory through a software framebuffer. No DRM node is opened.
+
+@import("../src/gpu_rt.zag")
+@import("../src/fb.zag")
+@import("std:gfx1010_vm")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.*=failures.*+1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures:i32=0;
+    let kernel:GpuKernel=gpu_kernel_load("examples/gpu_fill_kernel.zgk");
+    let bundle:Gfx1010VmBundle=gfxvm_bundle_load("examples/gpu_fill_kernel.zgk");
+    check("Prism and Zag independently accept the same compiler bundle",kernel.ok&&bundle.ok,&failures);
+
+    let w:i32=64; let h:i32=48; let count:i64=(w*h) as i64;
+    let shader_va:i64=4096; let target_va:i64=8192; let color:i64=rgb(23,45,67);
+    let ud:list.ArrayList[i64]=list.make[i64](3);
+    list.push[i64](&ud,target_va&0xFFFFFFFF); list.push[i64](&ud,target_va/4294967296); list.push[i64](&ud,color);
+    let ib:list.ArrayList[u8]=list.make[u8](128);
+    pm4_build_dispatch_meta(&ib,shader_va,ud,kernel,count,1,1);
+    let decoded:Gfx1010VmDispatch=gfxvm_decode_dispatch(ib.data[0..ib.len],bundle);
+    check("Zag decodes Prism's exact PM4 register stream",decoded.ok&&decoded.grid_x==count&&decoded.value==color,&failures);
+
+    let memory:list.ArrayList[i64]=list.make[i64](w*h+1); memory.len=w*h+1; memory.data[w*h]=0x12345678;
+    let result:Gfx1010VmResult=gfxvm_run_fill(bundle,ib.data[0..ib.len],shader_va,target_va,memory.data,memory.len,1);
+    let exact:bool=true; let i:i32=0; while(i<w*h){if(memory.data[i]!=color){exact=false;}i=i+1;}
+    check("virtual GPU executes every compiler instruction and store",result.ok&&result.workgroups==count&&result.instructions==count*7&&exact,&failures);
+    check("virtual GPU framebuffer guard remains untouched",memory.data[w*h]==0x12345678,&failures);
+
+    let display:FB=fb_new(w,h); i=0; while(i<w*h){display.px.data[i]=memory.data[i];i=i+1;}
+    fb_write_bmp(&display,"/tmp/prism_zag_virtual_gpu_display.bmp");
+    check("virtual GPU memory presents as an archived display frame",_zag_file_exists("/tmp/prism_zag_virtual_gpu_display.bmp")==1,&failures);
+
+    let bad:list.ArrayList[u8]=list.make[u8](ib.len); i=0; while(i<ib.len){list.push[u8](&bad,ib.data[i]);i=i+1;}
+    bad.data[bad.len-4]=3;
+    check("reserved dispatch bits are rejected before virtual execution",!gfxvm_decode_dispatch(bad.data[0..bad.len],bundle).ok,&failures);
+
+    // One million varied workgroups execute through the actual decoded ISA VM,
+    // with a CPU→device→CPU ownership transfer and fence for every submission.
+    let campaign_mem:list.ArrayList[i64]=list.make[i64](1001); campaign_mem.len=1001;
+    let q:Gfx1010VmQueue=gfxvm_queue_new(); let seed:i64=991827; let round:i32=0;
+    let campaign_ok:bool=true;
+    while(round<1000&&campaign_ok){
+        seed=(seed*1664525+1013904223)%2147483647;
+        let cib:list.ArrayList[u8]=list.make[u8](128); let cud:list.ArrayList[i64]=list.make[i64](3);
+        list.push[i64](&cud,target_va&0xFFFFFFFF);list.push[i64](&cud,target_va/4294967296);list.push[i64](&cud,seed);
+        pm4_build_dispatch_meta(&cib,shader_va,cud,kernel,1000,1,1);
+        campaign_mem.data[1000]=0x12345678;
+        if(!gfxvm_release_to_device(&q)){campaign_ok=false;}
+        let cr:Gfx1010VmResult=gfxvm_queue_submit_fill(&q,bundle,cib.data[0..cib.len],shader_va,target_va,campaign_mem.data,campaign_mem.len,(round as i64)+1);
+        if(!cr.ok||!gfxvm_acquire_from_device(&q,(round as i64)+1)||campaign_mem.data[0]!=seed||campaign_mem.data[999]!=seed||campaign_mem.data[1000]!=0x12345678){campaign_ok=false;}
+        list.free[u8](&cib);list.free[i64](&cud);round=round+1;
+    }
+    check("one million varied ISA workgroups retire with exact ownership and fences",campaign_ok&&q.submissions==1000&&q.instructions==7000000&&q.last_fence==1000,&failures);
+    if(failures==0){_zag_println("GPU ISA VGPU: ALL PASS");return 0;}_zag_println("GPU ISA VGPU: FAILURES");return 1;
+}

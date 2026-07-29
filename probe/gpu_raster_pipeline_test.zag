@@ -1,0 +1,70 @@
+// Full software model of the compiler-owned tiled GPU raster contract.
+@import("../src/gpu_raster.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn lcg(s: i64) i64 { return (s * 1664525 + 1013904223) % 2147483647; }
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let kernel: GpuKernel = gpu_kernel_load("examples/gpu_fill_kernel.zgk");
+    let p: GpuRasterPipeline = gpu_raster_pipeline(kernel,64,48,16,778899);
+    p.guard.enabled = true;
+    check("pipeline consumes a validated compiler-emitted kernel and metadata",
+        p.compiler_metadata_ok && p.kernel_hash == gpu_kernel_manifest_fill_hash(), &failures);
+
+    let cmds: list.ArrayList[GpuRasterCmd] = list.make[GpuRasterCmd](4);
+    list.push[GpuRasterCmd](&cmds,GpuRasterCmd{.x=4,.y=3,.w=40,.h=30,.depth=50,.color=rgb(220,30,20),.alpha=256});
+    list.push[GpuRasterCmd](&cmds,GpuRasterCmd{.x=12,.y=9,.w=30,.h=25,.depth=20,.color=rgb(20,200,80),.alpha=192});
+    list.push[GpuRasterCmd](&cmds,GpuRasterCmd{.x=0-7,.y=35,.w=30,.h=20,.depth=10,.color=rgb(40,80,230),.alpha=128});
+    let cpu: FB = fb_new(64,48); let tiled: FB = fb_new(64,48);
+    gpu_raster_reference(&cpu,rgb(8,10,14),cmds);
+    check("tiled clear geometry depth clipping compositing and presentation execute",
+        gpu_raster_dispatch(&p,&tiled,rgb(8,10,14),cmds) && p.stage_mask == 63, &failures);
+    check("the complete tiled frame is pixel-identical to the independent CPU oracle",
+        gpu_raster_diff(&cpu,&tiled) == 0, &failures);
+    check("every tile retires behind its own monotonic fence",
+        gpu_raster_all_tiles_fenced(&p), &failures);
+    check("the verified back buffer alone can be presented by atomic swap",
+        gpu_raster_complete(&p.guard,&cpu,&tiled,123,1), &failures);
+
+    let seed: i64 = 991827;
+    let randomized_ok: bool = true;
+    let round: i32 = 0;
+    while (round < 256 && randomized_ok) {
+        let rc: list.ArrayList[GpuRasterCmd] = list.make[GpuRasterCmd](8);
+        let n: i32 = 0;
+        while (n < 8) {
+            seed = lcg(seed); let x: i32 = ((seed % 80) as i32) - 8;
+            seed = lcg(seed); let y: i32 = ((seed % 64) as i32) - 8;
+            seed = lcg(seed); let w: i32 = 1 + (seed % 24) as i32;
+            seed = lcg(seed); let h: i32 = 1 + (seed % 20) as i32;
+            seed = lcg(seed); let z: i64 = seed % 100;
+            seed = lcg(seed); let col: i64 = seed & 16777215;
+            seed = lcg(seed); let a: i32 = 64 + (seed % 193) as i32;
+            list.push[GpuRasterCmd](&rc,GpuRasterCmd{.x=x,.y=y,.w=w,.h=h,.depth=z,.color=col,.alpha=a}); n = n + 1;
+        }
+        let ra: FB = fb_new(64,48); let rb: FB = fb_new(64,48);
+        gpu_raster_reference(&ra,0,rc);
+        if (!gpu_raster_dispatch(&p,&rb,0,rc) || gpu_raster_diff(&ra,&rb) != 0) { randomized_ok = false; }
+        list.free[GpuRasterCmd](&rc); round = round + 1;
+    }
+    check("256 seeded randomized differential scenes have zero mismatch",randomized_ok,&failures);
+
+    // A million bounded tile dispatches in the software safety model. This is
+    // not silicon certification; it proves queue/fence arithmetic and memory
+    // bounds before hardware is authorized.
+    let tiny: FB = fb_new(8,8); let tp: GpuRasterPipeline = gpu_raster_pipeline(kernel,8,8,8,778899);
+    tp.guard.enabled = true; let empty: list.ArrayList[GpuRasterCmd] = list.make[GpuRasterCmd](1);
+    let i: i32 = 0; let million_ok: bool = true;
+    while (i < 1000000 && million_ok) { if (!gpu_raster_tile(&tp,&tiny,0,empty,0)) { million_ok = false; } i = i + 1; }
+    check("one million bounded software tile dispatches retire monotonically",
+        million_ok && tp.next_fence == 1000001 && tp.tile_fences.data[0] == 1000000, &failures);
+
+    list.free[GpuRasterCmd](&cmds); list.free[GpuRasterCmd](&empty);
+    if (failures == 0) { _zag_println("GPU RASTER PIPELINE: ALL PASS"); return 0; }
+    _zag_println("GPU RASTER PIPELINE: FAILURES"); return 1;
+}

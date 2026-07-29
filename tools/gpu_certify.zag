@@ -1,0 +1,136 @@
+// gpu_certify.zag — one-at-a-time, resumable physical GPU certification.
+//
+// Default invocation is read-only preflight. `--run-one` performs one attempt;
+// `--count N` performs N strictly sequential, individually fenced attempts and
+// checkpoints after every one. Shared-display execution requires Zag's explicit
+// acknowledgement and can never become isolated certification.
+
+@import("../std/list.zag") as list
+@import("../src/gpu_compute.zag")
+@import("std:gpu")
+@import("std:linux_gpu_isolation")
+
+fn cert_arg_has(want:[]u8)bool{let i:i32=1;while(i<_zag_argc()){if(_zag_strcmp(_zag_arg(i),want)==1){return true;}i=i+1;}return false;}
+fn cert_arg_after(want:[]u8,fallback:[]u8)[]u8{let i:i32=1;while(i+1<_zag_argc()){if(_zag_strcmp(_zag_arg(i),want)==1){return _zag_arg(i+1);}i=i+1;}return fallback;}
+fn cert_hash_file(path:[]u8)i64{let raw:[]u8=_zag_read_file(path);if(raw.len<0){return 0;}return gpu_kernel_hash(raw);}
+
+fn cert_read_u32(addr:i64)i64{
+    let b:list.ArrayList[u8]=list.make[u8](4);let i:i32=0;while(i<4){list.push[u8](&b,0);i=i+1;}
+    _zag_memcpy(b.data as *i8,addr as *i8,4);let v:i64=0;let k:i32=0;
+    while(k<4){v=v+(b.data[k] as i64)*pow2(k*8);k=k+1;}list.free[u8](&b);return v;
+}
+
+fn cert_write_u32(addr:i64,v:i64)void{
+    let b:list.ArrayList[u8]=list.make[u8](4);let k:i32=0;
+    while(k<4){list.push[u8](&b,((v/pow2(k*8))&255) as u8);k=k+1;}
+    _zag_memcpy(addr as *i8,b.data as *i8,4);list.free[u8](&b);
+}
+
+fn cert_logs()[]u8{
+    return _zag_exec_capture("journalctl -k -n 1000 --no-pager 2>/dev/null | rg -i 'amdgpu|drm'");
+}
+
+fn cert_append(s:[]u8,key:[]u8,value:i64)[]u8{
+    s=_zag_str_concat(s,key);s=_zag_str_concat(s,_zag_i64_to_str(value));return _zag_str_concat(s,"\n");
+}
+
+fn cert_report(path:[]u8,t:ZagGpuTuple,d:ZagGpuDecision,c:ZagGpuCampaign,
+               before:i64,after:i64,ran:bool,output_ok:bool,logs_ok:bool)bool{
+    let s:[]u8="prism-gpu-certification 1\n";
+    s=cert_append(s,"device=",t.device);s=cert_append(s,"gfx_ip=",t.gfx_ip);
+    s=cert_append(s,"gfx_discovery=",t.gfx_discovery);s=cert_append(s,"gfx_rings=",t.gfx_rings);
+    s=cert_append(s,"compute_ip=",t.compute_ip);s=cert_append(s,"compute_discovery=",t.compute_discovery);
+    s=cert_append(s,"compute_rings=",t.compute_rings);
+    s=cert_append(s,"mec_firmware=",t.mec_firmware);s=cert_append(s,"sdma_firmware=",t.sdma_firmware);
+    s=cert_append(s,"kernel_hash=",t.kernel);s=cert_append(s,"compiler_hash=",t.compiler);s=cert_append(s,"runtime_hash=",t.runtime);
+    s=cert_append(s,"decision_code=",d.code as i64);s=_zag_str_concat(s,"decision_reason=");s=_zag_str_concat(s,d.reason);s=_zag_str_concat(s,"\n");
+    s=cert_append(s,"completed=",c.completed);s=cert_append(s,"target=",c.target);s=cert_append(s,"last_fence=",c.last_fence);
+    s=cert_append(s,"mismatches=",c.mismatches);s=cert_append(s,"timeouts=",c.timeouts);s=cert_append(s,"resets=",c.resets);s=cert_append(s,"faults=",c.faults);
+    s=cert_append(s,"kernel_log_before_hash=",before);s=cert_append(s,"kernel_log_after_hash=",after);
+    s=cert_append(s,"ran=",ran as i64);s=cert_append(s,"output_ok=",output_ok as i64);s=cert_append(s,"kernel_log_clean=",logs_ok as i64);
+    return _zag_write_file(path,s)==0;
+}
+
+fn main()i32{
+    let run_one:bool=cert_arg_has("--run-one");
+    let count_requested:bool=cert_arg_has("--count");let count:i32=1;
+    if(count_requested){count=_zag_str_to_i64(cert_arg_after("--count","0")) as i32;}
+    let run_requested:bool=run_one||count_requested;
+    if(count<1||count>10000){_zag_eprintln("gpu-certify: --count must be within 1..10000");return 1;}
+    let state_path:[]u8=cert_arg_after("--state","/tmp/prism_gpu_fill_campaign.state");
+    let report_path:[]u8=cert_arg_after("--report","/tmp/prism_gpu_fill_campaign.report");
+    let g:Gpu=gpu_open();
+    if(!g.ok){_zag_println("gpu-certify: no AMDGPU render node");if(run_requested){return 2;}return 0;}
+    let root:[]u8=_zag_str_concat("/sys/class/drm/renderD",_zag_i64_to_str(g.render_minor as i64));root=_zag_str_concat(root,"/device");
+    let iso:LinuxGpuIsolation=linux_gpu_isolation_probe(root);
+    let kernel:GpuKernel=gpu_kernel_load("examples/gpu_fill_kernel.zgk");
+    let kh:i64=0;if(kernel.ok){kh=gpu_kernel_hash(kernel.code);}
+    let t:ZagGpuTuple=ZagGpuTuple{.device=g.device_id,.gfx_ip=(g.gfx_ip_major as i64)*100+(g.gfx_ip_minor as i64),
+        .gfx_discovery=g.gfx_ip_discovery,.gfx_rings=g.gfx_rings,
+        .compute_ip=(g.compute_ip_major as i64)*100+(g.compute_ip_minor as i64),
+        .compute_discovery=g.compute_ip_discovery,.compute_rings=g.compute_rings,
+        .mec_firmware=g.fw_mec_ver,.sdma_firmware=g.fw_sdma_ver,.kernel=kh,
+        .compiler=cert_hash_file("../zag/zag-poc/znc"),.runtime=cert_hash_file("/proc/self/exe")};
+    gpu_close(&g);
+    let override:bool=_zag_strcmp(_zag_getenv("PRISM_GPU_SHARED_DISPLAY_OVERRIDE"),"I_ACCEPT_DISPLAY_RESET_OR_SYSTEM_HANG")==1;
+    let req:ZagGpuExecutionRequest=ZagGpuExecutionRequest{.tier=zag_gpu_tier_physical_bounded(),
+        .display_bound=!iso.destructive_test_safe,.reset_isolated=iso.destructive_test_safe,
+        .process_isolation=iso.process_cleaner,.driver_recovery=false,
+        .compiler_proved_straight_line=kernel.ok,.manifest_verified=kernel.ok,
+        .workgroups=1,.instructions=7,.writable_bytes=4,.deadline_ms=50,
+        .allow_shared_display_override=override,.acknowledge_reset_or_system_hang=override};
+    let d:ZagGpuDecision=zag_gpu_execution_decide(req);
+    _zag_print("gpu-certify: isolation=");_zag_println(linux_gpu_isolation_name(iso.level));
+    _zag_print("gpu-certify: decision=");_zag_print(_zag_i64_to_str(d.code as i64));_zag_print(" ");_zag_println(d.reason);
+    _zag_print("gpu-certify: next=");_zag_println(d.next_action);
+    if(!run_requested){
+        let logs_before:[]u8=cert_logs();let before_hash:i64=0;if(logs_before.len>0){before_hash=gpu_kernel_hash(logs_before);}
+        let logs_after:[]u8=cert_logs();let after_hash:i64=0;if(logs_after.len>0){after_hash=gpu_kernel_hash(logs_after);}
+        let logs_ok:bool=before_hash!=0&&before_hash==after_hash;
+        let snapshot:ZagGpuCampaign=zag_gpu_campaign_load(state_path);
+        if(snapshot.version==0){snapshot=ZagGpuCampaign{.version=1,.target=10000,.completed=0,.last_fence=0,
+            .seed=20260715,.elapsed_ms=0,.mismatches=0,.timeouts=0,.resets=0,.faults=0};}
+        let recorded:bool=cert_report(report_path,t,d,snapshot,before_hash,after_hash,false,false,logs_ok);
+        if(recorded){_zag_print("gpu-certify: preflight evidence=");_zag_println(report_path);}
+        else{_zag_eprintln("gpu-certify: preflight evidence write failed");return 5;}
+        if(before_hash==0||after_hash==0){_zag_println("gpu-certify: kernel-log baseline unavailable; report records that limitation");}
+        _zag_println("gpu-certify: preflight only; no context, BO, or command submission created");return 0;
+    }
+    if(!d.allowed){_zag_eprintln("gpu-certify: physical run refused by execution policy");return 2;}
+    let campaign:ZagGpuCampaign=zag_gpu_campaign_load(state_path);
+    if(campaign.version==0){campaign=ZagGpuCampaign{.version=1,.target=10000,.completed=0,.last_fence=0,
+        .seed=20260715,.elapsed_ms=0,.mismatches=0,.timeouts=0,.resets=0,.faults=0};}
+    if(campaign.target!=10000||campaign.completed>=campaign.target||campaign.mismatches!=0||campaign.timeouts!=0||campaign.resets!=0||campaign.faults!=0){
+        _zag_eprintln("gpu-certify: campaign complete, corrupt, or quarantined; preserve evidence before starting a new state");return 3;
+    }
+    let attempt:i32=0;
+    while(attempt<count){
+        if(campaign.completed>=campaign.target){_zag_println("gpu-certify: target already complete");return 0;}
+        let logs_before:[]u8=cert_logs();if(logs_before.len<=0){_zag_eprintln("gpu-certify: kernel log unavailable; refusing uncertifiable physical run");return 4;}
+        let before_hash:i64=gpu_kernel_hash(logs_before);let start:i64=_zag_clock_monotonic_ms();
+        let c:GpuCompute=gpu_compute_open();let output_ok:bool=false;
+        if(c.ok){
+            let data:GpuBuf=gpu_alloc(&c.g,4096);
+            let mapped:bool=data.ok&&gpu_map_data_ordered(&c.g,&data,c.syncobj,&c.timeline_point)&&gpu_syncobj_timeline_wait(&c.g,c.syncobj,c.timeline_point);
+            if(mapped){
+                let value:i64=0x51000000+(campaign.completed&0x00FFFFFF);cert_write_u32(data.cpu_addr,0xDEADBEEF);
+                let ran:bool=gpu_fill_u32(&c.g,c.ctx,&data,&c.shader,&c.ib,&c.kernel,&c.user_fence,c.syncobj,&c.timeline_point,value,1);
+                @memoryFence();output_ok=ran&&cert_read_u32(data.cpu_addr)==value;
+            }
+            if(data.ok){gpu_free(&c.g,&data);}gpu_compute_close(&c);
+        }
+        let logs_after:[]u8=cert_logs();let after_hash:i64=0;if(logs_after.len>0){after_hash=gpu_kernel_hash(logs_after);}
+        let logs_ok:bool=after_hash==before_hash&&after_hash!=0;
+        if(output_ok&&logs_ok){campaign.completed=campaign.completed+1;campaign.last_fence=campaign.completed;}
+        else if(!output_ok){campaign.mismatches=campaign.mismatches+1;}else{campaign.faults=campaign.faults+1;}
+        campaign.elapsed_ms=campaign.elapsed_ms+(_zag_clock_monotonic_ms()-start);
+        let saved:bool=zag_gpu_campaign_save(state_path,campaign);
+        let reported:bool=cert_report(report_path,t,d,campaign,before_hash,after_hash,true,output_ok,logs_ok);
+        if(!saved||!reported){_zag_eprintln("gpu-certify: evidence persistence failed");return 5;}
+        _zag_print("gpu-certify: completed=");_zag_print(_zag_i64_to_str(campaign.completed));_zag_print("/10000 output_ok=");
+        _zag_print(_zag_i64_to_str(output_ok as i64));_zag_print(" kernel_log_clean=");_zag_println(_zag_i64_to_str(logs_ok as i64));
+        if(!output_ok||!logs_ok){_zag_eprintln("gpu-certify: anomaly quarantined; batch stopped immediately");return 6;}
+        attempt=attempt+1;
+    }
+    return 0;
+}

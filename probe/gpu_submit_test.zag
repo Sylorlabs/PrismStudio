@@ -1,6 +1,6 @@
 // gpu_submit_test.zag — Stage A: real GPU command submission.
 // Builds a PM4 command buffer that makes the GPU command processor WRITE_DATA a
-// magic value into a buffer, submits it on the compute ring, waits the fence,
+// magic value into a buffer, submits it on the selected command ring, waits the fence,
 // and verifies the value the *GPU* wrote. No shader yet — this proves context
 // creation, VM mapping, IB submission, and fencing all work end to end.
 // Skips cleanly (exit 0) when no render node is present.
@@ -50,11 +50,21 @@ fn main() i32 {
     _zag_memcpy(data.cpu_addr as *i8, poison.data as *i8, 4);
     list.free[u8](&poison);
 
-    // build: WRITE_DATA magic -> data buffer VA
+    // build: WRITE_DATA magic -> data buffer VA. The explicit `gfx` mode is a
+    // transport-only diagnostic: it avoids compute-ring and shader state so a
+    // failure can be localized without repeating a compute dispatch.
+    let ip_type: i64 = HW_IP_COMPUTE();
+    let ring_name: []u8 = "compute";
+    if (_zag_strcmp(_zag_getenv("PRISM_GPU_TRANSPORT_RING"), "gfx") == 1) {
+        ip_type = HW_IP_GFX();
+        ring_name = "gfx";
+    }
+    _zag_print("  ..  transport ring: ");
+    _zag_println(ring_name);
     let magic: i64 = 0x5A61C0DE;   // "Za"gCODE
     let pm4: list.ArrayList[u8] = list.make[u8](64);
     pm4_write_data1(&pm4, data.gpu_va, magic);
-    let ok: bool = gpu_run_pm4(&g, ctx, &ib, pm4, HW_IP_COMPUTE());
+    let ok: bool = gpu_run_pm4(&g, ctx, &ib, pm4, ip_type);
     list.free[u8](&pm4);
 
     if (!ok) { _zag_println("  XX  submit/fence failed"); fails = fails + 1; }

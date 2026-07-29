@@ -1,0 +1,20 @@
+@import("../src/gpu_virtual_cert.zag")
+@import("../src/gpu_backend.zag")
+
+fn pvc_arg_after(want:[]u8,fallback:[]u8)[]u8{let i:i32=1;while(i+1<_zag_argc()){
+    if(_zag_strcmp(_zag_arg(i),want)==1){return _zag_arg(i+1);}i=i+1;}return fallback;}
+
+fn main()i32{
+    let path:[]u8=pvc_arg_after("--report","/tmp/prism_virtual_gpu_certification.report");
+    let backend_name:[]u8=pvc_arg_after("--backend","virtual");let backend:PrismGpuBackendStatus=prism_gpu_backend_resolve(backend_name);
+    if(!backend.choice.ok||backend.choice.selected!=zag_gpu_backend_virtual()){
+        _zag_eprintln("virtual-gpu-certify: select --backend virtual; other choices are not forced into this runner");return 3;
+    }
+    let run:PrismVirtualGpuRun=prism_virtual_gpu_certify();
+    if(!prism_virtual_gpu_report(path,run)){_zag_eprintln("virtual-gpu-certify: report write failed");return 2;}
+    _zag_print("virtual-gpu-certify: dispatches=");_zag_print(_zag_i64_to_str(run.certification.dispatches));
+    _zag_print(" logical_soak_seconds=");_zag_print(_zag_i64_to_str(run.certification.logical_soak_seconds));
+    _zag_print(" wall_ms=");_zag_print(_zag_i64_to_str(run.wall_ms));_zag_print(" report=");_zag_println(path);
+    if(!run.ok){_zag_eprintln("virtual-gpu-certify: failed");return 1;}
+    _zag_println("virtual-gpu-certify: PASS host-contained only; physical certification remains false");return 0;
+}

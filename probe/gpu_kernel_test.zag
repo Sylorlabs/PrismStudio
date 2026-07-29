@@ -14,6 +14,25 @@ fn check(name_: []u8, ok: bool, failures: *i32) void {
 fn main() i32 {
     let failures: i32 = 0;
 
+    let bundle: GpuKernel = gpu_kernel_load("examples/gpu_fill_kernel.zgk");
+    check("compiler-owned gfx1010 bundle loads and validates", bundle.ok, &failures);
+    check("compiler metadata owns resource registers and one-thread workgroup",
+        bundle.user_sgprs == 3 && bundle.system_sgprs == 1 && bundle.vgprs == 4 &&
+        bundle.wave_size == 32 && bundle.rsrc1 == 0 && bundle.rsrc2 == 134 &&
+        bundle.dispatch_initiator == 1 && bundle.pm4_profile == 1 &&
+        bundle.workgroup_x == 1 && bundle.workgroup_y == 1 && bundle.workgroup_z == 1,
+        &failures);
+    check("compiler bundle code matches the reviewed manifest",
+        bundle.ok && gpu_kernel_hash(bundle.code) == gpu_kernel_manifest_fill_hash(), &failures);
+    let depth:GpuKernel=gpu_kernel_load("examples/gpu_depth_kernel.zgk");
+    check("compiler-owned depth kernel metadata and manifest validate",
+        depth.ok&&depth.user_sgprs==6&&depth.system_sgprs==1&&depth.vgprs==5&&
+        depth.rsrc2==140&&depth.dispatch_initiator==1&&depth.pm4_profile==1&&gpu_kernel_hash(depth.code)==gpu_kernel_manifest_depth_hash(),&failures);
+    let blend:GpuKernel=gpu_kernel_load("examples/gpu_blend_kernel.zgk");
+    check("compiler-owned blend kernel metadata and manifest validate",
+        blend.ok&&blend.user_sgprs==7&&blend.system_sgprs==1&&blend.vgprs==11&&
+        blend.rsrc2==142&&blend.dispatch_initiator==1&&blend.pm4_profile==1&&gpu_kernel_hash(blend.code)==gpu_kernel_manifest_blend_hash(),&failures);
+
     let code: list.ArrayList[u8] = list.make[u8](256);
     let _n: i32 = rdna_emit_fill_kernel(&code);
     check("the reviewed fill kernel is permitted by the manifest",

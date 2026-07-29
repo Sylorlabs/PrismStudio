@@ -1,0 +1,105 @@
+// gpu_isa_display.zag — display-safe virtual GPU framebuffer backend.
+//
+// Every fill is compiled ZGK1 + PrismStudio PM4 executed by Zag's strict
+// GFX10.1 VM. The backend owns virtual memory and queue state, requires explicit
+// frame begin/end, and refuses to present incomplete or anomalous frames.
+
+@import("../std/list.zag") as list
+@import("gpu_rt.zag")
+@import("fb.zag")
+@import("std:gfx1010_vm")
+
+struct GpuIsaDisplay {
+    kernel: GpuKernel,
+    bundle: Gfx1010VmBundle,
+    memory: list.ArrayList[i64],
+    ud: list.ArrayList[i64],
+    ib: list.ArrayList[u8],
+    queue: Gfx1010VmQueue,
+    shader_va: i64,
+    target_va: i64,
+    width: i32,
+    height: i32,
+    next_fence: i64,
+    frame_open: bool,
+    frame_complete: bool,
+    ok: bool,
+}
+
+fn gpu_isa_display_open(path: []u8, w: i32, h: i32) GpuIsaDisplay {
+    let kernel:GpuKernel=gpu_kernel_load(path);
+    let bundle:Gfx1010VmBundle=gfxvm_bundle_load(path);
+    let words:i32=0; if(w>0&&h>0&&w<=4096&&h<=4096){words=w*h;}
+    let memory:list.ArrayList[i64]=list.make[i64](words+1); memory.len=words+1;
+    return GpuIsaDisplay{.kernel=kernel,.bundle=bundle,.memory=memory,
+        .ud=list.make[i64](3),.ib=list.make[u8](128),
+        .queue=gfxvm_queue_new(),.shader_va=4096,.target_va=8192,
+        .width=w,.height=h,.next_fence=1,.frame_open=false,
+        .frame_complete=false,.ok=kernel.ok&&bundle.ok&&words>0};
+}
+
+fn gpu_isa_display_begin(d: *GpuIsaDisplay) bool {
+    if(!d.*.ok||d.*.queue.disabled||d.*.frame_open){return false;}
+    d.*.frame_open=true; d.*.frame_complete=false;
+    d.*.memory.data[d.*.width*d.*.height]=0x51A7C0DE;
+    return true;
+}
+
+fn gpu_isa_display_fill(d: *GpuIsaDisplay, first: i32, count: i32, value: i64) bool {
+    let pixels:i32=d.*.width*d.*.height;
+    if(!d.*.ok||!d.*.frame_open||first<0||count<1||first+count>pixels||count>65535){return false;}
+    d.*.ud.len=0;d.*.ib.len=0;
+    let va:i64=d.*.target_va+(first as i64)*4;
+    list.push[i64](&d.*.ud,va&0xFFFFFFFF); list.push[i64](&d.*.ud,va/4294967296); list.push[i64](&d.*.ud,value&0xFFFFFFFF);
+    pm4_build_dispatch_meta(&d.*.ib,d.*.shader_va,d.*.ud,d.*.kernel,count,1,1);
+    let released:bool=gfxvm_release_to_device(&d.*.queue);
+    let r:Gfx1010VmResult=gfxvm_error(5);
+    if(released){r=gfxvm_queue_submit_fill(&d.*.queue,d.*.bundle,d.*.ib.data[0..d.*.ib.len],d.*.shader_va,va,&d.*.memory.data[first],pixels-first,d.*.next_fence);}
+    let acquired:bool=false;
+    if(r.ok){acquired=gfxvm_acquire_from_device(&d.*.queue,d.*.next_fence);}
+    if(r.ok&&acquired){d.*.next_fence=d.*.next_fence+1;}
+    else{d.*.ok=false;d.*.frame_open=false;d.*.frame_complete=false;}
+    return r.ok&&acquired;
+}
+
+fn gpu_isa_display_fill_rect(d: *GpuIsaDisplay, x: i32, y: i32,
+                             w: i32, h: i32, value: i64) bool {
+    if(x<0||y<0||w<1||h<1||x+w>d.*.width||y+h>d.*.height){return false;}
+    let row:i32=0; let ok:bool=true;
+    while(row<h&&ok){ok=gpu_isa_display_fill(d,(y+row)*d.*.width+x,w,value);row=row+1;}
+    return ok;
+}
+
+// Upload a completed CPU oracle frame through compiler-ISA fill dispatches.
+// Equal adjacent pixels become one bounded dispatch; runs never cross the VM's
+// maximum grid size. This is a presentation/shadow path, not a claim that the
+// virtual fill kernel computed the CPU renderer's geometry.
+fn gpu_isa_display_upload_frame(d: *GpuIsaDisplay, src: *FB) bool {
+    if(!d.*.frame_open||src.*.w!=d.*.width||src.*.h!=d.*.height){return false;}
+    let total:i32=d.*.width*d.*.height;let first:i32=0;let ok:bool=true;
+    while(first<total&&ok){
+        let value:i64=src.*.px.data[first];let count:i32=1;
+        while(first+count<total&&count<65535&&src.*.px.data[first+count]==value){count=count+1;}
+        ok=gpu_isa_display_fill(d,first,count,value);first=first+count;
+    }
+    return ok;
+}
+
+fn gpu_isa_display_end(d: *GpuIsaDisplay) bool {
+    if(!d.*.ok||!d.*.frame_open||d.*.queue.owner!=0||d.*.queue.disabled||
+        d.*.memory.data[d.*.width*d.*.height]!=0x51A7C0DE){
+        d.*.ok=false;d.*.frame_open=false;d.*.frame_complete=false;return false;
+    }
+    @memoryFence();d.*.frame_open=false;d.*.frame_complete=true;return true;
+}
+
+fn gpu_isa_display_present(d: *GpuIsaDisplay, out: *FB) bool {
+    if(!d.*.ok||!d.*.frame_complete||out.*.w!=d.*.width||out.*.h!=d.*.height){return false;}
+    @memoryFence();let i:i32=0;while(i<d.*.width*d.*.height){out.*.px.data[i]=d.*.memory.data[i];i=i+1;}
+    d.*.frame_complete=false;return true;
+}
+
+fn gpu_isa_display_equal(a: *FB, b: *FB) bool {
+    if(a.*.w!=b.*.w||a.*.h!=b.*.h){return false;}
+    let i:i32=0;while(i<a.*.w*a.*.h){if(a.*.px.data[i]!=b.*.px.data[i]){return false;}i=i+1;}return true;
+}

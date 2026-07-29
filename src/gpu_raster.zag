@@ -1,0 +1,235 @@
+// gpu_raster.zag — safety/promotion guard for the experimental GPU raster path.
+// The CPU frame remains authoritative. A GPU candidate is presentable only
+// after full-frame equality; mismatch disables the path, preserves the current
+// front buffer, and records reproducible evidence. Pure software tests exercise
+// this guard without submitting GPU work.
+
+@import("../std/list.zag") as list
+@import("fb.zag")
+@import("gpu_rt.zag")
+
+fn gr_min(a: i32, b: i32) i32 { if (a < b) { return a; } return b; }
+fn gr_max(a: i32, b: i32) i32 { if (a > b) { return a; } return b; }
+fn gr_clamp(v: i32, lo: i32, hi: i32) i32 { return gr_min(hi,gr_max(lo,v)); }
+
+struct GpuRasterCmd {
+    x: i32, y: i32, w: i32, h: i32,
+    depth: i64,
+    color: i64,
+    alpha: i32,
+}
+
+struct GpuRasterPipeline {
+    guard: GpuRasterGuard,
+    tile: i32,
+    tiles_x: i32,
+    tiles_y: i32,
+    tile_fences: list.ArrayList[i64],
+    next_fence: i64,
+    kernel_hash: i64,
+    compiler_metadata_ok: bool,
+    stage_mask: i32, // clear|geometry|depth|clipping|composite|present
+}
+
+struct GpuRasterGuard {
+    enabled: bool,
+    disabled: bool,
+    front: i32,
+    back: i32,
+    fence_seq: i64,
+    max_tiles_per_batch: i32,
+    mismatch_pixels: i64,
+    mismatch_seed: i64,
+    tuple_hash: i64,
+}
+
+fn gpu_raster_guard(tuple_hash: i64) GpuRasterGuard {
+    return GpuRasterGuard{
+        .enabled = false, .disabled = false,
+        .front = 0, .back = 1, .fence_seq = 0,
+        .max_tiles_per_batch = 64,
+        .mismatch_pixels = 0, .mismatch_seed = 0, .tuple_hash = tuple_hash,
+    };
+}
+
+fn gpu_raster_pipeline(kernel: GpuKernel, w: i32, h: i32, tile: i32,
+                       tuple_hash: i64) GpuRasterPipeline {
+    let tx: i32 = 0; let ty: i32 = 0;
+    if (tile >= 8 && tile <= 256 && w > 0 && h > 0) {
+        tx = (w + tile - 1) / tile; ty = (h + tile - 1) / tile;
+    }
+    let fences: list.ArrayList[i64] = list.make[i64](gr_max(1,tx * ty));
+    fences.len = tx * ty;
+    let ok: bool = kernel.ok && gpu_kernel_allowed(kernel.code) && kernel.workgroup_x > 0;
+    return GpuRasterPipeline{ .guard = gpu_raster_guard(tuple_hash), .tile = tile,
+        .tiles_x = tx, .tiles_y = ty, .tile_fences = fences, .next_fence = 1,
+        .kernel_hash = gpu_kernel_hash(kernel.code), .compiler_metadata_ok = ok,
+        .stage_mask = 0 };
+}
+
+fn gpu_raster_clear_depth(f: *FB, color: i64) void {
+    fill_rect(f,0,0,f.*.w,f.*.h,color);
+    let i: i32 = 0; while (i < f.*.w * f.*.h) { f.*.zb.data[i] = 2147483647; i = i + 1; }
+}
+
+fn gpu_raster_cmd_pixel(f: *FB, cmd: GpuRasterCmd, x: i32, y: i32) void {
+    let idx: i32 = y * f.*.w + x;
+    if (cmd.depth <= f.*.zb.data[idx]) {
+        px_blend(f,x,y,cmd.color,gr_clamp(cmd.alpha,0,256));
+        f.*.zb.data[idx] = cmd.depth;
+    }
+}
+
+// Independent untiled CPU oracle for the command stream.
+fn gpu_raster_reference(out: *FB, clear: i64, cmds: list.ArrayList[GpuRasterCmd]) void {
+    gpu_raster_clear_depth(out,clear);
+    let ci: i32 = 0;
+    while (ci < cmds.len) {
+        let c: GpuRasterCmd = cmds.data[ci];
+        let x0: i32 = gr_max(0,c.x); let y0: i32 = gr_max(0,c.y);
+        let x1: i32 = gr_min(out.*.w,c.x+c.w); let y1: i32 = gr_min(out.*.h,c.y+c.h);
+        let y: i32 = y0; while (y < y1) {
+            let x: i32 = x0; while (x < x1) { gpu_raster_cmd_pixel(out,c,x,y); x = x + 1; }
+            y = y + 1;
+        }
+        ci = ci + 1;
+    }
+}
+
+fn gpu_raster_tile(p: *GpuRasterPipeline, out: *FB, clear: i64,
+                   cmds: list.ArrayList[GpuRasterCmd], tile_index: i32) bool {
+    if (tile_index < 0 || tile_index >= p.*.tiles_x * p.*.tiles_y) { return false; }
+    let tx: i32 = tile_index % p.*.tiles_x; let ty: i32 = tile_index / p.*.tiles_x;
+    let x0: i32 = tx * p.*.tile; let y0: i32 = ty * p.*.tile;
+    let x1: i32 = gr_min(out.*.w,x0+p.*.tile); let y1: i32 = gr_min(out.*.h,y0+p.*.tile);
+    fill_rect(out,x0,y0,x1-x0,y1-y0,clear);
+    let yy: i32 = y0; while (yy < y1) {
+        let xx: i32 = x0; while (xx < x1) { out.*.zb.data[yy*out.*.w+xx] = 2147483647; xx = xx + 1; }
+        yy = yy + 1;
+    }
+    p.*.stage_mask = p.*.stage_mask | 1; // clear
+    let ci: i32 = 0;
+    while (ci < cmds.len) {
+        let c: GpuRasterCmd = cmds.data[ci]; p.*.stage_mask = p.*.stage_mask | 2;
+        let cx0: i32 = gr_max(x0,gr_max(0,c.x)); let cy0: i32 = gr_max(y0,gr_max(0,c.y));
+        let cx1: i32 = gr_min(x1,gr_min(out.*.w,c.x+c.w)); let cy1: i32 = gr_min(y1,gr_min(out.*.h,c.y+c.h));
+        p.*.stage_mask = p.*.stage_mask | 8;
+        let y: i32 = cy0; while (y < cy1) {
+            let x: i32 = cx0; while (x < cx1) {
+                gpu_raster_cmd_pixel(out,c,x,y); p.*.stage_mask = p.*.stage_mask | 4 | 16; x = x + 1;
+            }
+            y = y + 1;
+        }
+        ci = ci + 1;
+    }
+    p.*.tile_fences.data[tile_index] = p.*.next_fence; p.*.next_fence = p.*.next_fence + 1;
+    return true;
+}
+
+// Software dispatch model of the production GPU pipeline. It consumes only a
+// validated compiler bundle, submits bounded tile batches, and gives every tile
+// a monotonically increasing independent fence. Hardware submission swaps in at
+// this boundary after certification; rendering semantics stay identical.
+fn gpu_raster_dispatch(p: *GpuRasterPipeline, out: *FB, clear: i64,
+                       cmds: list.ArrayList[GpuRasterCmd]) bool {
+    if (!p.*.compiler_metadata_ok || p.*.guard.disabled || p.*.tiles_x <= 0 || p.*.tiles_y <= 0) { return false; }
+    let total: i32 = p.*.tiles_x * p.*.tiles_y;
+    let first: i32 = 0;
+    while (first < total) {
+        let count: i32 = gr_min(p.*.guard.max_tiles_per_batch,total-first);
+        if (!gpu_raster_batch_valid(p.*.guard,first,count,total)) { return false; }
+        let i: i32 = 0; while (i < count) { if (!gpu_raster_tile(p,out,clear,cmds,first+i)) { return false; } i = i + 1; }
+        first = first + count;
+    }
+    p.*.stage_mask = p.*.stage_mask | 32;
+    return true;
+}
+
+fn gpu_raster_all_tiles_fenced(p: *GpuRasterPipeline) bool {
+    let i: i32 = 0; let prev: i64 = 0;
+    while (i < p.*.tile_fences.len) {
+        if (p.*.tile_fences.data[i] <= prev) { return false; }
+        prev = p.*.tile_fences.data[i]; i = i + 1;
+    }
+    return p.*.tile_fences.len > 0;
+}
+
+fn gpu_raster_tile_count(w: i32, h: i32, tile: i32) i32 {
+    if (w <= 0 || h <= 0 || tile < 8 || tile > 256) { return 0; }
+    return ((w + tile - 1) / tile) * ((h + tile - 1) / tile);
+}
+
+fn gpu_raster_batch_valid(g: GpuRasterGuard, first: i32, count: i32, total: i32) bool {
+    return !g.disabled && first >= 0 && count > 0 && count <= g.max_tiles_per_batch &&
+        total > 0 && first < total && first + count <= total;
+}
+
+fn gpu_raster_diff(cpu: *FB, gpu: *FB) i64 {
+    if (cpu.*.w != gpu.*.w || cpu.*.h != gpu.*.h) { return 0 - 1; }
+    let mismatches: i64 = 0;
+    let i: i32 = 0;
+    while (i < cpu.*.w * cpu.*.h) {
+        if (cpu.*.px.data[i] != gpu.*.px.data[i]) { mismatches = mismatches + 1; }
+        i = i + 1;
+    }
+    return mismatches;
+}
+
+fn gpu_raster_write_mismatch(cpu: *FB, gpu: *FB, mismatches: i64,
+                             seed: i64, tuple_hash: i64,
+                             input: []u8, logs: []u8) void {
+    fb_write_bmp(cpu, "/tmp/prism_gpu_mismatch_cpu.bmp");
+    fb_write_bmp(gpu, "/tmp/prism_gpu_mismatch_gpu.bmp");
+    let diff: FB = fb_new(cpu.*.w, cpu.*.h);
+    let first: i32 = 0 - 1;
+    let i: i32 = 0;
+    while (i < cpu.*.w * cpu.*.h) {
+        if (cpu.*.px.data[i] != gpu.*.px.data[i]) {
+            diff.px.data[i] = rgb(255, 0, 255);
+            if (first < 0) { first = i; }
+        } else {
+            diff.px.data[i] = rgb(0, 0, 0);
+        }
+        i = i + 1;
+    }
+    fb_write_bmp(&diff, "/tmp/prism_gpu_mismatch_diff.bmp");
+    _zag_write_file("/tmp/prism_gpu_mismatch_input.txt", input);
+    _zag_write_file("/tmp/prism_gpu_mismatch_logs.txt", logs);
+    let report: []u8 = _zag_str_concat("gpu-raster-mismatch seed=", _zag_i64_to_str(seed));
+    report = _zag_str_concat(report, " tuple_hash=");
+    report = _zag_str_concat(report, _zag_i64_to_str(tuple_hash));
+    report = _zag_str_concat(report, " width="); report = _zag_str_concat(report, _zag_i64_to_str(cpu.*.w as i64));
+    report = _zag_str_concat(report, " height="); report = _zag_str_concat(report, _zag_i64_to_str(cpu.*.h as i64));
+    report = _zag_str_concat(report, " mismatch_pixels="); report = _zag_str_concat(report, _zag_i64_to_str(mismatches));
+    if (first >= 0) {
+        report = _zag_str_concat(report, " first_x="); report = _zag_str_concat(report, _zag_i64_to_str((first % cpu.*.w) as i64));
+        report = _zag_str_concat(report, " first_y="); report = _zag_str_concat(report, _zag_i64_to_str((first / cpu.*.w) as i64));
+        report = _zag_str_concat(report, " cpu_pixel="); report = _zag_str_concat(report, _zag_i64_to_str(cpu.*.px.data[first]));
+        report = _zag_str_concat(report, " gpu_pixel="); report = _zag_str_concat(report, _zag_i64_to_str(gpu.*.px.data[first]));
+    }
+    report = _zag_str_concat(report, "\nartifacts=prism_gpu_mismatch_input.txt,prism_gpu_mismatch_cpu.bmp,prism_gpu_mismatch_gpu.bmp,prism_gpu_mismatch_diff.bmp,prism_gpu_mismatch_logs.txt\n");
+    _zag_write_file("/tmp/prism_gpu_mismatch.txt", report);
+}
+
+// Complete a fenced back-buffer candidate. Equality atomically swaps front/back;
+// any anomaly leaves the prior front index untouched and permanently disables
+// GPU use for this guard instance so the caller falls back to CPU.
+fn gpu_raster_complete(g: *GpuRasterGuard, cpu: *FB, candidate: *FB,
+                       seed: i64, fence_seq: i64) bool {
+    if (!g.*.enabled || g.*.disabled || fence_seq <= g.*.fence_seq) { return false; }
+    let diff: i64 = gpu_raster_diff(cpu, candidate);
+    if (diff != 0) {
+        g.*.disabled = true;
+        g.*.enabled = false;
+        g.*.mismatch_pixels = diff;
+        g.*.mismatch_seed = seed;
+        gpu_raster_write_mismatch(cpu, candidate, diff, seed, g.*.tuple_hash,
+            "source=generic-raster-guard\n", "source=software-model kernel_driver_logs=not-applicable\n");
+        return false;
+    }
+    g.*.fence_seq = fence_seq;
+    let old_front: i32 = g.*.front;
+    g.*.front = g.*.back;
+    g.*.back = old_front;
+    return true;
+}

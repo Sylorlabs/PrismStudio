@@ -1,0 +1,30 @@
+@import("std:gpu")
+
+fn check(name:[]u8,ok:bool,failures:*i32)void{if(ok){_zag_print("  ok  ");}else{_zag_print("  XX  ");failures.*=failures.*+1;}_zag_println(name);}
+
+fn tuple()ZagGpuTuple{return ZagGpuTuple{.device=0x731F,.gfx_ip=1000,.gfx_discovery=0x0A010A,.gfx_rings=1,
+    .compute_ip=1000,.compute_discovery=0x0A010A,.compute_rings=15,.mec_firmware=92,
+    .sdma_firmware=64,.kernel=618,.compiler=2,.runtime=3};}
+fn cert()ZagGpuCertification{return ZagGpuCertification{.tuple=tuple(),.reset_isolated=true,
+    .memory_sync_verified=true,.kernel_log_clean=true,.fills=10000,.ownership_transfers=10000,
+    .dispatches=1000000,.soak_seconds=86400,.mismatches=0,.timeouts=0,.resets=0,.faults=0,.leaks=0};}
+fn benefit()ZagGpuBenefit{return ZagGpuBenefit{.samples=40,.cpu_ns=100000,.gpu_ns=75000,
+    .representative=true,.raw_samples_retained=true};}
+
+fn main()i32{
+    let failures:i32=0;let c:ZagGpuCertification=cert();let b:ZagGpuBenefit=benefit();
+    let exact:ZagGpuDecision=zag_gpu_auto_decide(tuple(),c,b,200);
+    check("automatic use requires exact certification plus measured material benefit",exact.allowed&&exact.benefit_permille==250,&failures);
+    let current:ZagGpuTuple=tuple();current.mec_firmware=current.mec_firmware+1;
+    let changed:ZagGpuDecision=zag_gpu_auto_decide(current,c,b,200);
+    check("any exact-tuple change invalidates automatic use with remediation",!changed.allowed&&changed.code==1&&changed.next_action.len>30,&failures);
+    let display:ZagGpuCertification=cert();display.reset_isolated=false;
+    let refused:ZagGpuDecision=zag_gpu_auto_decide(tuple(),display,b,200);
+    check("the current display-only class remains virtual or opt-in",!refused.allowed&&refused.code==2&&refused.next_action.len>30,&failures);
+    let state:ZagGpuCampaign=ZagGpuCampaign{.version=1,.target=1000000,.completed=500000,
+        .last_fence=500000,.seed=20260714,.elapsed_ms=9000,.mismatches=0,.timeouts=0,.resets=0,.faults=0};
+    check("certification campaign progress is persistable and resumable",zag_gpu_campaign_save("/tmp/prism_gpu_campaign.state",state),&failures);
+    let loaded:ZagGpuCampaign=zag_gpu_campaign_load("/tmp/prism_gpu_campaign.state");
+    check("resume retains exact fence continuity seed and anomaly counters",loaded.completed==500000&&loaded.last_fence==500000&&loaded.seed==20260714&&loaded.faults==0,&failures);
+    if(failures==0){_zag_println("GPU PROMOTION POLICY: ALL PASS");return 0;}_zag_println("GPU PROMOTION POLICY: FAILURES");return 1;
+}

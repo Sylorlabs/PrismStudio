@@ -26,6 +26,22 @@ fn main() i32 {
     check("gem_create struct size is 32", (IOCTL_AMDGPU_GEM_CREATE() / 65536) % 16384 == 32, &failures);
     check("amdgpu_cs struct size is 24", (IOCTL_AMDGPU_CS() / 65536) % 16384 == 24, &failures);
     check("gem_va struct size is 64", (IOCTL_AMDGPU_GEM_VA() / 65536) % 16384 == 64, &failures);
+    check("BO-list ioctl and entry layouts match the installed UAPI",
+        (IOCTL_AMDGPU_BO_LIST() / 65536) % 16384 == 24 && BO_LIST_CREATE() == 0 && BO_LIST_DESTROY() == 1,
+        &failures);
+    check("syncobj timeline ioctls carry their exact struct sizes",
+        (IOCTL_SYNCOBJ_CREATE() / 65536) % 16384 == 8 &&
+        (IOCTL_SYNCOBJ_TIMELINE_WAIT() / 65536) % 16384 == 48, &failures);
+    check("ordered submission uses timeline, user-fence, and memory-sync UAPI ids",
+        CHUNK_ID_FENCE() == 2 && CHUNK_ID_TIMELINE_WAIT() == 8 &&
+        CHUNK_ID_TIMELINE_SIGNAL() == 9 && IB_FLAG_EMIT_MEM_SYNC() == 64, &failures);
+
+    let own: GpuBuf = GpuBuf{ .handle = 1, .size = 4096, .cpu_addr = 1,
+        .gpu_va = 4096, .owner = 0, .ok = true };
+    check("CPU release and post-fence acquire form a strict ownership state machine",
+        gpu_release_to_device(&own) && own.owner == 1 &&
+        !gpu_release_to_device(&own) && gpu_acquire_from_device(&own) && own.owner == 0 &&
+        !gpu_acquire_from_device(&own), &failures);
 
     // ── PM4 type-3 packet header encodings ─────────────────────────────────────
     // type-3 header = 0xC0000000 | ((body_dwords-1)<<16) | (opcode<<8)
@@ -38,6 +54,14 @@ fn main() i32 {
     pm4_build_dispatch(&s, 4096, 8192, 8, 1, 1, 1, 1, 1);   // 256-aligned shader VA
     check("a well-formed dispatch IB validates", pm4_ib_valid(s.data[0..s.len]), &failures);
     check("the IB is non-empty and dword aligned", s.len > 0 && s.len % 4 == 0, &failures);
+
+    let bundle: GpuKernel = gpu_kernel_load("examples/gpu_fill_kernel.zgk");
+    let ud: list.ArrayList[i64] = list.make[i64](3);
+    list.push[i64](&ud, 8192); list.push[i64](&ud, 0); list.push[i64](&ud, 42);
+    let meta_ib: list.ArrayList[u8] = list.make[u8](128);
+    pm4_build_dispatch_meta(&meta_ib, 4096, ud, bundle, 16, 1, 1);
+    check("compiler metadata builds a valid bounded PM4 dispatch",
+        bundle.ok && pm4_ib_valid(meta_ib.data[0..meta_ib.len]), &failures);
 
     // reject a non-dword-aligned buffer
     check("a non-dword-aligned IB is rejected", !pm4_ib_valid(s.data[0..s.len - 1]), &failures);

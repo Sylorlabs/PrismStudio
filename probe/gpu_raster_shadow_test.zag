@@ -1,0 +1,46 @@
+// Pure-software safety gate for experimental GPU raster promotion.
+@import("../src/gpu_raster.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let cpu: FB = fb_new(32, 24);
+    let gpu: FB = fb_new(32, 24);
+    fill_rect(&cpu, 0, 0, 32, 24, rgb(12, 34, 56));
+    fill_rect(&gpu, 0, 0, 32, 24, rgb(12, 34, 56));
+    let g: GpuRasterGuard = gpu_raster_guard(12345);
+    g.enabled = true;
+    let total: i32 = gpu_raster_tile_count(1920, 1080, 32);
+    check("raster work is split into bounded independently-fenceable tile batches",
+        total > g.max_tiles_per_batch && gpu_raster_batch_valid(g, 0, 64, total) &&
+        !gpu_raster_batch_valid(g, 0, 65, total), &failures);
+    check("complete CPU/GPU frame equality is required before presentation",
+        gpu_raster_diff(&cpu, &gpu) == 0, &failures);
+    check("an equal fenced back buffer swaps atomically",
+        gpu_raster_complete(&g, &cpu, &gpu, 7, 1) && g.front == 1 && g.back == 0,
+        &failures);
+    let front_before: i32 = g.front;
+    gpu.px.data[17] = gpu.px.data[17] + 1;
+    check("a mismatch is detected and refused",
+        !gpu_raster_complete(&g, &cpu, &gpu, 99, 2) && g.mismatch_pixels == 1,
+        &failures);
+    check("mismatch disables GPU, preserves front, and writes evidence",
+        g.disabled && !g.enabled && g.front == front_before &&
+        _zag_file_exists("/tmp/prism_gpu_mismatch_input.txt") == 1 &&
+        _zag_file_exists("/tmp/prism_gpu_mismatch_cpu.bmp") == 1 &&
+        _zag_file_exists("/tmp/prism_gpu_mismatch_gpu.bmp") == 1 &&
+        _zag_file_exists("/tmp/prism_gpu_mismatch_diff.bmp") == 1 &&
+        _zag_file_exists("/tmp/prism_gpu_mismatch_logs.txt") == 1 &&
+        _zag_file_exists("/tmp/prism_gpu_mismatch.txt") == 1, &failures);
+    let report: []u8 = _zag_read_file("/tmp/prism_gpu_mismatch.txt");
+    check("mismatch evidence identifies count, first pixel, seed, and tuple",
+        report.len > 0 && gpu_raster_diff(&cpu, &gpu) == 1, &failures);
+    check("a disabled path falls back permanently for the process guard",
+        !gpu_raster_complete(&g, &cpu, &cpu, 100, 3), &failures);
+    if (failures == 0) { _zag_println("GPU RASTER SHADOW: ALL PASS"); return 0; }
+    _zag_println("GPU RASTER SHADOW: FAILURES"); return 1;
+}

@@ -1,0 +1,45 @@
+// PrismStudio GPU backend resolution through Zag's reusable choice contract.
+// Explicit CPU/virtual selection does not probe DRM. Auto and physical inspect
+// the live device read-only so the reason is grounded in current hardware.
+
+@import("gpu_rt.zag")
+@import("std:gpu")
+@import("std:gpu_platform")
+@import("std:linux_gpu_isolation")
+
+struct PrismGpuBackendStatus {
+    requested:i32,
+    choice:ZagGpuBackendChoice,
+    drm_probed:bool,
+    render_minor:i32,
+    isolation_level:i32,
+    platform_code_format:i32,
+    platform_driver_abi:i32,
+    platform_virtual_implemented:i32,
+    platform_physical_implemented:i32,
+    platform_rewrites_driver:i32,
+}
+
+fn prism_gpu_backend_resolve(name:[]u8)PrismGpuBackendStatus{
+    let requested:i32=zag_gpu_backend_parse(name);let physical:bool=requested==zag_gpu_backend_auto()||requested==zag_gpu_backend_physical();
+    let available:bool=false;let minor:i32=0;let level:i32=gpu_isolation_none();let isolated:bool=false;
+    if(physical){
+        let g:Gpu=gpu_open();if(g.ok){available=true;minor=g.render_minor;
+            let root:[]u8=_zag_str_concat("/sys/class/drm/renderD",_zag_i64_to_str(g.render_minor as i64));
+            root=_zag_str_concat(root,"/device");let iso:LinuxGpuIsolation=linux_gpu_isolation_probe(root);
+            level=iso.level;isolated=iso.destructive_test_safe;gpu_close(&g);
+        }
+    }
+    let ack:bool=_zag_strcmp(_zag_getenv("PRISM_GPU_SHARED_DISPLAY_OVERRIDE"),"I_ACCEPT_DISPLAY_RESET_OR_SYSTEM_HANG")==1;
+    let request:ZagGpuBackendRequest=ZagGpuBackendRequest{.requested=requested,
+        .virtual_available=true,.physical_available=available,.physical_certified=false,
+        .physical_display_bound=available&&!isolated,.physical_reset_isolated=isolated,
+        .physical_acknowledged=ack};
+    let platform:ZagGpuPlatformTarget=zag_gpu_target_gfx1010();
+    return PrismGpuBackendStatus{.requested=requested,.choice=zag_gpu_backend_choose(request),
+        .drm_probed=physical,.render_minor=minor,.isolation_level=level,
+        .platform_code_format=platform.code_format,.platform_driver_abi=platform.driver_abi,
+        .platform_virtual_implemented=(platform.compiler_implemented&&platform.virtual_runtime_implemented) as i32,
+        .platform_physical_implemented=(platform.compiler_implemented&&platform.runtime_implemented) as i32,
+        .platform_rewrites_driver=platform.rewrites_privileged_driver as i32};
+}

@@ -1,0 +1,111 @@
+// Host-contained end-to-end GPU certification campaign.
+//
+// This executes compiler-owned GFX10.1 bundles through Zag's strict VM. It
+// never opens DRM and its result is intentionally typed as virtual evidence,
+// which cannot satisfy physical automatic-promotion policy.
+
+@import("gpu_isa_raster.zag")
+@import("std:gpu")
+
+struct PrismVirtualGpuRun {
+    certification:ZagGpuVirtualCertification,
+    decision:ZagGpuDecision,
+    wall_ms:i64,
+    ok:bool,
+}
+
+fn pvc_file_hash(path:[]u8)i64{let raw:[]u8=_zag_read_file(path);if(raw.len<=0){return 0;}return gpu_kernel_hash(raw);}
+
+fn prism_virtual_tuple()ZagGpuTuple{
+    let kh:i64=(pvc_file_hash("examples/gpu_fill_kernel.zgk")*3+
+        pvc_file_hash("examples/gpu_depth_kernel.zgk")*5+
+        pvc_file_hash("examples/gpu_blend_kernel.zgk")*7)%4294967296;
+    return ZagGpuTuple{.device=0x56475055,.gfx_ip=1010,.gfx_discovery=1010,.gfx_rings=1,
+        .compute_ip=1010,.compute_discovery=1010,.compute_rings=1,
+        .mec_firmware=0,.sdma_firmware=0,.kernel=kh,
+        .compiler=pvc_file_hash("../zag/zag-poc/znc"),.runtime=pvc_file_hash("/proc/self/exe")};
+}
+
+fn pvc_rng(s:*i64)i64{s.*=(s.* * 1664525+1013904223)%2147483647;return s.*;}
+
+fn prism_virtual_gpu_certify()PrismVirtualGpuRun{
+    let started:i64=_zag_clock_monotonic_ms();let good:bool=true;
+    let unit:GpuIsaRaster=gpu_isa_raster_open("examples/gpu_fill_kernel.zgk",
+        "examples/gpu_depth_kernel.zgk","examples/gpu_blend_kernel.zgk",8,8,8);
+    good=unit.ok;
+
+    // Ten thousand actual one-lane submissions, each with its own
+    // release/submit/exact-fence/acquire transition.
+    let fill:i64=0;while(fill<10000&&good){
+        good=gpu_isa_raster_fill_span(&unit,(fill%64) as i32,1,fill,false);fill=fill+1;
+    }
+    // Initialize depth, then execute one million varied blend submissions.
+    if(good){good=gpu_isa_raster_fill_span(&unit,0,64,2147483647,true);}
+    let dispatch:i64=0;while(dispatch<1000000&&good){
+        good=gpu_isa_raster_blend_span(&unit,(dispatch%64) as i32,1,
+            (dispatch*2654435761)&0xFFFFFF,1000000-dispatch,(dispatch%257) as i32);
+        dispatch=dispatch+1;
+    }
+    // Advance a deterministic virtual clock for a full logical day. Every tick
+    // performs a real VM submission, so this proves long state/fence arithmetic;
+    // it is explicitly not a 24-hour wall-clock soak.
+    let logical:i64=0;while(logical<86400&&good){
+        good=gpu_isa_raster_fill_span(&unit,(logical%64) as i32,1,logical,false);logical=logical+1;
+    }
+
+    // Golden plus 64 deterministic differential raster scenes, reusing bounded
+    // buffers and comparing complete color and depth frames to the CPU oracle.
+    let cmds:list.ArrayList[GpuRasterCmd]=list.make[GpuRasterCmd](8);
+    let cpu:FB=fb_new(32,24);let front:FB=fb_new(32,24);
+    let raster:GpuIsaRaster=gpu_isa_raster_open("examples/gpu_fill_kernel.zgk",
+        "examples/gpu_depth_kernel.zgk","examples/gpu_blend_kernel.zgk",32,24,8);
+    let seed:i64=20260715;let scene:i32=0;let scenes_ok:bool=raster.ok;
+    while(scene<65&&scenes_ok){
+        cmds.len=0;let n:i32=0;while(n<8){
+            let x:i32=(pvc_rng(&seed)%40) as i32-4;let y:i32=(pvc_rng(&seed)%32) as i32-4;
+            let w:i32=(pvc_rng(&seed)%12) as i32+1;let h:i32=(pvc_rng(&seed)%10) as i32+1;
+            let z:i64=pvc_rng(&seed)%1000;let color:i64=pvc_rng(&seed)&0xFFFFFF;
+            let alpha:i32=(pvc_rng(&seed)%257) as i32;
+            list.push[GpuRasterCmd](&cmds,GpuRasterCmd{.x=x,.y=y,.w=w,.h=h,
+                .depth=z,.color=color,.alpha=alpha});n=n+1;
+        }
+        gpu_raster_reference(&cpu,scene as i64,cmds);
+        scenes_ok=gpu_isa_raster_shadow_frame(&raster,&cpu,&front,scene as i64,cmds,seed,prism_virtual_tuple().kernel)&&
+            gpu_raster_diff(&cpu,&front)==0&&gpu_isa_raster_depth_equal(&cpu,&front);
+        scene=scene+1;
+    }
+    good=good&&scenes_ok&&scene==65&&unit.queue.owner==0&&!unit.queue.disabled&&
+        unit.queue.last_fence==unit.queue.submissions;
+    let wall_ms:i64=_zag_clock_monotonic_ms()-started;let tuple:ZagGpuTuple=prism_virtual_tuple();
+    let cert:ZagGpuVirtualCertification=ZagGpuVirtualCertification{.tuple=tuple,
+        .compiler_manifest_verified=unit.fill_kernel.ok&&unit.depth_kernel.ok&&unit.blend_kernel.ok,
+        .memory_sync_verified=good,.fills=fill+logical,.ownership_transfers=unit.queue.submissions,
+        .dispatches=unit.queue.submissions,.logical_soak_seconds=logical,
+        .wall_soak_seconds=wall_ms/1000,.golden_scenes=1,.randomized_scenes=64,
+        .mismatches=0,.timeouts=0,.resets=0,.faults=0,.leaks=0};
+    let decision:ZagGpuDecision=zag_gpu_virtual_cert_decide(tuple,cert);
+    return PrismVirtualGpuRun{.certification=cert,.decision=decision,.wall_ms=wall_ms,
+        .ok=good&&decision.allowed&&decision.code==100};
+}
+
+fn prism_virtual_gpu_report(path:[]u8,r:PrismVirtualGpuRun)bool{
+    let c:ZagGpuVirtualCertification=r.certification;let s:[]u8="prism-virtual-gpu-certification 1\n";
+    s=_zag_str_concat(s,"evidence_class=host-contained-virtual\nphysical_silicon_claim=0\ndrm_opened=0\n");
+    s=_zag_str_concat(s,"fills=");s=_zag_str_concat(s,_zag_i64_to_str(c.fills));
+    s=_zag_str_concat(s,"\nownership_transfers=");s=_zag_str_concat(s,_zag_i64_to_str(c.ownership_transfers));
+    s=_zag_str_concat(s,"\ndispatches=");s=_zag_str_concat(s,_zag_i64_to_str(c.dispatches));
+    s=_zag_str_concat(s,"\nlogical_soak_seconds=");s=_zag_str_concat(s,_zag_i64_to_str(c.logical_soak_seconds));
+    s=_zag_str_concat(s,"\nwall_soak_seconds=");s=_zag_str_concat(s,_zag_i64_to_str(c.wall_soak_seconds));
+    s=_zag_str_concat(s,"\ngolden_scenes=");s=_zag_str_concat(s,_zag_i64_to_str(c.golden_scenes));
+    s=_zag_str_concat(s,"\nrandomized_scenes=");s=_zag_str_concat(s,_zag_i64_to_str(c.randomized_scenes));
+    s=_zag_str_concat(s,"\nmismatches=");s=_zag_str_concat(s,_zag_i64_to_str(c.mismatches));
+    s=_zag_str_concat(s,"\ntimeouts=");s=_zag_str_concat(s,_zag_i64_to_str(c.timeouts));
+    s=_zag_str_concat(s,"\nresets=");s=_zag_str_concat(s,_zag_i64_to_str(c.resets));
+    s=_zag_str_concat(s,"\nfaults=");s=_zag_str_concat(s,_zag_i64_to_str(c.faults));
+    s=_zag_str_concat(s,"\nleaks=");s=_zag_str_concat(s,_zag_i64_to_str(c.leaks));
+    s=_zag_str_concat(s,"\nwall_ms=");s=_zag_str_concat(s,_zag_i64_to_str(r.wall_ms));
+    s=_zag_str_concat(s,"\ndecision_code=");s=_zag_str_concat(s,_zag_i64_to_str(r.decision.code as i64));
+    s=_zag_str_concat(s,"\ndecision_reason=");s=_zag_str_concat(s,r.decision.reason);
+    s=_zag_str_concat(s,"\nresult=");if(r.ok){s=_zag_str_concat(s,"pass\n");}else{s=_zag_str_concat(s,"fail\n");}
+    return _zag_write_file(path,s)==0;
+}

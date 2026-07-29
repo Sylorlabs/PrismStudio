@@ -1,0 +1,181 @@
+// gpu_isa_raster.zag — compiler-ISA tiled raster execution on Zag's strict VM.
+//
+// Clear runs through the compiler fill kernel. Every clipped geometry span then
+// runs through compiler depth-write or packed-RGB blend kernels, whose real
+// GFX10.1 instructions load, compare, branch, composite, and conditionally
+// store color+depth. This module never opens DRM; the same bundles/PM4 are
+// hardware-ready only after isolation and certification.
+
+@import("../std/list.zag") as list
+@import("gpu_raster.zag")
+@import("std:gfx1010_vm")
+
+struct GpuIsaRaster {
+    fill_kernel:GpuKernel, depth_kernel:GpuKernel, blend_kernel:GpuKernel,
+    fill_bundle:Gfx1010VmBundle, depth_bundle:Gfx1010VmBundle, blend_bundle:Gfx1010VmBundle,
+    color:list.ArrayList[i64], depth:list.ArrayList[i64],
+    ud:list.ArrayList[i64], ib:list.ArrayList[u8], queue:Gfx1010VmQueue,
+    tile_fences:list.ArrayList[i64],
+    fill_shader_va:i64, depth_shader_va:i64, blend_shader_va:i64, color_va:i64, depth_va:i64,
+    width:i32,height:i32,tile:i32,tiles_x:i32,tiles_y:i32,next_fence:i64,
+    stage_mask:i32,frame_complete:bool,ok:bool,
+}
+
+fn gpu_isa_raster_open(fill_path:[]u8,depth_path:[]u8,blend_path:[]u8,w:i32,h:i32,tile:i32)GpuIsaRaster{
+    let fk:GpuKernel=gpu_kernel_load(fill_path);let dk:GpuKernel=gpu_kernel_load(depth_path);let bk:GpuKernel=gpu_kernel_load(blend_path);
+    let fb:Gfx1010VmBundle=gfxvm_bundle_load(fill_path);let db:Gfx1010VmBundle=gfxvm_bundle_load(depth_path);let bb:Gfx1010VmBundle=gfxvm_bundle_load(blend_path);
+    let valid:bool=w>0&&h>0&&w<=4096&&h<=4096&&tile>=8&&tile<=256;
+    let pixels:i32=1;if(valid){pixels=w*h+1;}
+    let color:list.ArrayList[i64]=list.make[i64](pixels);color.len=pixels;
+    let depth:list.ArrayList[i64]=list.make[i64](pixels);depth.len=pixels;
+    let tx:i32=0;let ty:i32=0;if(valid){tx=(w+tile-1)/tile;ty=(h+tile-1)/tile;}
+    let fences:list.ArrayList[i64]=list.make[i64](gr_max(1,tx*ty));fences.len=tx*ty;
+    return GpuIsaRaster{.fill_kernel=fk,.depth_kernel=dk,.blend_kernel=bk,.fill_bundle=fb,.depth_bundle=db,.blend_bundle=bb,
+        .color=color,.depth=depth,.ud=list.make[i64](7),.ib=list.make[u8](256),
+        .queue=gfxvm_queue_new(),.tile_fences=fences,.fill_shader_va=4096,
+        .depth_shader_va=4352,.blend_shader_va=4608,.color_va=8192,.depth_va=33562624,
+        .width=w,.height=h,.tile=tile,.tiles_x=tx,.tiles_y=ty,.next_fence=1,
+        .stage_mask=0,.frame_complete=false,
+        .ok=valid&&fk.ok&&dk.ok&&bk.ok&&fb.ok&&db.ok&&bb.ok&&fb.profile==1&&db.profile==2&&bb.profile==3};
+}
+
+fn gpu_isa_raster_retire(r:*GpuIsaRaster,result:Gfx1010VmResult)bool{
+    let acquired:bool=false;if(result.ok){acquired=gfxvm_acquire_from_device(&r.*.queue,r.*.next_fence);}
+    if(result.ok&&acquired){r.*.next_fence=r.*.next_fence+1;return true;}
+    r.*.ok=false;r.*.frame_complete=false;return false;
+}
+
+fn gpu_isa_raster_fill_span(r:*GpuIsaRaster,first:i32,count:i32,value:i64,use_depth:bool)bool{
+    let pixels:i32=r.*.width*r.*.height;
+    if(!r.*.ok||first<0||count<1||count>65535||first+count>pixels){return false;}
+    r.*.ud.len=0;r.*.ib.len=0;let base:i64=r.*.color_va;let mem:*i64=&r.*.color.data[first];
+    if(use_depth){base=r.*.depth_va;mem=&r.*.depth.data[first];}
+    let va:i64=base+(first as i64)*4;
+    list.push[i64](&r.*.ud,va&0xFFFFFFFF);list.push[i64](&r.*.ud,va/4294967296);list.push[i64](&r.*.ud,value&0xFFFFFFFF);
+    pm4_build_dispatch_meta(&r.*.ib,r.*.fill_shader_va,r.*.ud,r.*.fill_kernel,count,1,1);
+    if(!gfxvm_release_to_device(&r.*.queue)){r.*.ok=false;return false;}
+    let out:Gfx1010VmResult=gfxvm_queue_submit_fill(&r.*.queue,r.*.fill_bundle,r.*.ib.data[0..r.*.ib.len],
+        r.*.fill_shader_va,va,mem,pixels-first,r.*.next_fence);
+    return gpu_isa_raster_retire(r,out);
+}
+
+fn gpu_isa_raster_depth_span(r:*GpuIsaRaster,first:i32,count:i32,value:i64,z:i64)bool{
+    let pixels:i32=r.*.width*r.*.height;
+    if(!r.*.ok||first<0||count<1||count>65535||first+count>pixels){return false;}
+    r.*.ud.len=0;r.*.ib.len=0;
+    let cv:i64=r.*.color_va+(first as i64)*4;let dv:i64=r.*.depth_va+(first as i64)*4;
+    list.push[i64](&r.*.ud,cv&0xFFFFFFFF);list.push[i64](&r.*.ud,cv/4294967296);
+    list.push[i64](&r.*.ud,dv&0xFFFFFFFF);list.push[i64](&r.*.ud,dv/4294967296);
+    list.push[i64](&r.*.ud,value&0xFFFFFFFF);list.push[i64](&r.*.ud,z&0xFFFFFFFF);
+    pm4_build_dispatch_meta(&r.*.ib,r.*.depth_shader_va,r.*.ud,r.*.depth_kernel,count,1,1);
+    if(!gfxvm_release_to_device(&r.*.queue)){r.*.ok=false;return false;}
+    let out:Gfx1010VmResult=gfxvm_queue_submit_depth(&r.*.queue,r.*.depth_bundle,r.*.ib.data[0..r.*.ib.len],
+        r.*.depth_shader_va,cv,dv,&r.*.color.data[first],&r.*.depth.data[first],pixels-first,r.*.next_fence);
+    return gpu_isa_raster_retire(r,out);
+}
+
+fn gpu_isa_raster_blend_span(r:*GpuIsaRaster,first:i32,count:i32,value:i64,z:i64,alpha:i32)bool{
+    let pixels:i32=r.*.width*r.*.height;
+    if(!r.*.ok||first<0||count<1||count>65535||first+count>pixels||alpha<0||alpha>256){return false;}
+    r.*.ud.len=0;r.*.ib.len=0;
+    let cv:i64=r.*.color_va+(first as i64)*4;let dv:i64=r.*.depth_va+(first as i64)*4;
+    list.push[i64](&r.*.ud,cv&0xFFFFFFFF);list.push[i64](&r.*.ud,cv/4294967296);
+    list.push[i64](&r.*.ud,dv&0xFFFFFFFF);list.push[i64](&r.*.ud,dv/4294967296);
+    list.push[i64](&r.*.ud,value&0xFFFFFFFF);list.push[i64](&r.*.ud,z&0xFFFFFFFF);list.push[i64](&r.*.ud,alpha as i64);
+    pm4_build_dispatch_meta(&r.*.ib,r.*.blend_shader_va,r.*.ud,r.*.blend_kernel,count,1,1);
+    if(!gfxvm_release_to_device(&r.*.queue)){r.*.ok=false;return false;}
+    let out:Gfx1010VmResult=gfxvm_queue_submit_blend(&r.*.queue,r.*.blend_bundle,r.*.ib.data[0..r.*.ib.len],
+        r.*.blend_shader_va,cv,dv,&r.*.color.data[first],&r.*.depth.data[first],pixels-first,r.*.next_fence);
+    return gpu_isa_raster_retire(r,out);
+}
+
+fn gpu_isa_raster_dispatch(r:*GpuIsaRaster,clear:i64,cmds:list.ArrayList[GpuRasterCmd])bool{
+    if(!r.*.ok||r.*.frame_complete){return false;}
+    let pre:i32=0;while(pre<cmds.len){if(cmds.data[pre].alpha<0||cmds.data[pre].alpha>256){return false;}pre=pre+1;}
+    r.*.color.data[r.*.width*r.*.height]=0x51A7C0DE;
+    r.*.depth.data[r.*.width*r.*.height]=0x0D3E7A11;
+    let ti:i32=0;let good:bool=true;
+    while(ti<r.*.tiles_x*r.*.tiles_y&&good){
+        let tx:i32=ti%r.*.tiles_x;let ty:i32=ti/r.*.tiles_x;
+        let x0:i32=tx*r.*.tile;let y0:i32=ty*r.*.tile;
+        let x1:i32=gr_min(r.*.width,x0+r.*.tile);let y1:i32=gr_min(r.*.height,y0+r.*.tile);
+        let y:i32=y0;while(y<y1&&good){good=gpu_isa_raster_fill_span(r,y*r.*.width+x0,x1-x0,clear,false)&&
+            gpu_isa_raster_fill_span(r,y*r.*.width+x0,x1-x0,2147483647,true);y=y+1;}
+        if(good){r.*.stage_mask=r.*.stage_mask|1;}
+        let ci:i32=0;while(ci<cmds.len&&good){
+            let c:GpuRasterCmd=cmds.data[ci];r.*.stage_mask=r.*.stage_mask|2|8;
+            let cx0:i32=gr_max(x0,gr_max(0,c.x));let cy0:i32=gr_max(y0,gr_max(0,c.y));
+            let cx1:i32=gr_min(x1,gr_min(r.*.width,c.x+c.w));let cy1:i32=gr_min(y1,gr_min(r.*.height,c.y+c.h));
+            if(cx1>cx0&&cy1>cy0){
+                let yy:i32=cy0;while(yy<cy1&&good){good=gpu_isa_raster_blend_span(r,yy*r.*.width+cx0,cx1-cx0,c.color,c.depth,c.alpha);yy=yy+1;}
+                if(good){r.*.stage_mask=r.*.stage_mask|4|16;}
+            }ci=ci+1;
+        }
+        if(good){r.*.tile_fences.data[ti]=r.*.queue.last_fence;}ti=ti+1;
+    }
+    if(!good||r.*.queue.owner!=0||r.*.queue.disabled||r.*.color.data[r.*.width*r.*.height]!=0x51A7C0DE||
+        r.*.depth.data[r.*.width*r.*.height]!=0x0D3E7A11){r.*.ok=false;return false;}
+    r.*.stage_mask=r.*.stage_mask|32;r.*.frame_complete=true;return true;
+}
+
+fn gpu_isa_raster_present(r:*GpuIsaRaster,out:*FB)bool{
+    if(!r.*.ok||!r.*.frame_complete||out.*.w!=r.*.width||out.*.h!=r.*.height){return false;}
+    @memoryFence();let i:i32=0;while(i<r.*.width*r.*.height){out.*.px.data[i]=r.*.color.data[i];out.*.zb.data[i]=r.*.depth.data[i];i=i+1;}
+    r.*.frame_complete=false;return true;
+}
+
+fn gpu_isa_raster_fenced(r:*GpuIsaRaster)bool{
+    let i:i32=0;let prev:i64=0;while(i<r.*.tile_fences.len){if(r.*.tile_fences.data[i]<=prev){return false;}prev=r.*.tile_fences.data[i];i=i+1;}return i>0;
+}
+
+fn gpu_isa_raster_depth_equal(a:*FB,b:*FB)bool{
+    if(a.*.w!=b.*.w||a.*.h!=b.*.h){return false;}let i:i32=0;
+    while(i<a.*.w*a.*.h){if(a.*.zb.data[i]!=b.*.zb.data[i]){return false;}i=i+1;}return true;
+}
+
+fn gpu_isa_raster_copy(src:*FB,dst:*FB)bool{
+    if(src.*.w!=dst.*.w||src.*.h!=dst.*.h){return false;}let i:i32=0;
+    while(i<src.*.w*src.*.h){dst.*.px.data[i]=src.*.px.data[i];dst.*.zb.data[i]=src.*.zb.data[i];i=i+1;}return true;
+}
+
+fn gpu_isa_raster_input(clear:i64,cmds:list.ArrayList[GpuRasterCmd])[]u8{
+    let s:[]u8="gpu-raster-input 1\nclear=";s=_zag_str_concat(s,_zag_i64_to_str(clear));
+    s=_zag_str_concat(s,"\ncommand_count=");s=_zag_str_concat(s,_zag_i64_to_str(cmds.len as i64));s=_zag_str_concat(s,"\n");
+    let i:i32=0;while(i<cmds.len){let c:GpuRasterCmd=cmds.data[i];
+        s=_zag_str_concat(s,"cmd=");s=_zag_str_concat(s,_zag_i64_to_str(i as i64));
+        s=_zag_str_concat(s," x=");s=_zag_str_concat(s,_zag_i64_to_str(c.x as i64));
+        s=_zag_str_concat(s," y=");s=_zag_str_concat(s,_zag_i64_to_str(c.y as i64));
+        s=_zag_str_concat(s," w=");s=_zag_str_concat(s,_zag_i64_to_str(c.w as i64));
+        s=_zag_str_concat(s," h=");s=_zag_str_concat(s,_zag_i64_to_str(c.h as i64));
+        s=_zag_str_concat(s," depth=");s=_zag_str_concat(s,_zag_i64_to_str(c.depth));
+        s=_zag_str_concat(s," color=");s=_zag_str_concat(s,_zag_i64_to_str(c.color));
+        s=_zag_str_concat(s," alpha=");s=_zag_str_concat(s,_zag_i64_to_str(c.alpha as i64));s=_zag_str_concat(s,"\n");i=i+1;
+    }return s;
+}
+
+// CPU remains authoritative. A complete VM candidate is promoted only after
+// exact color and depth equality. Any mismatch records the same reproducible
+// evidence as the general raster guard, disables this ISA session, and copies
+// the CPU frame to the caller's front buffer as an automatic fallback.
+fn gpu_isa_raster_shadow_complete(r:*GpuIsaRaster,cpu:*FB,candidate:*FB,front:*FB,
+                                  seed:i64,tuple_hash:i64,input:[]u8,logs:[]u8)bool{
+    if(cpu.*.w!=candidate.*.w||cpu.*.h!=candidate.*.h||!gpu_isa_raster_copy(cpu,front)){
+        r.*.ok=false;return false;
+    }
+    let diff:i64=gpu_raster_diff(cpu,candidate);
+    if(diff!=0||!gpu_isa_raster_depth_equal(cpu,candidate)){
+        gpu_raster_write_mismatch(cpu,candidate,diff,seed,tuple_hash,input,logs);
+        r.*.ok=false;r.*.frame_complete=false;return false;
+    }
+    return gpu_isa_raster_copy(candidate,front);
+}
+
+fn gpu_isa_raster_shadow_frame(r:*GpuIsaRaster,cpu:*FB,front:*FB,clear:i64,
+                               cmds:list.ArrayList[GpuRasterCmd],seed:i64,tuple_hash:i64)bool{
+    let candidate:FB=fb_new(cpu.*.w,cpu.*.h);
+    if(!gpu_isa_raster_dispatch(r,clear,cmds)||!gpu_isa_raster_present(r,&candidate)){
+        let _fallback:bool=gpu_isa_raster_copy(cpu,front);r.*.ok=false;return false;
+    }
+    return gpu_isa_raster_shadow_complete(r,cpu,&candidate,front,seed,tuple_hash,
+        gpu_isa_raster_input(clear,cmds),"source=software-vm kernel_driver_logs=not-applicable\n");
+}

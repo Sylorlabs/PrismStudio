@@ -6,7 +6,6 @@
 // as a separate confidence level requiring a non-display GPU.
 
 @import("../std/list.zag") as list
-@import("../src/rdna.zag")
 @import("../src/gpu_rt.zag")
 
 fn check(name_: []u8, ok: bool, failures: *i32) void {
@@ -60,12 +59,11 @@ fn main() i32 {
     let failures: i32 = 0;
 
     // build one reviewed kernel + one valid IB, reused across the campaign
-    let kernel: list.ArrayList[u8] = list.make[u8](64);
-    let _k: i32 = rdna_emit_fill_kernel(&kernel);
+    let compiled: GpuKernel = gpu_kernel_load("examples/gpu_fill_kernel.zgk");
     let ib: list.ArrayList[u8] = list.make[u8](128);
     pm4_build_dispatch(&ib, 4096, 8192, 1, 1, 1, 16, 1, 1);
     let ibs: []u8 = ib.data[0..ib.len];
-    let ks: []u8 = kernel.data[0..kernel.len];
+    let ks: []u8 = compiled.code;
 
     // ── basic fill + canary ────────────────────────────────────────────────────
     let g: *VGpu = vgpu_new(32);

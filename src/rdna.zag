@@ -1,6 +1,6 @@
 // rdna.zag — a hand-written RDNA1 (GFX10.1) machine-code emitter, in pure Zag.
 // No assembler, no LLVM: each function builds one instruction word from its
-// documented microcode field layout, so triton can hand znc-style compute
+// documented microcode field layout, so prismstudio can hand znc-style compute
 // kernels straight to the shader cores. Instructions are appended as
 // little-endian dwords to an ArrayList[u8] (the same host buffer that then gets
 // memcpy'd into a VM-mapped, executable GPU buffer).
@@ -92,8 +92,8 @@ fn v_lshlrev_b32(s: *list.ArrayList[u8], vdst: i64, shift: i64, vsrc1: i64) void
 // threads=1, groups=element_count). Stores the fill value at base + wg_id*4.
 fn rdna_emit_fill_kernel(s: *list.ArrayList[u8]) i32 {
     let start: i32 = s.*.len;
-    v_mov_b32_from_sgpr(s, 1, 3);                 // v1 = s3 = workgroup id = index
-    v_lshlrev_b32(s, 2, 2, 1);                     // v2 = index << 2 (byte offset)
+    v_mov_b32_from_sgpr(s, 1, 3);                 // v1 = workgroup id
+    v_lshlrev_b32(s, 2, 2, 1);                   // v2 = byte offset
     v_mov_b32_from_sgpr(s, 3, 2);                 // v3 = s2 = fill value
     global_store_dword_saddr(s, 2, 3, 0, 0);      // [base + v2] = v3
     s_waitcnt_vm0(s);
@@ -127,6 +127,45 @@ fn rdna_emit_store_kernel(s: *list.ArrayList[u8], word0: i64, word1: i64) i32 {
     v_mov_b32_lit(s, 3, word1);          // v3 = word1
     global_store_dword(s, 0, 3, 4);      // [v[0:1] + 4] = v3
     s_waitcnt_vm0(s);                    // wait for the stores to be sent
+    s_endpgm(s);
+    return (s.*.len - start) / 4;
+}
+
+// Dynamic one-element store used to prove the compiler/runtime calling
+// convention independently of TGID_X and scalar-base GLOBAL addressing.
+// s[0:1] is the full output address and s2 is the value.
+fn rdna_emit_dynamic_store_kernel(s: *list.ArrayList[u8]) i32 {
+    let start: i32 = s.*.len;
+    v_mov_b32_from_sgpr(s, 0, 0);
+    v_mov_b32_from_sgpr(s, 1, 1);
+    v_mov_b32_from_sgpr(s, 2, 2);
+    global_store_dword(s, 0, 2, 0);
+    s_waitcnt_vm0(s);
+    s_endpgm(s);
+    return (s.*.len - start) / 4;
+}
+
+// Diagnostic scalar-base store: s[0:1] is the base, s2 the value, and s3 a
+// caller-supplied zero byte offset. This isolates GLOBAL SADDR addressing from
+// workgroup-id delivery.
+fn rdna_emit_saddr_store_kernel(s: *list.ArrayList[u8]) i32 {
+    let start: i32 = s.*.len;
+    v_mov_b32_from_sgpr(s, 0, 3);
+    v_mov_b32_from_sgpr(s, 1, 2);
+    global_store_dword_saddr(s, 0, 1, 0, 0);
+    s_waitcnt_vm0(s);
+    s_endpgm(s);
+    return (s.*.len - start) / 4;
+}
+
+// Diagnostic TGID store: s3 is hardware-delivered TGID_X after three user
+// SGPRs. With one workgroup it is zero, isolating TGID delivery from shifting.
+fn rdna_emit_tgid_store_kernel(s: *list.ArrayList[u8]) i32 {
+    let start: i32 = s.*.len;
+    v_mov_b32_from_sgpr(s, 0, 3);
+    v_mov_b32_from_sgpr(s, 1, 2);
+    global_store_dword_saddr(s, 0, 1, 0, 0);
+    s_waitcnt_vm0(s);
     s_endpgm(s);
     return (s.*.len - start) / 4;
 }
