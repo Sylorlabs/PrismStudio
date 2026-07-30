@@ -669,8 +669,8 @@ fn vp_grid(f: *FB, cam: Cam, clip: Rect, motion_lod: bool) void {
     let x1: i32 = cx + radius;
     let z0: i32 = cz - radius;
     let z1: i32 = cz + radius;
-    let major: i64 = rgb(62, 66, 79);
-    let minor: i64 = rgb(37, 41, 51);
+    let major: i64 = rgb(72, 80, 96);    // major grid lines — clearer against dark bg
+    let minor: i64 = rgb(44, 50, 62);    // minor grid lines — visible but recessed
     let x: i32 = x0;
     while (x <= x1) {
         let col: i64 = minor;

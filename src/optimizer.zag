@@ -412,15 +412,14 @@ fn opt_cost_line(label: []u8, before: i64, after: i64) []u8 {
     let d: i64 = after - before;
     let sign: []u8 = "";
     if (d >= 0) { sign = "+"; }
-    let r: []u8 = _zag_str_concat("  ", label);
-    r = _zag_str_concat(r, ": ");
-    r = _zag_str_concat(r, _zag_i64_to_str(before));
-    r = _zag_str_concat(r, " -> ");
-    r = _zag_str_concat(r, _zag_i64_to_str(after));
-    r = _zag_str_concat(r, " (");
-    r = _zag_str_concat(r, sign);
-    r = _zag_str_concat(r, _zag_i64_to_str(d));
-    return _zag_str_concat(r, ")\n");
+    let r: []u8 = s3("  ", label, ": ");
+    r = append_ff(r, fmt_i(before));
+    r = append_f(r, " -> ");
+    r = append_ff(r, fmt_i(after));
+    r = append_f(r, " (");
+    r = append_f(r, sign);
+    r = append_ff(r, fmt_i(d));
+    return append_f(r, ")\n");
 }
 
 // A provenance-carrying gain report (Section 20.3): which family produced the gain,
@@ -431,14 +430,14 @@ fn opt_cost_line(label: []u8, before: i64, after: i64) []u8 {
 // Phase K benchmark harness with its own environment metadata.
 fn opt_gain_report(p: OptProposal) []u8 {
     let r: []u8 = _zag_str_concat("family=", opt_family_name(p.family));
-    r = _zag_str_concat(r, " gain=");
-    r = _zag_str_concat(r, _zag_i64_to_str(opt_gain_percent(p) as i64));
-    r = _zag_str_concat(r, "% method=structural-cost-model units=counts/nm/symbols uncertainty=exact\n");
-    r = _zag_str_concat(r, opt_cost_line("components", p.before.components as i64, p.after.components as i64));
-    r = _zag_str_concat(r, opt_cost_line("chambers", p.before.chambers as i64, p.after.chambers as i64));
-    r = _zag_str_concat(r, opt_cost_line("guides", p.before.guides as i64, p.after.guides as i64));
-    r = _zag_str_concat(r, opt_cost_line("guide_len_nm", p.before.guide_len_nm as i64, p.after.guide_len_nm as i64));
-    r = _zag_str_concat(r, opt_cost_line("delay_symbols", p.before.delay_symbols as i64, p.after.delay_symbols as i64));
+    r = append_f(r, " gain=");
+    r = append_ff(r, fmt_i(opt_gain_percent(p) as i64));
+    r = append_f(r, "% method=structural-cost-model units=counts/nm/symbols uncertainty=exact\n");
+    r = append_ff(r, opt_cost_line("components", p.before.components as i64, p.after.components as i64));
+    r = append_ff(r, opt_cost_line("chambers", p.before.chambers as i64, p.after.chambers as i64));
+    r = append_ff(r, opt_cost_line("guides", p.before.guides as i64, p.after.guides as i64));
+    r = append_ff(r, opt_cost_line("guide_len_nm", p.before.guide_len_nm as i64, p.after.guide_len_nm as i64));
+    r = append_ff(r, opt_cost_line("delay_symbols", p.before.delay_symbols as i64, p.after.delay_symbols as i64));
     return r;
 }
 
@@ -1117,9 +1116,13 @@ fn opt_has_prefix(s: []u8, prefix: []u8) bool {
 }
 
 fn opt_battery_pressure_at(base: []u8) bool {
-    let status: []u8 = _zag_read_file(_zag_str_concat(base, "/status"));
+    let status_path: []u8 = _zag_str_concat(base, "/status");
+    let status: []u8 = _zag_read_file(status_path);
+    _zag_str_free(status_path);
     if (!opt_has_prefix(status, "Discharging")) { return false; }
-    let capacity: []u8 = _zag_read_file(_zag_str_concat(base, "/capacity"));
+    let capacity_path: []u8 = _zag_str_concat(base, "/capacity");
+    let capacity: []u8 = _zag_read_file(capacity_path);
+    _zag_str_free(capacity_path);
     if (capacity.len == 0) { return false; }
     let pct: i64 = _zag_str_to_i64(capacity);
     return pct >= 0 && pct < 20;
@@ -1128,9 +1131,12 @@ fn opt_battery_pressure_at(base: []u8) bool {
 fn opt_thermal_pressure() bool {
     let i: i32 = 0;
     while (i < 16) {
-        let p: []u8 = _zag_str_concat("/sys/class/thermal/thermal_zone", _zag_i64_to_str(i as i64));
-        let raw: []u8 = _zag_read_file(_zag_str_concat(p, "/temp"));
-        if (raw.len > 0 && _zag_str_to_i64(raw) >= 80000) { return true; }
+        let p: []u8 = prepend_f("/sys/class/thermal/thermal_zone", fmt_i(i as i64));
+        let temp_path: []u8 = append_f(p, "/temp");
+        let raw: []u8 = _zag_read_file(temp_path);
+        _zag_str_free(temp_path);
+        if (raw.len > 0 && _zag_str_to_i64(raw) >= 80000) { _zag_str_free(raw); return true; }
+        _zag_str_free(raw);
         i = i + 1;
     }
     return false;
@@ -1488,27 +1494,27 @@ fn opt_engine_ignore_pending(e: *OptEngine) void {
 // proposal signatures across close/reopen without placing optimizer state in
 // project semantics. A sidecar for different project bytes is ignored.
 fn opt_campaign_save(e: *OptEngine, path: []u8, project_key: i64) bool {
-    let out: []u8 = _zag_str_concat("optcampaign 4 ", _zag_i64_to_str(project_key));
-    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.last_rev));
-    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.rejected.len as i64));
+    let out: []u8 = prepend_f("optcampaign 4 ", fmt_i(project_key));
+    out = append_f(out, " "); out = append_ff(out, fmt_i(e.*.last_rev));
+    out = append_f(out, " "); out = append_ff(out, fmt_i(e.*.rejected.len as i64));
     let i: i32 = 0;
     while (i < e.*.rejected.len) {
-        out = _zag_str_concat(out, " ");
-        out = _zag_str_concat(out, _zag_i64_to_str(e.*.rejected.data[i]));
+        out = append_f(out, " ");
+        out = append_ff(out, fmt_i(e.*.rejected.data[i]));
         i = i + 1;
     }
     let active: i64 = 0; if (e.*.work_active) { active = 1; }
-    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(active));
-    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.work_family as i64));
-    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.work_cursor as i64));
-    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.work_subcursor as i64));
-    out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.work_ids.len as i64));
+    out = append_f(out, " "); out = append_ff(out, fmt_i(active));
+    out = append_f(out, " "); out = append_ff(out, fmt_i(e.*.work_family as i64));
+    out = append_f(out, " "); out = append_ff(out, fmt_i(e.*.work_cursor as i64));
+    out = append_f(out, " "); out = append_ff(out, fmt_i(e.*.work_subcursor as i64));
+    out = append_f(out, " "); out = append_ff(out, fmt_i(e.*.work_ids.len as i64));
     let wi: i32 = 0;
     while (wi < e.*.work_ids.len) {
-        out = _zag_str_concat(out, " "); out = _zag_str_concat(out, _zag_i64_to_str(e.*.work_ids.data[wi] as i64));
+        out = append_f(out, " "); out = append_ff(out, fmt_i(e.*.work_ids.data[wi] as i64));
         wi = wi + 1;
     }
-    out = _zag_str_concat(out, "\n");
+    out = append_f(out, "\n");
     return _zag_write_file(path, out) == 0;
 }
 
@@ -1572,8 +1578,8 @@ fn opt_campaign_load(e: *OptEngine, path: []u8, project_key: i64) bool {
 }
 
 fn opt_ck_i64(out: *[]u8, v: i64) void {
-    out.* = _zag_str_concat(out.*, " ");
-    out.* = _zag_str_concat(out.*, _zag_i64_to_str(v));
+    out.* = append_f(out.*, " ");
+    out.* = append_ff(out.*, fmt_i(v));
 }
 
 fn opt_ck_sim(out: *[]u8, sm: *Sim) void {
@@ -1602,8 +1608,8 @@ fn opt_ck_sim(out: *[]u8, sm: *Sim) void {
 // delay rings/head. The tentative graph patch is included so reopen performs no
 // candidate rediscovery or replay of already-proven symbols.
 fn opt_proof_save(e: *OptEngine, path: []u8, project_key: i64) bool {
-    let out: []u8 = "optproof 1"; opt_ck_i64(&out,project_key);
-    if (!e.*.oracle_active) { opt_ck_i64(&out,0); out = _zag_str_concat(out,"\n"); return _zag_write_file(path,out) == 0; }
+    let out: []u8 = _zag_strdup("optproof 1"); opt_ck_i64(&out,project_key);
+    if (!e.*.oracle_active) { opt_ck_i64(&out,0); out = append_f(out,"\n"); return _zag_write_file(path,out) == 0; }
     opt_ck_i64(&out,1); opt_ck_i64(&out,e.*.oracle_step as i64);
     let p: OptProposal = e.*.oracle_candidate; opt_ck_i64(&out,p.family as i64);
     opt_ck_i64(&out,p.removed.len as i64);
@@ -1632,7 +1638,7 @@ fn opt_proof_save(e: *OptEngine, path: []u8, project_key: i64) bool {
         g = g + 1;
     }
     opt_ck_sim(&out,e.*.oracle_left); opt_ck_sim(&out,e.*.oracle_right);
-    out = _zag_str_concat(out,"\n"); return _zag_write_file(path,out) == 0;
+    out = append_f(out,"\n"); return _zag_write_file(path,out) == 0;
 }
 
 fn opt_ck_vals(raw: []u8, prefix: []u8) list.ArrayList[i64] {
@@ -1742,8 +1748,11 @@ fn opt_proof_load(e: *OptEngine, path: []u8, project_key: i64, s: *Scene) bool {
 }
 
 fn opt_campaign_save_full(e: *OptEngine, path: []u8, project_key: i64) bool {
-    return opt_campaign_save(e,path,project_key) &&
-        opt_proof_save(e,_zag_str_concat(path,".proof"),project_key);
+    if (!opt_campaign_save(e,path,project_key)) { return false; }
+    let proof_path: []u8 = _zag_str_concat(path,".proof");
+    let ok: bool = opt_proof_save(e,proof_path,project_key);
+    _zag_str_free(proof_path);
+    return ok;
 }
 
 fn opt_campaign_load_full(e: *OptEngine, path: []u8, project_key: i64, s: *Scene) bool {

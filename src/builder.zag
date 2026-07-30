@@ -1,0 +1,540 @@
+// builder.zag — Engine Builder / Density Synthesizer (Masterplan Section 22).
+//
+// The inverse of the optimizer (Phase M). Given only a lattice envelope, it
+// synthesizes an engine from scratch that delivers as much computation as the
+// envelope allows, maximizing computed-output throughput per unit area. The
+// function the engine computes is NOT declared — it emerges from whatever
+// chamber wiring is cheapest at the winning density. The builder and optimizer
+// compose: spec -> builder (synthesize) -> rough scene -> optimizer (rewrite)
+// -> efficient scene.
+//
+// Non-degeneracy: a detector counts as a *computed output* only when its
+// transitive fan-in crosses >=1 chamber and depends on >=2 distinct emitters.
+// A detector fed directly by an emitter is transport and scores 0. Without this
+// rule the objective collapses to a bundle of wires (the global optimum of
+// "trits per area" with no compute requirement). See masterplan Section 22.1.
+//
+// Every physical value (pitch, clock, wavelength) comes from the DeviceModel
+// passed in -- no naked literals (AGENTS rule 1). The builder is a strict
+// observer until `build_apply`: `build_analyze` builds on a scratch scene and
+// never mutates the caller's project.
+
+@import("../std/list.zag") as list
+@import("../std/hashmap.zag") as hm
+@import("voxel.zag")
+@import("components.zag")
+@import("scene.zag")
+@import("routing.zag")
+@import("sim.zag")
+@import("optimizer.zag")
+@import("limits.zag")
+@import("strutil.zag")
+
+// ── envelope ──────────────────────────────────────────────────────────────────
+struct BuildEnvelope {
+    xmin: i32, ymin: i32, zmin: i32,
+    xmax: i32, ymax: i32, zmax: i32,
+    plate_size: i32,   // 0 = auto-select per pitch; >0 = user-specified plate edge
+}
+
+fn build_envelope_default() BuildEnvelope {
+    return BuildEnvelope{ .xmin = 0, .ymin = 0, .zmin = 0,
+                          .xmax = 23, .ymax = 1, .zmax = 23, .plate_size = 0 };
+}
+
+// ymin/ymax are informational: parts must sit at y=1 (the only legal part layer
+// in the process stack) and the plate at y=0. We honor X and Z as the placement
+// envelope and clamp Y to the physical stack.
+fn build_envelope_ok(e: BuildEnvelope) bool {
+    if (e.xmin > e.xmax || e.zmin > e.zmax) { return false; }
+    if (e.xmin < 0 || e.zmin < 0) { return false; }
+    let span_x: i32 = e.xmax - e.xmin + 1;
+    let span_z: i32 = e.zmax - e.zmin + 1;
+    if (span_x < 4 || span_z < 4) { return false; }   // too small to fit one compute cell
+    return true;
+}
+
+// ── result ────────────────────────────────────────────────────────────────────
+struct BuildResult {
+    valid: bool,
+    envelope: BuildEnvelope,
+    pitch: i32,
+    plate_edge: i32,         // actual plate edge used for tiling
+    computed_outputs: i32,   // detectors fed by >=2 emitters via >=1 chamber
+    emitters: i32,
+    chambers: i32,
+    detectors: i32,
+    guides: i32,
+    clock_ghz: f64,
+    footprint_nm2: f64,
+    score: f64,              // computed_outputs * clock_ghz * 1e9 / footprint_nm2
+    scene: *Scene,           // owned; always allocated (empty when !valid)
+}
+
+fn build_result_empty() BuildResult {
+    return BuildResult{
+        .valid = false, .envelope = build_envelope_default(), .pitch = 0,
+        .plate_edge = 0,
+        .computed_outputs = 0, .emitters = 0, .chambers = 0, .detectors = 0,
+        .guides = 0, .clock_ghz = 0.0, .footprint_nm2 = 0.0, .score = 0.0,
+        .scene = scene_new(),
+    };
+}
+
+fn build_result_free(r: *BuildResult) void {
+    scene_free(r.*.scene);
+    r.*.scene = scene_new();   // safe to free twice
+}
+
+// ── routing helper (mirrors flash_route) ──────────────────────────────────────
+fn build_route(s: *Scene, from_id: i32, from_p: i32, to_id: i32, to_p: i32) bool {
+    let fi: i32 = scene_comp_index(s, from_id);
+    let ti: i32 = scene_comp_index(s, to_id);
+    if (fi < 0 || ti < 0) { return false; }
+    let path: list.ArrayList[Vox] = list.make[Vox](32);
+    if (!route_guide(s, comp_port_attach(s.*.comps.data[fi], from_p),
+        comp_port_attach(s.*.comps.data[ti], to_p), &path)) {
+        list.free[Vox](&path);
+        return false;
+    }
+    return scene_add_guide(s, from_id, from_p, to_id, to_p, path) > 0;
+}
+
+// ── computed-output analysis (the non-degeneracy core) ────────────────────────
+// For each detector, walk the directed guide graph backward and ask: does its
+// transitive fan-in cross a chamber AND reach >=2 distinct emitters? Only then
+// is it a computed output. A detector fed directly by an emitter is transport.
+fn build_fanin_emitters(s: *Scene, det_id: i32, visited: *hm.IntMap[i32],
+                        crossed: *bool, emitter_count: *i32) void {
+    // BFS worklist of component ids to visit backward (sinks -> sources).
+    let work: list.ArrayList[i32] = list.make[i32](16);
+    list.push[i32](&work, det_id);
+    hm.int_put[i32](visited, det_id, 1);
+    while (work.len > 0) {
+        let cur: i32 = list.pop[i32](&work);
+        let ci: i32 = scene_comp_index(s, cur);
+        if (ci < 0) { continue; }
+        let kind: Kind = s.*.comps.data[ci].kind;
+        if (cur != det_id) {
+            if (kind == Kind.Emitter) {
+                emitter_count.* = emitter_count.* + 1;
+                continue;   // emitters are sources; do not walk past them
+            }
+            if (kind == Kind.Chamber) { crossed.* = true; }
+        }
+        // walk every guide that feeds `cur` (to_c == cur)
+        let gi: i32 = 0;
+        while (gi < s.*.guides.len) {
+            let g: Guide = s.*.guides.data[gi];
+            if (g.to_c == cur) {
+                let seen: i32 = hm.int_get[i32](visited.*, g.from_c) orelse 0;
+                if (seen == 0) {
+                    hm.int_put[i32](visited, g.from_c, 1);
+                    list.push[i32](&work, g.from_c);
+                }
+            }
+            gi = gi + 1;
+        }
+    }
+    list.free[i32](&work);
+}
+
+fn build_computed_outputs(s: *Scene) i32 {
+    let n: i32 = 0;
+    let i: i32 = 0;
+    while (i < s.*.comps.len) {
+        if (s.*.comps.data[i].kind == Kind.Detector) {
+            let visited: hm.IntMap[i32] = hm.int_make[i32](32);
+            let crossed: bool = false;
+            let em: i32 = 0;
+            build_fanin_emitters(s, s.*.comps.data[i].id, &visited, &crossed, &em);
+            if (crossed && em >= 2) { n = n + 1; }
+            hm.int_free[i32](&visited);
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+fn build_clock_ghz(s: *Scene) f64 {
+    let sim: *Sim = sim_new();
+    sim_recompile(sim, s);
+    let clk: f64 = 0.0;
+    if (sim.*.model_ok) { clk = sim_clock_from_nodes(sim, s); }
+    sim_free(sim);
+    return clk;
+}
+
+fn build_count_kind(s: *Scene, k: Kind) i32 {
+    let n: i32 = 0;
+    let i: i32 = 0;
+    while (i < s.*.comps.len) { if (s.*.comps.data[i].kind == k) { n = n + 1; } i = i + 1; }
+    return n;
+}
+
+// Footprint is the user's envelope in nm^2 (the area they allocated), not the
+// used area -- so "throughput per unit area" is measured against the budget.
+fn build_footprint_nm2(env: BuildEnvelope, pitch_nm: f64) f64 {
+    let sx: f64 = ((env.xmax - env.xmin + 1) as f64) * pitch_nm;
+    let sz: f64 = ((env.zmax - env.zmin + 1) as f64) * pitch_nm;
+    return sx * sz;
+}
+
+// ── one compute cell ──────────────────────────────────────────────────────────
+// 2 emitters -> 1 chamber (cavity interference, logic_op=0) -> 1 detector.
+// The chamber combines two independent emitter streams, so the detector's
+// output is a real ternary function of two inputs (emergent, not declared).
+//
+// Layout at pitch P, cell origin (cx, 1, cz):
+//   emitter A: (cx,     1, cz)     BEAM +x -> chamber IN.A (-x face)
+//   emitter B: (cx,     1, cz+1)   BEAM +x -> chamber IN.B (+z face)
+//   chamber  : (cx+3,   1, cz)     2x2x2; OUT +x -> detector
+//   detector : (cx+5,   1, cz+1)   SENSE -x <- chamber OUT
+// All footprints are disjoint; routes run in the y=2 waveguide band.
+fn build_place_cell(s: *Scene, cx: i32, cz: i32,
+                    ids: *list.ArrayList[i32]) bool {
+    let ea: i32 = scene_place(s, Kind.Emitter, vox(cx, 1, cz), 0);
+    let eb: i32 = scene_place(s, Kind.Emitter, vox(cx, 1, cz + 1), 0);
+    let ch: i32 = scene_place(s, Kind.Chamber, vox(cx + 3, 1, cz), 0);
+    let de: i32 = scene_place(s, Kind.Detector, vox(cx + 5, 1, cz + 1), 0);
+    if (ea < 0 || eb < 0 || ch < 0 || de < 0) {
+        // Clean up any partially-placed components so failed attempts don't
+        // orphan emitters/detectors in the scene (critical for large envelopes
+        // where thousands of placements may fail before the quota is hit).
+        if (ea >= 0) { scene_remove(s, ea); }
+        if (eb >= 0) { scene_remove(s, eb); }
+        if (ch >= 0) { scene_remove(s, ch); }
+        if (de >= 0) { scene_remove(s, de); }
+        return false;
+    }
+    list.push[i32](ids, ea); list.push[i32](ids, eb);
+    list.push[i32](ids, ch); list.push[i32](ids, de);
+    if (!build_route(s, ea, 0, ch, 0)) { return false; }   // A -> IN.A
+    if (!build_route(s, eb, 0, ch, 1)) { return false; }   // B -> IN.B
+    if (!build_route(s, ch, 3, de, 0)) { return false; }   // OUT -> SENSE
+    return true;
+}
+
+fn build_remove_cells(s: *Scene, ids: *list.ArrayList[i32]) void {
+    let i: i32 = 0;
+    while (i < ids.*.len) { scene_remove(s, ids.*.data[i]); i = i + 1; }
+    ids.*.len = 0;
+}
+
+// ── plate sizing ──────────────────────────────────────────────────────────────
+// The plate edge used for tiling. If the user specifies plate_size > 0, clamp
+// it to the physical limits [8, 128] and use it directly. If plate_size == 0
+// (auto), compute the smallest square plate that fits 64 chambers at the given
+// pitch — this maximizes the number of plates per envelope, which maximizes
+// total computed outputs.
+//
+// At pitch P, 64 chambers in an 8×8 grid need:
+//   X: 8 cells × P spacing + 5 (last cell's tail) = 7P + 6
+//   Z: 8 rows × P spacing + 1 (last cell's depth) = 7P + 2
+// Square plate: max(7P+6, 7P+2) = 7P + 6, clamped to [8, 128].
+fn build_plate_edge(env: BuildEnvelope, pitch: i32) i32 {
+    let lo: i32 = 8;     // kind_size_min(Kind.Plate).x
+    let hi: i32 = 128;   // kind_size_max(Kind.Plate).x
+    if (env.plate_size > 0) {
+        let ps: i32 = env.plate_size;
+        if (ps < lo) { ps = lo; }
+        if (ps > hi) { ps = hi; }
+        return ps;
+    }
+    // Auto: smallest square plate that fits 64 chambers at this pitch.
+    let needed: i32 = 7 * pitch + 6;
+    if (needed < lo) { return lo; }
+    if (needed > hi) { return hi; }
+    return needed;
+}
+
+// ── candidate at a fixed pitch ────────────────────────────────────────────────
+// Returns true and fills `out` on success; on failure frees the scratch scene
+// and returns false (out untouched).
+//
+// Multi-plate tiling: the envelope is partitioned into a grid of plates, each
+// at most 128×128 voxels (kind_size_max(Kind.Plate)). Each plate gets its own
+// 64-chamber quota, so a 1000×1000 envelope yields 8×8=64 plates and up to
+// 4096 computed outputs — proportionally more compute for more silicon. The
+// hard safety boundary is limit_project_components() (default 100 000).
+fn build_try_pitch(model: DeviceModel, env: BuildEnvelope, pitch: i32,
+                   out: *BuildResult) bool {
+    let s: *Scene = scene_new();
+    s.*.model = model;
+
+    let cell_ids: list.ArrayList[i32] = list.make[i32](8);
+    let total_placed: i32 = 0;
+    let max_comps: i32 = limit_project_components();
+    let plate_edge: i32 = build_plate_edge(env, pitch);
+
+    // Tile the envelope with plates, left-to-right, front-to-back.
+    let pz: i32 = env.zmin;
+    while (pz <= env.zmax && s.*.comps.len < max_comps) {
+        let plate_h: i32 = plate_edge;
+        if (pz + plate_h - 1 > env.zmax) { plate_h = env.zmax - pz + 1; }
+        if (plate_h < 8) { break; }   // kind_size_min(Kind.Plate).x
+
+        let px: i32 = env.xmin;
+        while (px <= env.xmax && s.*.comps.len < max_comps) {
+            let plate_w: i32 = plate_edge;
+            if (px + plate_w - 1 > env.xmax) { plate_w = env.xmax - px + 1; }
+            if (plate_w < 8) { break; }
+
+            // Place and resize this plate.
+            let plate: i32 = scene_place(s, Kind.Plate, vox(px, 0, pz), 0);
+            if (plate < 0) { px = px + plate_edge; continue; }
+            let rs: i32 = scene_resize(s, plate, vox(plate_w, 1, plate_h));
+            if (rs != 0) { scene_remove(s, plate); px = px + plate_edge; continue; }
+
+            // Tile compute cells on this plate, up to the 64-chamber quota.
+            let chambers_on_plate: i32 = 0;
+            let quota: i32 = max_chambers_per_plate();
+            let cz: i32 = pz;
+            while (cz + 1 <= pz + plate_h - 1 && chambers_on_plate < quota) {
+                let cx: i32 = px;
+                while (cx + 5 <= px + plate_w - 1 && chambers_on_plate < quota) {
+                    if (s.*.comps.len + 4 > max_comps) { break; }
+                    if (!build_place_cell(s, cx, cz, &cell_ids)) {
+                        build_remove_cells(s, &cell_ids);
+                        break;
+                    }
+                    cell_ids.len = 0;
+                    chambers_on_plate = chambers_on_plate + 1;
+                    total_placed = total_placed + 1;
+                    cx = cx + pitch;
+                }
+                cz = cz + pitch;
+            }
+            px = px + plate_edge;
+        }
+        pz = pz + plate_edge;
+    }
+    list.free[i32](&cell_ids);
+
+    if (total_placed == 0) { scene_free(s); return false; }
+
+    let co: i32 = build_computed_outputs(s);
+    if (co == 0) { scene_free(s); return false; }
+    if (scene_validation_errors(s) != 0) { scene_free(s); return false; }
+
+    let clk: f64 = build_clock_ghz(s);
+    if (clk <= 0.0) { scene_free(s); return false; }   // incomplete model
+    let foot: f64 = build_footprint_nm2(env, model.pitch_nm.value);
+    let score: f64 = ((co as f64) * clk * 1.0e9) / foot;
+
+    out.* = BuildResult{
+        .valid = true, .envelope = env, .pitch = pitch,
+        .plate_edge = plate_edge,
+        .computed_outputs = co,
+        .emitters = build_count_kind(s, Kind.Emitter),
+        .chambers = build_count_kind(s, Kind.Chamber),
+        .detectors = build_count_kind(s, Kind.Detector),
+        .guides = s.*.guides.len,
+        .clock_ghz = clk, .footprint_nm2 = foot, .score = score,
+        .scene = s,
+    };
+    return true;
+}
+
+// ── polish: run the existing optimizer rewrites on the winner ─────────────────
+// Each opt_analyze proposal is already output-equivalent to its immediate
+// predecessor; by transitivity a chain preserves equivalence to the builder
+// reference. We re-verify against the reference once at the end and keep the
+// polished scene only when it is still equivalent (and cheaper, which the
+// optimizer guarantees by only accepting strict cost reductions).
+fn build_polish(ref: *Scene) *Scene {
+    let cand: *Scene = scene_clone(ref);
+    let passes: i32 = 0;
+    while (passes < limit_builder_polish_passes()) {
+        let p: OptProposal = opt_analyze(cand);
+        if (!p.valid) { opt_proposal_free(&p); break; }
+        if (opt_gain_percent(p) < 1) { opt_proposal_free(&p); break; }
+        let applied: bool = opt_apply(cand, &p);
+        opt_proposal_free(&p);
+        if (!applied) { break; }
+        passes = passes + 1;
+    }
+    if (!opt_outputs_equal(ref, cand, opt_horizon())) {
+        scene_free(cand);
+        return scene_clone(ref);   // never keep a non-equivalent polish
+    }
+    return cand;
+}
+
+// ── entry point: sweep pitches, pick best, polish ─────────────────────────────
+// The compute cell spans 6 voxels in X (cx..cx+5) and 2 in Z (cz..cz+1), so
+// the minimum pitch that avoids self-overlap is 6. We sweep 6, 8, 10 — denser
+// pitches pack more cells per plate (up to the 64-chamber quota), so the
+// smallest viable pitch usually wins.
+fn build_pitch_set(out: *list.ArrayList[i32]) void {
+    out.*.len = 0;
+    list.push[i32](out, 6);
+    list.push[i32](out, 8);
+    list.push[i32](out, 10);
+}
+
+// Observer entry point: builds on scratch scenes and NEVER mutates the caller's
+// project. Returns a BuildResult whose .scene is the synthesized engine (owned).
+// .valid is false when no non-degenerate engine fits the envelope.
+//
+// For envelopes that fit on a single plate, we sweep multiple pitches and
+// polish the winner — the optimizer can find non-obvious wins on small engines.
+// For larger envelopes (multi-plate), every viable pitch hits the 64-chamber-
+// per-plate quota, so all pitches produce the same computed output count and
+// the same score. We skip the sweep and polish there, since (a) building 3
+// full scenes of 4000+ components is expensive, and (b) a uniform tile has no
+// redundant components for the optimizer to remove.
+fn build_analyze(model: DeviceModel, env: BuildEnvelope) BuildResult {
+    let best: BuildResult = build_result_empty();
+    if (!build_envelope_ok(env)) { return best; }
+    let have_best: bool = false;
+
+    let span_x: i32 = env.xmax - env.xmin + 1;
+    let span_z: i32 = env.zmax - env.zmin + 1;
+    // Use the auto plate edge at pitch 6 (the densest) to decide single-plate.
+    // If the user specified a plate_size, use that instead.
+    let plate_edge: i32 = build_plate_edge(env, 6);
+    let single_plate: bool = span_x <= plate_edge && span_z <= plate_edge;
+
+    let pitches: list.ArrayList[i32] = list.make[i32](4);
+    build_pitch_set(&pitches);
+    let pi: i32 = 0;
+    while (pi < pitches.len) {
+        // For multi-plate envelopes, only try the first (densest) pitch —
+        // all pitches produce the same 64-per-plate count.
+        if (!single_plate && pi > 0) { break; }
+        let cand: BuildResult = build_result_empty();
+        if (build_try_pitch(model, env, pitches.data[pi], &cand)) {
+            // Footprint and clock are constant across the sweep (same envelope,
+            // same part kinds), so maximizing computed_outputs maximizes J. Tie
+            // breaks toward the smaller pitch (denser) for a tighter layout.
+            let take: bool = !have_best ||
+                cand.computed_outputs > best.computed_outputs ||
+                (cand.computed_outputs == best.computed_outputs &&
+                 cand.pitch < best.pitch);
+            if (take) {
+                if (have_best) { build_result_free(&best); }
+                best = cand;
+                have_best = true;
+            } else {
+                build_result_free(&cand);
+            }
+        }
+        pi = pi + 1;
+    }
+    list.free[i32](&pitches);
+
+    if (!have_best) { return best; }
+
+    // Polish only on single-plate engines — the optimizer is O(n²) and a
+    // uniform multi-plate tile has no redundancies to exploit.
+    if (single_plate) {
+        let polished: *Scene = build_polish(best.scene);
+        build_result_free(&best);
+        best.scene = polished;
+        best.computed_outputs = build_computed_outputs(polished);
+        best.emitters = build_count_kind(polished, Kind.Emitter);
+        best.chambers = build_count_kind(polished, Kind.Chamber);
+        best.detectors = build_count_kind(polished, Kind.Detector);
+        best.guides = polished.*.guides.len;
+        best.clock_ghz = build_clock_ghz(polished);
+        if (best.clock_ghz <= 0.0 || best.computed_outputs == 0 ||
+            scene_validation_errors(polished) != 0) {
+            best.valid = false;
+        }
+    }
+    return best;
+}
+
+// ── provenance report (Section 22.1: measured, with method and units) ─────────
+// Leak-free: every intermediate (_zag_str_concat / fmt_i / fmt_f1) reaches
+// _zag_str_free exactly once. The s* helpers do NOT free their first argument,
+// so we free `out` before each reassignment.
+fn build_report(r: BuildResult) []u8 {
+    if (!r.valid) { return _zag_strdup("builder: no non-degenerate engine fits the envelope\n"); }
+    let out: []u8 = _zag_strdup("builder method=density-sweep units=trit/s/nm^2 uncertainty=best-found\n");
+    let co_s: []u8 = fmt_i(r.computed_outputs as i64);
+    let pi_s: []u8 = fmt_i(r.pitch as i64);
+    let pe_s: []u8 = fmt_i(r.plate_edge as i64);
+    let t1a: []u8 = s4(out, "  computed_outputs=", co_s, " pitch=");
+    _zag_str_free(out); _zag_str_free(co_s);
+    let t1b: []u8 = s3(t1a, pi_s, " plate_edge=");
+    _zag_str_free(t1a); _zag_str_free(pi_s);
+    let t1: []u8 = s2(t1b, pe_s);
+    _zag_str_free(t1b); _zag_str_free(pe_s);
+    let t1n: []u8 = s2(t1, "\n");
+    _zag_str_free(t1);
+    out = t1n;
+    let em_s: []u8 = fmt_i(r.emitters as i64);
+    let ch_s: []u8 = fmt_i(r.chambers as i64);
+    let de_s: []u8 = fmt_i(r.detectors as i64);
+    let gu_s: []u8 = fmt_i(r.guides as i64);
+    let t2a: []u8 = s4(out, "  emitters=", em_s, " chambers=");
+    _zag_str_free(out); _zag_str_free(em_s);
+    let t2b: []u8 = s3(t2a, ch_s, " detectors=");
+    _zag_str_free(t2a); _zag_str_free(ch_s);
+    let t2c: []u8 = s3(t2b, de_s, " guides=");
+    _zag_str_free(t2b); _zag_str_free(de_s);
+    let t2: []u8 = s3(t2c, gu_s, "\n");
+    _zag_str_free(t2c); _zag_str_free(gu_s);
+    out = t2;
+    let clk_s: []u8 = fmt_f1(r.clock_ghz);
+    let t3a: []u8 = s3(out, "  clock_ghz=", clk_s);
+    _zag_str_free(out); _zag_str_free(clk_s);
+    let t3: []u8 = s2(t3a, "\n");
+    _zag_str_free(t3a);
+    out = t3;
+    let foot_s: []u8 = fmt_f1(r.footprint_nm2);
+    let sc_s: []u8 = fmt_f1(r.score);
+    let t4a: []u8 = s4(out, "  footprint_nm2=", foot_s, " score=");
+    _zag_str_free(out); _zag_str_free(foot_s);
+    let t4: []u8 = s3(t4a, sc_s, " trit/s/nm^2\n");
+    _zag_str_free(t4a); _zag_str_free(sc_s);
+    return t4;
+}
+
+// ── background/UI engine state (mirrors OptEngine's pending-proposal model) ───
+struct BuildEngine {
+    env: BuildEnvelope,
+    has_pending: bool,
+    pending: BuildResult,
+}
+
+fn build_engine_new() *BuildEngine {
+    return new(BuildEngine{
+        .env = build_envelope_default(),
+        .has_pending = false,
+        .pending = build_result_empty(),
+    });
+}
+
+fn build_engine_free(e: *BuildEngine) void {
+    build_result_free(&e.*.pending);
+    _zag_free(e as *i8);
+}
+
+fn build_engine_clear_pending(e: *BuildEngine) void {
+    build_result_free(&e.*.pending);
+    e.*.pending = build_result_empty();
+    e.*.has_pending = false;
+}
+
+// Run a generation pass on the engine's envelope; stores the result as pending.
+// Returns true when a valid engine was synthesized. Pure observer: the live
+// project is untouched.
+fn build_engine_generate(e: *BuildEngine, model: DeviceModel) bool {
+    build_engine_clear_pending(e);
+    let r: BuildResult = build_analyze(model, e.*.env);
+    e.*.pending = r;
+    e.*.has_pending = r.valid;
+    return r.valid;
+}
+
+// Family label for the pending proposal (borrowed static — never freed).
+fn build_engine_pending_family(_e: *BuildEngine) []u8 { return "density-sweep"; }
+fn build_engine_pending_gain(e: *BuildEngine) i32 {
+    // Headline number: computed-output count (the J numerator before area). The
+    // full score is in the details report.
+    if (!e.*.has_pending) { return 0; }
+    return e.*.pending.computed_outputs;
+}

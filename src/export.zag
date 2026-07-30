@@ -127,8 +127,23 @@ fn export_trace(s: *Scene, sim: *Sim, path: []u8, steps: i32) bool {
 
 fn export_all(s: *Scene, sim: *Sim, prefix: []u8) bool {
     sim_recompile(sim, s);
-    return export_bom(s, _zag_str_concat(prefix, ".bom.txt")) &&
-        export_netlist(s, _zag_str_concat(prefix, ".netlist.txt")) &&
-        export_models(s, _zag_str_concat(prefix, ".models.txt")) &&
-        export_report(s, sim, _zag_str_concat(prefix, ".report.txt"));
+    // Each export_* takes a path but does not free it (it only opens the file
+    // and returns), so the caller must bind, call, and free every path. The
+    // early-return preserves the original short-circuit && semantics.
+    let p1: []u8 = _zag_str_concat(prefix, ".bom.txt");
+    let ok1: bool = export_bom(s, p1);
+    _zag_str_free(p1);
+    if (!ok1) { return false; }
+    let p2: []u8 = _zag_str_concat(prefix, ".netlist.txt");
+    let ok2: bool = export_netlist(s, p2);
+    _zag_str_free(p2);
+    if (!ok2) { return false; }
+    let p3: []u8 = _zag_str_concat(prefix, ".models.txt");
+    let ok3: bool = export_models(s, p3);
+    _zag_str_free(p3);
+    if (!ok3) { return false; }
+    let p4: []u8 = _zag_str_concat(prefix, ".report.txt");
+    let ok4: bool = export_report(s, sim, p4);
+    _zag_str_free(p4);
+    return ok4;
 }

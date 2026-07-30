@@ -328,7 +328,14 @@ fn scene_can_place_ext(s: *Scene, k: Kind, sz: Vox, origin: Vox, rot: i32, ignor
     if (k == Kind.Chamber) {
         let plate: i32 = scene_plate_under(s, origin);
         if (plate >= 0) {
-            if (scene_chambers_on_plate(s, plate) >= max_chambers_per_plate()) { return 4; }
+            // When validating an already-placed chamber (ignore_id >= 0),
+            // subtract 1 from the count so the chamber doesn't count itself
+            // against the quota. This prevents false positives in
+            // scene_validation_errors when the plate is at full capacity.
+            let count: i32 = scene_chambers_on_plate(s, plate);
+            let effective: i32 = count;
+            if (ignore_id >= 0) { effective = count - 1; }
+            if (effective >= max_chambers_per_plate()) { return 4; }
         }
     }
     return 0;

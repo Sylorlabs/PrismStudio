@@ -142,6 +142,20 @@ fn agent_err(msg: []u8) void {
     agent_flush();
 }
 
+// Owned-message variant: frees msg after printing. Use when msg is heap-allocated
+// (built from _zag_str_concat / fmt_i / etc.). For string literals, use agent_err.
+fn agent_errf(msg: []u8) void {
+    agent_err(msg);
+    _zag_str_free(msg);
+}
+
+// Owned-message variant: frees msg after printing. Use when msg is heap-allocated.
+// For string literals, use agent_ok1.
+fn agent_ok1f(msg: []u8) void {
+    agent_ok1(msg);
+    _zag_str_free(msg);
+}
+
 fn agent_dot() void {
     _zag_println(".");
     agent_flush();
@@ -149,7 +163,15 @@ fn agent_dot() void {
 
 fn agent_print_i(name_: []u8, v: i64) void {
     _zag_print(name_);
-    _zag_print(_zag_i64_to_str(v));
+    let s: []u8 = _zag_i64_to_str(v);
+    _zag_print(s);
+    _zag_str_free(s);
+}
+
+fn agent_println_i(v: i64) void {
+    let s: []u8 = _zag_i64_to_str(v);
+    _zag_println(s);
+    _zag_str_free(s);
 }
 
 fn agent_print_vox(v: Vox) void {
@@ -174,6 +196,34 @@ fn tok_i64(line: []u8, t: Tok) i64 {
     return _zag_str_to_i64(tok_slice(line, t));
 }
 
+// Parse a float from a token. Handles optional sign, integer part, optional
+// fractional part. Used by camera orbit/pan/zoom for incremental navigation.
+fn tok_f64(line: []u8, t: Tok) f64 {
+    let s: []u8 = tok_slice(line, t);
+    let i: i32 = 0;
+    let neg: bool = false;
+    if (i < s.len && s[i] == 0x2D) { neg = true; i = i + 1; }   // '-'
+    else if (i < s.len && s[i] == 0x2B) { i = i + 1; }          // '+'
+    let val: f64 = 0.0;
+    while (i < s.len && s[i] >= 0x30 && s[i] <= 0x39) {
+        val = val * 10.0 + ((s[i] - 0x30) as f64);
+        i = i + 1;
+    }
+    if (i < s.len && s[i] == 0x2E) {   // '.'
+        i = i + 1;
+        let frac: f64 = 0.0;
+        let div: f64 = 10.0;
+        while (i < s.len && s[i] >= 0x30 && s[i] <= 0x39) {
+            frac = frac + ((s[i] - 0x30) as f64) / div;
+            div = div * 10.0;
+            i = i + 1;
+        }
+        val = val + frac;
+    }
+    if (neg) { return 0.0 - val; }
+    return val;
+}
+
 fn agent_help() void {
     agent_ok0();
     _zag_println("# PrismStudio agent commands");
@@ -184,11 +234,16 @@ fn agent_help() void {
     _zag_println("can_place <kind> <x> <y> <z> [rot] | list | get <id> | select <id>");
     _zag_println("undo | redo | view | pick | open [file.zpa] | save [file.zpa]  (default: live session)");
     _zag_println("sim step [n] | sim reset | sim state | sim mode functional|physical | render <out.bmp>");
-    _zag_println("camera <x> <y> <z> | render_at <out.bmp> <x> <y> <z>");
+    _zag_println("camera <x> <y> <z> | camera orbit <yaw> <pitch> | camera pan <dx> <dz> | camera zoom <factor> | render_at <out.bmp> <x> <y> <z>");
     _zag_println("status | coords | stack [y] | power | perf | kinds");
     _zag_println("flash import <program.fir> | flash verify");
-    _zag_println("ui list | ui screenshot <out.bmp> | ui activate <stable-id>");
+    _zag_println("ui list | ui screenshot <out.bmp> | ui activate <id> | ui click <x> <y> | ui type <text>");
+    _zag_println("copy | paste | duplicate | group | ungroup | rename <id> <name> | visibility <id> | lock <id>");
+    _zag_println("select_add <id> | select_remove <id> | select_clear");
+    _zag_println("view top|front|right|perspective|reset | view frame selected|all | view toggle ortho|section|reduced_motion|object_snap");
+    _zag_println("panel <optimizer|builder|settings|palette> [open|close]");
     _zag_println("optimizer apply|accept | optimizer decline|ignore | optimizer details");
+    _zag_println("builder generate <xmin> <ymin> <zmin> <xmax> <ymax> <zmax> [plate_size] | builder apply|accept | builder decline|ignore | builder details");
     _zag_println("model status | model migrate <version>");
     _zag_println("export <prefix>  (writes BOM, netlist, models, report)");
     _zag_println("trace <out.trace> <steps>  (deterministic engine trace)");
@@ -204,11 +259,17 @@ fn agent_help() void {
 fn agent_capabilities(a: *App) void {
     agent_ok0();
     _zag_println("protocol prismstudio-agent-1");
-    _zag_print("capability_bits "); _zag_println(_zag_i64_to_str(cap_load()));
+    let cb: []u8 = _zag_i64_to_str(cap_load());
+    _zag_print("capability_bits "); _zag_println(cb);
+    _zag_str_free(cb);
     _zag_println("mutation_idempotency PRISMSTUDIO_IDEMPOTENCY");
     _zag_println("revision_precondition PRISMSTUDIO_EXPECT_REV");
-    _zag_print("revision "); _zag_println(_zag_i64_to_str(a.*.session_rev));
-    _zag_print("max_request_bytes "); _zag_println(_zag_i64_to_str(limit_agent_request_bytes() as i64));
+    let rev_s: []u8 = _zag_i64_to_str(a.*.session_rev);
+    _zag_print("revision "); _zag_println(rev_s);
+    _zag_str_free(rev_s);
+    let mrb: []u8 = _zag_i64_to_str(limit_agent_request_bytes() as i64);
+    _zag_print("max_request_bytes "); _zag_println(mrb);
+    _zag_str_free(mrb);
     if (_zag_getenv("PRISMSTUDIO_PROJECT_ROOT").len > 0) { _zag_println("project_root_scope enabled"); }
     else { _zag_println("project_root_scope disabled"); }
     if (_zag_getenv("PRISMSTUDIO_GRANT").len > 0) { _zag_println("scoped_grant enabled"); }
@@ -225,27 +286,28 @@ fn agent_status(a: *App) void {
     let play: i64 = 0;
     if (a.*.sim.*.playing) { play = 1; }
     let spd: i64 = a.*.sim.*.speed as i64;
-    let msg: []u8 = _zag_str_concat("frame=", _zag_i64_to_str(a.*.frame));
-    let m2: []u8 = _zag_str_concat(msg, " comps=");
-    let m3: []u8 = _zag_str_concat(m2, _zag_i64_to_str(a.*.scene.*.comps.len as i64));
-    let m4: []u8 = _zag_str_concat(m3, " guides=");
-    let m5: []u8 = _zag_str_concat(m4, _zag_i64_to_str(a.*.scene.*.guides.len as i64));
-    let m6: []u8 = _zag_str_concat(m5, " symbol=");
-    let m7: []u8 = _zag_str_concat(m6, _zag_i64_to_str(a.*.sim.*.symbol));
-    let m8: []u8 = _zag_str_concat(m7, " playing=");
-    let m9: []u8 = _zag_str_concat(m8, _zag_i64_to_str(play));
-    let m10: []u8 = _zag_str_concat(m9, " speed=");
-    let m11: []u8 = _zag_str_concat(m10, _zag_i64_to_str(spd));
-    let m12: []u8 = _zag_str_concat(m11, " frame_ms=");
-    let m13: []u8 = _zag_str_concat(m12, _zag_i64_to_str(a.*.frame_ms));
-    let m14: []u8 = _zag_str_concat(m13, " file=");
-    let m15: []u8 = _zag_str_concat(m14, a.*.file_);
-    let m16: []u8 = _zag_str_concat(m15, " undo=");
-    let m17: []u8 = _zag_str_concat(m16, _zag_i64_to_str(journal_undo_len(&a.*.jrn) as i64));
-    let m18: []u8 = _zag_str_concat(m17, " redo=");
-    let m19: []u8 = _zag_str_concat(m18, _zag_i64_to_str(journal_redo_len(&a.*.jrn) as i64));
-    let m20: []u8 = _zag_str_concat(m19, " revision=");
-    agent_ok1(_zag_str_concat(m20, _zag_i64_to_str(a.*.session_rev)));
+    let out: []u8 = prepend_f("frame=", fmt_i(a.*.frame));
+    out = append_f(out, " comps=");
+    out = append_ff(out, fmt_i(a.*.scene.*.comps.len as i64));
+    out = append_f(out, " guides=");
+    out = append_ff(out, fmt_i(a.*.scene.*.guides.len as i64));
+    out = append_f(out, " symbol=");
+    out = append_ff(out, fmt_i(a.*.sim.*.symbol));
+    out = append_f(out, " playing=");
+    out = append_ff(out, fmt_i(play));
+    out = append_f(out, " speed=");
+    out = append_ff(out, fmt_i(spd));
+    out = append_f(out, " frame_ms=");
+    out = append_ff(out, fmt_i(a.*.frame_ms));
+    out = append_f(out, " file=");
+    out = append_f(out, a.*.file_);
+    out = append_f(out, " undo=");
+    out = append_ff(out, fmt_i(journal_undo_len(&a.*.jrn) as i64));
+    out = append_f(out, " redo=");
+    out = append_ff(out, fmt_i(journal_redo_len(&a.*.jrn) as i64));
+    out = append_f(out, " revision=");
+    out = append_ff(out, fmt_i(a.*.session_rev));
+    agent_ok1f(out);
 }
 
 fn agent_is_mutation(line: []u8, toks: *list.ArrayList[Tok]) bool {
@@ -259,15 +321,28 @@ fn agent_is_mutation(line: []u8, toks: *list.ArrayList[Tok]) bool {
         tok_eq(line, verb, "move") || tok_eq(line, verb, "rotate") ||
         tok_eq(line, verb, "disconnect") || tok_eq(line, verb, "reroute") ||
         tok_eq(line, verb, "close") ||
-        tok_eq(line, verb, "save") || tok_eq(line, verb, "open")) { return true; }
+        tok_eq(line, verb, "save") || tok_eq(line, verb, "open") ||
+        // component manipulation (scene-modifying only)
+        tok_eq(line, verb, "paste") || tok_eq(line, verb, "group") ||
+        tok_eq(line, verb, "ungroup") || tok_eq(line, verb, "rename") ||
+        tok_eq(line, verb, "visibility") ||
+        // panel control (UI state change)
+        tok_eq(line, verb, "panel")) { return true; }
     if (tok_eq(line, verb, "optimizer") && toks.*.len >= 2 &&
         (tok_eq(line, list.get[Tok](toks, 1), "apply") ||
          tok_eq(line, list.get[Tok](toks, 1), "accept") ||
          tok_eq(line, list.get[Tok](toks, 1), "decline") ||
          tok_eq(line, list.get[Tok](toks, 1), "ignore") ||
          tok_eq(line, list.get[Tok](toks, 1), "details"))) { return true; }
+    if (tok_eq(line, verb, "builder") && toks.*.len >= 2 &&
+        (tok_eq(line, list.get[Tok](toks, 1), "apply") ||
+         tok_eq(line, list.get[Tok](toks, 1), "accept") ||
+         tok_eq(line, list.get[Tok](toks, 1), "decline") ||
+         tok_eq(line, list.get[Tok](toks, 1), "ignore"))) { return true; }
     if (tok_eq(line, verb, "ui") && toks.*.len >= 2 &&
-        tok_eq(line, list.get[Tok](toks, 1), "activate")) { return true; }
+        (tok_eq(line, list.get[Tok](toks, 1), "activate") ||
+         tok_eq(line, list.get[Tok](toks, 1), "click") ||
+         tok_eq(line, list.get[Tok](toks, 1), "type"))) { return true; }
     if (tok_eq(line, verb, "model") && toks.*.len >= 2 &&
         tok_eq(line, list.get[Tok](toks, 1), "migrate")) { return true; }
     return tok_eq(line, verb, "flash") && toks.*.len >= 2 &&
@@ -404,9 +479,11 @@ fn agent_revision_precondition(a: *App) bool {
     if (expected < 0) { expected = _zag_str_to_i64(raw); }
     let current: i64 = session_read_rev();
     if (expected == current && expected == a.*.session_rev) { return true; }
-    let msg: []u8 = _zag_str_concat("E_REV_CONFLICT expected=", _zag_i64_to_str(expected));
-    let m2: []u8 = _zag_str_concat(msg, " current=");
-    agent_err(_zag_str_concat(m2, _zag_i64_to_str(current)));
+    let out: []u8 = prepend_f("E_REV_CONFLICT you_sent=", fmt_i(expected));
+    out = append_f(out, " current_revision=");
+    out = append_ff(out, fmt_i(current));
+    out = append_f(out, " (use current revision as precondition)");
+    agent_errf(out);
     return false;
 }
 
@@ -436,9 +513,10 @@ fn agent_idempotency_prepare(a: *App) i32 {
     }
     let committed: i64 = session_idem_lookup(key);
     if (committed >= 0) {
-        let msg: []u8 = _zag_str_concat("replay idempotency_key=", key);
-        let m2: []u8 = _zag_str_concat(msg, " revision=");
-        agent_ok1(_zag_str_concat(m2, _zag_i64_to_str(committed)));
+        let out: []u8 = prepend_f("replay idempotency_key=", _zag_strdup(key));
+        out = append_f(out, " revision=");
+        out = append_ff(out, fmt_i(committed));
+        agent_ok1f(out);
         return 1;
     }
     a.*.request_idempotency = key;
@@ -446,18 +524,19 @@ fn agent_idempotency_prepare(a: *App) i32 {
 }
 
 fn agent_mutation_ok(a: *App, msg: []u8, affected: i32) void {
-    let out: []u8 = _zag_str_concat(msg, " revision=");
-    let o2: []u8 = _zag_str_concat(out, _zag_i64_to_str(a.*.session_rev));
-    let o3: []u8 = _zag_str_concat(o2, " idempotency_key=");
+    // msg is borrowed (caller retains ownership for audit_append_result below).
+    let out: []u8 = prepend_f(msg, _zag_strdup(" revision="));
+    out = append_ff(out, fmt_i(a.*.session_rev));
+    out = append_f(out, " idempotency_key=");
     let key: []u8 = a.*.request_idempotency;
     if (key.len == 0) { key = "legacy"; }
-    let o4: []u8 = _zag_str_concat(o3, key);
-    let o5: []u8 = _zag_str_concat(o4, " undo_token=");
-    let o6: []u8 = _zag_str_concat(o5, _zag_i64_to_str(a.*.session_rev));
-    let o7: []u8 = _zag_str_concat(o6, " affected_id=");
-    let result: []u8 = _zag_str_concat(o7, _zag_i64_to_str(affected as i64));
+    out = append_f(out, key);
+    out = append_f(out, " undo_token=");
+    out = append_ff(out, fmt_i(a.*.session_rev));
+    out = append_f(out, " affected_id=");
+    out = append_ff(out, fmt_i(affected as i64));
     audit_append_result(a.*.request_command, msg, a.*.request_required, a.*.session_rev, affected);
-    agent_ok1(result);
+    agent_ok1f(out);
 }
 
 fn agent_coords(a: *App) void {
@@ -501,7 +580,9 @@ fn agent_coords(a: *App) void {
             _zag_print(" ");
             agent_print_i("", attach.y as i64);
             _zag_print(" ");
-            _zag_println(_zag_i64_to_str(attach.z as i64));
+            let az: []u8 = _zag_i64_to_str(attach.z as i64);
+            _zag_println(az);
+            _zag_str_free(az);
             pi = pi + 1;
         }
         i = i + 1;
@@ -517,19 +598,26 @@ fn agent_process_stack(a: *App, only_y: i32) void {
     let m: DeviceModel = a.*.scene.*.model;
     agent_ok0();
     _zag_print("process_stack schema=");
-    _zag_print(_zag_i64_to_str(process_stack_schema_version() as i64));
+    let psv: []u8 = _zag_i64_to_str(process_stack_schema_version() as i64);
+    _zag_print(psv);
+    _zag_str_free(psv);
     _zag_print(" model=");
     _zag_println(m.id);
     let i: i32 = 0;
     while (i < process_layer_count()) {
         let layer: ProcessLayer = process_layer_at(i);
         if (only_y < 0 || only_y == layer.y) {
-            _zag_print("Y "); _zag_print(_zag_i64_to_str(layer.y as i64));
+            _zag_print("Y ");
+            let ys: []u8 = _zag_i64_to_str(layer.y as i64);
+            _zag_print(ys);
+            _zag_str_free(ys);
             _zag_print(" role="); _zag_print(process_layer_role_name(layer.role));
             _zag_print(" material="); _zag_print(layer.material);
             _zag_print(" thickness=");
             if (layer.thickness_nm.known) {
-                _zag_print(fmt_f1(layer.thickness_nm.value));
+                let tv: []u8 = fmt_f1(layer.thickness_nm.value);
+                _zag_print(tv);
+                _zag_str_free(tv);
                 _zag_print(" "); _zag_print(layer.thickness_nm.units);
             } else { _zag_print("Unknown"); }
             // PhysicalParam carries the authoritative user-visible evidence
@@ -540,7 +628,7 @@ fn agent_process_stack(a: *App, only_y: i32) void {
         i = i + 1;
     }
     if (only_y >= process_layer_count()) {
-        _zag_print("Y "); _zag_print(_zag_i64_to_str(only_y as i64));
+        _zag_print("Y "); agent_print_i("", only_y as i64);
         _zag_println(" unavailable: no defined process layer");
     }
     agent_dot();
@@ -638,13 +726,14 @@ fn agent_perf(a: *App) void {
     let route_ms: i64 = agent_perf_route(a);
     let render_ms: i64 = agent_perf_render(a);
     let total_ms: i64 = place_ms + route_ms + render_ms;
-    let msg: []u8 = _zag_str_concat("place_ms=", _zag_i64_to_str(place_ms));
-    let m2: []u8 = _zag_str_concat(msg, " route_ms=");
-    let m3: []u8 = _zag_str_concat(m2, _zag_i64_to_str(route_ms));
-    let m4: []u8 = _zag_str_concat(m3, " render_ms=");
-    let m5: []u8 = _zag_str_concat(m4, _zag_i64_to_str(render_ms));
-    let m6: []u8 = _zag_str_concat(m5, " total_ms=");
-    agent_ok1(_zag_str_concat(m6, _zag_i64_to_str(total_ms)));
+    let out: []u8 = prepend_f("place_ms=", fmt_i(place_ms));
+    out = append_f(out, " route_ms=");
+    out = append_ff(out, fmt_i(route_ms));
+    out = append_f(out, " render_ms=");
+    out = append_ff(out, fmt_i(render_ms));
+    out = append_f(out, " total_ms=");
+    out = append_ff(out, fmt_i(total_ms));
+    agent_ok1f(out);
 }
 
 fn agent_kinds() void {
@@ -664,7 +753,7 @@ fn agent_kinds() void {
         _zag_print("x");
         agent_print_i("", fp.z as i64);
         _zag_print(" ports=");
-        _zag_println(_zag_i64_to_str(kind_port_count(k) as i64));
+        agent_println_i(kind_port_count(k) as i64);
         i = i + 1;
     }
     agent_dot();
@@ -723,12 +812,12 @@ fn agent_get(a: *App, id: i64) void {
         return;
     }
     let c: Comp = a.*.scene.*.comps.data[ci];
-    let msg: []u8 = _zag_str_concat("id=", _zag_i64_to_str(c.id as i64));
-    let m2: []u8 = _zag_str_concat(msg, " kind=");
-    let m3: []u8 = _zag_str_concat(m2, kind_slug(c.kind));
-    let m4: []u8 = _zag_str_concat(m3, " name=");
-    let m5: []u8 = _zag_str_concat(m4, c.name_);
-    agent_ok1(m5);
+    let out: []u8 = prepend_f("id=", fmt_i(c.id as i64));
+    out = append_f(out, " kind=");
+    out = append_f(out, kind_slug(c.kind));
+    out = append_f(out, " name=");
+    out = append_f(out, c.name_);
+    agent_ok1f(out);
 }
 
 fn agent_place(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
@@ -758,8 +847,11 @@ fn agent_place(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     session_after_edit(a);
     let ci: i32 = scene_comp_index(a.*.scene, id);
     let nm: []u8 = a.*.scene.*.comps.data[ci].name_;
-    let msg: []u8 = _zag_str_concat("id=", _zag_i64_to_str(id as i64));
-    agent_mutation_ok(a, _zag_str_concat(_zag_str_concat(msg, " name="), nm), id);
+    let msg: []u8 = prepend_f("id=", fmt_i(id as i64));
+    msg = append_f(msg, " name=");
+    msg = append_f(msg, nm);
+    agent_mutation_ok(a, msg, id);
+    _zag_str_free(msg);
 }
 
 fn agent_route(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
@@ -790,7 +882,9 @@ fn agent_route(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     let gid: i32 = scene_add_guide(a.*.scene, fc, fp, tc, tp, path);
     op_add_guide(&a.*.jrn, a.*.scene, gid);
     session_after_edit(a);
-    agent_mutation_ok(a, _zag_str_concat("id=", _zag_i64_to_str(gid as i64)), gid);
+    let rmsg: []u8 = prepend_f("id=", fmt_i(gid as i64));
+    agent_mutation_ok(a, rmsg, gid);
+    _zag_str_free(rmsg);
 }
 
 fn agent_sim_state(a: *App) void {
@@ -818,15 +912,14 @@ fn agent_sim_state(a: *App) void {
         gi = gi + 1;
     }
     _zag_print("symbol ");
-    _zag_println(_zag_i64_to_str(a.*.sim.*.symbol));
+    agent_println_i(a.*.sim.*.symbol);
     agent_dot();
 }
 
 fn agent_render(a: *App, path: []u8) void {
     app_frame(a, 0.0);
     fb_write_bmp(&a.*.f, path);
-    let msg: []u8 = _zag_str_concat("wrote ", path);
-    agent_ok1(msg);
+    agent_ok1f(s2("wrote ", path));
 }
 
 fn agent_ui_refresh(a: *App) void {
@@ -840,17 +933,17 @@ fn agent_ui_list(a: *App) void {
     agent_ui_refresh(a);
     agent_ok0();
     _zag_println("ui_schema 1");
-    _zag_print("screen "); _zag_print(_zag_i64_to_str(a.*.inp.w as i64));
-    _zag_print(" "); _zag_println(_zag_i64_to_str(a.*.inp.h as i64));
+    _zag_print("screen "); agent_print_i("", a.*.inp.w as i64);
+    _zag_print(" "); agent_println_i(a.*.inp.h as i64);
     let i: i32 = 0;
     while (i < a.*.inp.ui_elements.len) {
         let e: UiElement = a.*.inp.ui_elements.data[i];
-        _zag_print("E id="); _zag_print(_zag_i64_to_str(e.id));
+        _zag_print("E id="); agent_print_i("", e.id);
         _zag_print(" role="); _zag_print(e.role);
-        _zag_print(" x="); _zag_print(_zag_i64_to_str(e.bounds.x as i64));
-        _zag_print(" y="); _zag_print(_zag_i64_to_str(e.bounds.y as i64));
-        _zag_print(" w="); _zag_print(_zag_i64_to_str(e.bounds.w as i64));
-        _zag_print(" h="); _zag_print(_zag_i64_to_str(e.bounds.h as i64));
+        _zag_print(" x="); agent_print_i("", e.bounds.x as i64);
+        _zag_print(" y="); agent_print_i("", e.bounds.y as i64);
+        _zag_print(" w="); agent_print_i("", e.bounds.w as i64);
+        _zag_print(" h="); agent_print_i("", e.bounds.h as i64);
         _zag_print(" enabled="); if (e.enabled) { _zag_print("1"); } else { _zag_print("0"); }
         _zag_print(" active="); if (e.active) { _zag_print("1"); } else { _zag_print("0"); }
         _zag_print(" focused="); if (e.focused) { _zag_print("1"); } else { _zag_print("0"); }
@@ -928,18 +1021,391 @@ fn agent_optimizer_details(a: *App) void {
     agent_mutation_ok(a, "optimizer details toggled", 0 - 1);
 }
 
+fn agent_builder_open(a: *App) void {
+    if (!a.*.build_open) {
+        app_action(a, cmd_builder());
+        app_frame(a, 0.0);
+    }
+}
+
+fn agent_builder_generate(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 8) {
+        agent_err("usage: builder generate <xmin> <ymin> <zmin> <xmax> <ymax> <zmax> [plate_size]");
+        return;
+    }
+    let plate_size: i32 = 0;
+    if (toks.*.len >= 9) { plate_size = tok_i64(line, list.get[Tok](toks, 8)) as i32; }
+    let env: BuildEnvelope = BuildEnvelope{
+        .xmin = tok_i64(line, list.get[Tok](toks, 2)) as i32,
+        .ymin = tok_i64(line, list.get[Tok](toks, 3)) as i32,
+        .zmin = tok_i64(line, list.get[Tok](toks, 4)) as i32,
+        .xmax = tok_i64(line, list.get[Tok](toks, 5)) as i32,
+        .ymax = tok_i64(line, list.get[Tok](toks, 6)) as i32,
+        .zmax = tok_i64(line, list.get[Tok](toks, 7)) as i32,
+        .plate_size = plate_size,
+    };
+    a.*.build.*.env = env;
+    agent_builder_open(a);
+    let ok: bool = build_engine_generate(a.*.build, a.*.scene.*.model);
+    session_after_edit(a);
+    if (ok) {
+        let rep: []u8 = build_report(a.*.build.*.pending);
+        agent_ok1(rep);
+        _zag_str_free(rep);
+    } else {
+        agent_err("builder: no non-degenerate engine fits the envelope");
+    }
+}
+
+fn agent_builder_apply(a: *App) void {
+    agent_builder_open(a);
+    if (!a.*.build.*.has_pending) {
+        agent_err("builder: no pending proposal");
+        return;
+    }
+    if (build_apply_gui(a)) {
+        a.*.build_open = false;
+        a.*.build_details = false;
+        session_after_edit(a);
+        agent_mutation_ok(a, "builder proposal applied", 0 - 1);
+        return;
+    }
+    agent_err("builder: proposal stale or invalid");
+}
+
+fn agent_builder_decline(a: *App) void {
+    agent_builder_open(a);
+    if (!a.*.build.*.has_pending) {
+        agent_err("builder: no pending proposal");
+        return;
+    }
+    build_engine_clear_pending(a.*.build);
+    a.*.build_open = false;
+    a.*.build_details = false;
+    session_after_edit(a);
+    agent_mutation_ok(a, "builder proposal declined", 0 - 1);
+}
+
+fn agent_builder_details(a: *App) void {
+    agent_builder_open(a);
+    if (!a.*.build.*.has_pending) {
+        agent_err("builder: no pending proposal");
+        return;
+    }
+    a.*.build_details = !a.*.build_details;
+    session_after_edit(a);
+    if (a.*.build_details) {
+        let rep: []u8 = build_report(a.*.build.*.pending);
+        agent_ok1(rep);
+        _zag_str_free(rep);
+    } else {
+        agent_mutation_ok(a, "builder details hidden", 0 - 1);
+    }
+}
+
+// ── component manipulation: copy/paste/duplicate/group/ungroup/rename/visibility/lock ──
+
+fn agent_copy(a: *App) void {
+    if (a.*.sel.len == 0) { agent_err("copy: nothing selected"); return; }
+    app_copy(a);
+    let msg: []u8 = prepend_f(fmt_i(a.*.clipboard.len as i64), " copied");
+    agent_mutation_ok(a, msg, 0 - 1);
+    _zag_str_free(msg);
+}
+
+fn agent_paste(a: *App) void {
+    if (a.*.clipboard.len == 0) { agent_err("paste: clipboard empty"); return; }
+    app_paste(a);
+    let msg: []u8 = prepend_f(fmt_i(a.*.sel.len as i64), " pasted");
+    agent_mutation_ok(a, msg, 0 - 1);
+    _zag_str_free(msg);
+}
+
+fn agent_duplicate(a: *App) void {
+    if (a.*.sel.len == 0) { agent_err("duplicate: nothing selected"); return; }
+    app_duplicate(a);
+    agent_mutation_ok(a, "duplicate armed (click in viewport to place)", 0 - 1);
+}
+
+fn agent_group(a: *App) void {
+    if (a.*.sel.len < 2) { agent_err("group: need >=2 selected components"); return; }
+    app_group_selection(a);
+    agent_mutation_ok(a, "grouped", 0 - 1);
+}
+
+fn agent_ungroup(a: *App) void {
+    if (a.*.sel.len == 0) { agent_err("ungroup: nothing selected"); return; }
+    app_ungroup_selection(a);
+    agent_mutation_ok(a, "ungrouped", 0 - 1);
+}
+
+fn agent_rename(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 3) { agent_err("usage: rename <id> <name>"); return; }
+    let id: i32 = tok_i64(line, list.get[Tok](toks, 1)) as i32;
+    let ci: i32 = scene_comp_index(a.*.scene, id);
+    if (ci < 0) { agent_err("rename: component not found"); return; }
+    let name: []u8 = tok_slice(line, list.get[Tok](toks, 2));
+    if (a.*.scene.*.comps.data[ci].name_.len > 0) { _zag_str_free(a.*.scene.*.comps.data[ci].name_); }
+    a.*.scene.*.comps.data[ci].name_ = _zag_strdup(name);
+    scene_mark_topo_comp(a.*.scene, id);
+    session_after_edit(a);
+    let full: []u8 = prepend_f("renamed ", fmt_i(id as i64));
+    full = append_f(full, " ");
+    full = append_f(full, name);
+    agent_mutation_ok(a, full, id);
+    _zag_str_free(full);
+}
+
+fn agent_toggle_visibility(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 2) { agent_err("usage: visibility <id>"); return; }
+    let id: i32 = tok_i64(line, list.get[Tok](toks, 1)) as i32;
+    let ci: i32 = scene_comp_index(a.*.scene, id);
+    if (ci < 0) { agent_err("visibility: component not found"); return; }
+    a.*.scene.*.comps.data[ci].visible = !a.*.scene.*.comps.data[ci].visible;
+    scene_mark_topo_comp(a.*.scene, id);
+    session_after_edit(a);
+    let state: []u8 = "hidden";
+    if (a.*.scene.*.comps.data[ci].visible) { state = "visible"; }
+    let full: []u8 = prepend_f("component ", fmt_i(id as i64));
+    full = append_f(full, " ");
+    full = append_f(full, state);
+    agent_mutation_ok(a, full, id);
+    _zag_str_free(full);
+}
+
+fn agent_toggle_lock(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 2) { agent_err("usage: lock <id>"); return; }
+    let id: i32 = tok_i64(line, list.get[Tok](toks, 1)) as i32;
+    let ci: i32 = scene_comp_index(a.*.scene, id);
+    if (ci < 0) { agent_err("lock: component not found"); return; }
+    app_toggle_lock(a, id);
+    session_after_edit(a);
+    let state: []u8 = "unlocked";
+    if (app_is_locked(a, id)) { state = "locked"; }
+    let full: []u8 = prepend_f("component ", fmt_i(id as i64));
+    full = append_f(full, " ");
+    full = append_f(full, state);
+    agent_mutation_ok(a, full, id);
+    _zag_str_free(full);
+}
+
+// ── view control: ortho/section/view presets/frame ──
+
+fn agent_view_preset(a: *App, preset: []u8) void {
+    if (_zag_strcmp(preset, "top") == 1) { app_action(a, cmd_view_top()); }
+    else if (_zag_strcmp(preset, "front") == 1) { app_action(a, cmd_view_front()); }
+    else if (_zag_strcmp(preset, "right") == 1) { app_action(a, cmd_view_right()); }
+    else if (_zag_strcmp(preset, "perspective") == 1) { app_action(a, cmd_view_perspective()); }
+    else if (_zag_strcmp(preset, "reset") == 1) { app_action(a, cmd_reset_view()); }
+    else { agent_err("view: use top|front|right|perspective|reset"); return; }
+    app_frame(a, 0.0);
+    agent_ok1(preset);
+}
+
+fn agent_view_frame(a: *App, mode: []u8) void {
+    if (_zag_strcmp(mode, "selected") == 1) { app_action(a, cmd_frame_selected()); }
+    else if (_zag_strcmp(mode, "all") == 1) { app_action(a, cmd_frame_all()); }
+    else { agent_err("view frame: use selected|all"); return; }
+    app_frame(a, 0.0);
+    agent_ok1(mode);
+}
+
+fn agent_view_toggle(a: *App, mode: []u8) void {
+    if (_zag_strcmp(mode, "ortho") == 1) { app_action(a, cmd_toggle_ortho()); }
+    else if (_zag_strcmp(mode, "section") == 1) { app_action(a, cmd_section_view()); }
+    else if (_zag_strcmp(mode, "reduced_motion") == 1) { app_action(a, cmd_toggle_reduced_motion()); }
+    else if (_zag_strcmp(mode, "object_snap") == 1) { app_action(a, cmd_toggle_object_snap()); }
+    else { agent_err("view toggle: use ortho|section|reduced_motion|object_snap"); return; }
+    app_frame(a, 0.0);
+    agent_ok1(mode);
+}
+
+// ── incremental camera control: orbit/pan/zoom ──
+// These mirror the mouse interactions (MMB drag = orbit, Shift+MMB = pan,
+// scroll = zoom) but via numeric deltas, so an MCP client can navigate
+// incrementally without teleporting.
+
+fn agent_camera_orbit(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 4) { agent_err("usage: camera orbit <yaw_delta> <pitch_delta>"); return; }
+    let yaw_d: f64 = tok_f64(line, list.get[Tok](toks, 2));
+    let pitch_d: f64 = tok_f64(line, list.get[Tok](toks, 3));
+    a.*.cam.yaw = a.*.cam.yaw + yaw_d;
+    a.*.cam.pitch = a.*.cam.pitch + pitch_d;
+    cam_update(&a.*.cam, zone_center(a).h);
+    tiles_mark_all_dirty(&a.*.tile_cache);
+    a.*.present_full = true;
+    app_frame(a, 0.0);
+    agent_ok1("orbited");
+}
+
+fn agent_camera_pan(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 4) { agent_err("usage: camera pan <dx> <dz>"); return; }
+    let dx: f64 = tok_f64(line, list.get[Tok](toks, 2));
+    let dz: f64 = tok_f64(line, list.get[Tok](toks, 3));
+    // Pan in the camera's right/up basis: dx moves along right, dz along fwd (ground plane)
+    let r: Vec3 = a.*.cam.right;
+    let f: Vec3 = a.*.cam.fwd;
+    // Project fwd onto ground plane (zero out Y) for natural panning
+    let fg: Vec3 = v3(f.x, 0.0, f.z);
+    let fg_n: Vec3 = vnorm(fg);
+    a.*.cam.target = vadd(a.*.cam.target, vadd(vscale(r, dx), vscale(fg_n, dz)));
+    cam_update(&a.*.cam, zone_center(a).h);
+    tiles_mark_all_dirty(&a.*.tile_cache);
+    a.*.present_full = true;
+    app_frame(a, 0.0);
+    agent_ok1("panned");
+}
+
+fn agent_camera_zoom(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 3) { agent_err("usage: camera zoom <factor>"); return; }
+    let factor: f64 = tok_f64(line, list.get[Tok](toks, 2));
+    if (factor <= 0.0) { agent_err("camera zoom: factor must be positive"); return; }
+    a.*.cam.dist = a.*.cam.dist * factor;
+    cam_update(&a.*.cam, zone_center(a).h);
+    tiles_mark_all_dirty(&a.*.tile_cache);
+    a.*.present_full = true;
+    app_frame(a, 0.0);
+    agent_ok1("zoomed");
+}
+
+// ── panel control ──
+
+fn agent_panel(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 2) { agent_err("usage: panel <optimizer|builder|settings|palette> [open|close]"); return; }
+    let name: Tok = list.get[Tok](toks, 1);
+    let action: []u8 = "toggle";
+    if (toks.*.len >= 3) { action = tok_slice(line, list.get[Tok](toks, 2)); }
+    let do_open: bool = _zag_strcmp(action, "open") == 1;
+    let do_close: bool = _zag_strcmp(action, "close") == 1;
+
+    if (tok_eq(line, name, "optimizer")) {
+        if (do_close && a.*.opt_open) { app_action(a, cmd_optimizer()); app_frame(a, 0.0); }
+        else if (do_open || (!do_close && !a.*.opt_open)) { agent_optimizer_open(a); }
+    } else if (tok_eq(line, name, "builder")) {
+        if (do_close && a.*.build_open) { app_action(a, cmd_builder()); app_frame(a, 0.0); }
+        else if (do_open || (!do_close && !a.*.build_open)) { agent_builder_open(a); }
+    } else if (tok_eq(line, name, "settings")) {
+        if (do_close && a.*.settings_open) { app_action(a, cmd_settings()); app_frame(a, 0.0); }
+        else if (do_open || (!do_close && !a.*.settings_open)) { app_action(a, cmd_settings()); app_frame(a, 0.0); }
+    } else if (tok_eq(line, name, "palette")) {
+        app_action(a, cmd_palette());
+        app_frame(a, 0.0);
+    } else {
+        agent_err("panel: use optimizer|builder|settings|palette");
+        return;
+    }
+    session_after_edit(a);
+    agent_mutation_ok(a, "panel toggled", 0 - 1);
+}
+
+// ── selection manipulation ──
+
+fn agent_select_add(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 2) { agent_err("usage: select_add <id>"); return; }
+    let id: i32 = tok_i64(line, list.get[Tok](toks, 1)) as i32;
+    if (scene_comp_index(a.*.scene, id) < 0) { agent_err("select_add: component not found"); return; }
+    sel_add(a, id);
+    session_after_edit(a);
+    agent_ok1("added to selection");
+}
+
+fn agent_select_remove(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 2) { agent_err("usage: select_remove <id>"); return; }
+    let id: i32 = tok_i64(line, list.get[Tok](toks, 1)) as i32;
+    let i: i32 = 0;
+    while (i < a.*.sel.len) {
+        if (list.get[i32](a.*.sel, i) == id) {
+            let k: i32 = i;
+            while (k + 1 < a.*.sel.len) { a.*.sel.data[k] = a.*.sel.data[k + 1]; k = k + 1; }
+            a.*.sel.len = a.*.sel.len - 1;
+            session_after_edit(a);
+            agent_ok1("removed from selection");
+            return;
+        }
+        i = i + 1;
+    }
+    agent_err("select_remove: id not in selection");
+}
+
+fn agent_select_clear(a: *App) void {
+    sel_clear(a);
+    session_after_edit(a);
+    agent_ok1("selection cleared");
+}
+
+// ── pixel-based UI click (fallback for screenshots) ──
+
+fn agent_ui_click(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 4) { agent_err("usage: ui click <x> <y>"); return; }
+    let x: i32 = tok_i64(line, list.get[Tok](toks, 2)) as i32;
+    let y: i32 = tok_i64(line, list.get[Tok](toks, 3)) as i32;
+    agent_ui_refresh(a);
+    a.*.inp.mx = x;
+    a.*.inp.my = y;
+    a.*.inp.prev_btn = 0; a.*.inp.btn = 1;
+    app_frame(a, 0.0);
+    a.*.inp.prev_btn = 1; a.*.inp.btn = 0;
+    app_frame(a, 0.0);
+    a.*.inp.prev_btn = 0; a.*.inp.keys.len = 0;
+    session_after_edit(a);
+    // Report what element (if any) is at the clicked position
+    let idx: i32 = ui_find_at(&a.*.inp, x, y);
+    if (idx >= 0) {
+        let e: UiElement = a.*.inp.ui_elements.data[idx];
+        let xs: []u8 = fmt_i(x as i64);
+        let ys: []u8 = fmt_i(y as i64);
+        let msg: []u8 = s4("clicked at (", xs, ",", ys);
+        _zag_str_free(xs);
+        _zag_str_free(ys);
+        let m2: []u8 = s3(msg, ") element=", e.label);
+        _zag_str_free(msg);
+        agent_mutation_ok(a, m2, 0 - 1);
+        _zag_str_free(m2);
+    } else {
+        let xs: []u8 = fmt_i(x as i64);
+        let ys: []u8 = fmt_i(y as i64);
+        let msg: []u8 = s4("clicked at (", xs, ",", ys);
+        _zag_str_free(xs);
+        _zag_str_free(ys);
+        let m2: []u8 = s2(msg, ") no element");
+        _zag_str_free(msg);
+        agent_mutation_ok(a, m2, 0 - 1);
+        _zag_str_free(m2);
+    }
+}
+
+// ── type text into focused textfield ──
+
+fn agent_ui_type(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
+    if (toks.*.len < 3) { agent_err("usage: ui type <text>"); return; }
+    let text: []u8 = tok_slice(line, list.get[Tok](toks, 2));
+    agent_ui_refresh(a);
+    let i: i32 = 0;
+    while (i < text.len) {
+        let ch: u8 = text[i];
+        list.push[u8](&a.*.inp.keys, ch);
+        i = i + 1;
+    }
+    app_frame(a, 0.0);
+    a.*.inp.keys.len = 0;
+    session_after_edit(a);
+    let msg: []u8 = s2("typed ", text);
+    agent_mutation_ok(a, msg, 0 - 1);
+    _zag_str_free(msg);
+}
+
 fn agent_model(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     if (toks.*.len < 2 || tok_eq(line, list.get[Tok](toks, 1), "status")) {
         agent_ok0();
-        _zag_print("schema="); _zag_print(_zag_i64_to_str(a.*.scene.*.model.schema_version as i64));
-        _zag_print(" current="); _zag_print(_zag_i64_to_str(model_schema_current() as i64));
+        _zag_print("schema="); agent_print_i("", a.*.scene.*.model.schema_version as i64);
+        _zag_print(" current="); agent_print_i("", model_schema_current() as i64);
         _zag_print(" schema_complete="); if (model_schema_complete(a.*.scene.*.model)) { _zag_println("yes"); } else { _zag_println("no"); }
         let i: i32 = 0;
         while (i < model_type_schema_count()) {
             let d: DeviceTypeSchema = model_type_schema(i);
             _zag_print("TYPE id="); _zag_print(d.id);
-            _zag_print(" version="); _zag_print(_zag_i64_to_str(d.version as i64));
-            _zag_print(" parameters="); _zag_println(_zag_i64_to_str(d.parameter_count as i64));
+            _zag_print(" version="); agent_print_i("", d.version as i64);
+            _zag_print(" parameters="); agent_println_i(d.parameter_count as i64);
             i = i + 1;
         }
         agent_dot(); return;
@@ -952,33 +1418,40 @@ fn agent_model(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         }
         scene_mark_render(a.*.scene);
         session_after_edit(a);
-        agent_mutation_ok(a, _zag_str_concat("model migrated schema=", _zag_i64_to_str(target as i64)), 0 - 1);
+        let mig_msg: []u8 = prepend_f("model migrated schema=", fmt_i(target as i64));
+        agent_mutation_ok(a, mig_msg, 0 - 1);
+        _zag_str_free(mig_msg);
         return;
     }
     agent_err("model: use status or migrate <version>");
 }
 
 fn agent_diagnostics(a: *App, path: []u8) void {
-    _zag_write_file(path, _zag_str_concat(agent_details_text(a), "\n"));
+    let text: []u8 = agent_details_text(a);
+    let with_nl: []u8 = append_f(text, "\n");
+    _zag_str_free(text);
+    _zag_write_file(path, with_nl);
+    _zag_str_free(with_nl);
     agent_ok1("diagnostics written");
 }
 
 fn agent_details_text(a: *App) []u8 {
-    let s0: []u8 = "prismstudio_diagnostics_v1\nscene_contents=excluded_by_default\n";
-    let s1: []u8 = _zag_str_concat(s0, "protocol=prismstudio-agent-1\nrevision=");
-    let s2: []u8 = _zag_str_concat(s1, _zag_i64_to_str(a.*.session_rev));
-    let s3: []u8 = _zag_str_concat(s2, "\ncomponents=");
-    let s4: []u8 = _zag_str_concat(s3, _zag_i64_to_str(a.*.scene.*.comps.len as i64));
-    let s5: []u8 = _zag_str_concat(s4, "\nguides=");
-    let s6: []u8 = _zag_str_concat(s5, _zag_i64_to_str(a.*.scene.*.guides.len as i64));
-    let s7: []u8 = _zag_str_concat(s6, "\ncapability_bits=");
-    let s8: []u8 = _zag_str_concat(s7, _zag_i64_to_str(cap_load()));
-    let s9: []u8 = _zag_str_concat(s8, "\nmax_request_bytes=");
-    return _zag_str_concat(s9, _zag_i64_to_str(limit_agent_request_bytes() as i64));
+    let out: []u8 = _zag_strdup("prismstudio_diagnostics_v1\nscene_contents=excluded_by_default\n");
+    out = append_f(out, "protocol=prismstudio-agent-1\nrevision=");
+    out = append_ff(out, fmt_i(a.*.session_rev));
+    out = append_f(out, "\ncomponents=");
+    out = append_ff(out, fmt_i(a.*.scene.*.comps.len as i64));
+    out = append_f(out, "\nguides=");
+    out = append_ff(out, fmt_i(a.*.scene.*.guides.len as i64));
+    out = append_f(out, "\ncapability_bits=");
+    out = append_ff(out, fmt_i(cap_load()));
+    out = append_f(out, "\nmax_request_bytes=");
+    out = append_ff(out, fmt_i(limit_agent_request_bytes() as i64));
+    return out;
 }
 
 fn agent_details(a: *App) void {
-    agent_ok1(agent_details_text(a));
+    agent_ok1f(agent_details_text(a));
 }
 
 fn agent_audit_path() []u8 {
@@ -1007,9 +1480,10 @@ fn agent_logs(a: *App, lines: i32) void {
         }
     }
     let out: []u8 = raw[start..end];
-    let label: []u8 = _zag_str_concat(_zag_str_concat("audit lines=", _zag_i64_to_str(lines as i64)), "\n");
-    let body: []u8 = _zag_str_concat(label, out);
-    agent_ok1(body);
+    let label: []u8 = prepend_f("audit lines=", fmt_i(lines as i64));
+    label = append_f(label, "\n");
+    let body: []u8 = append_f(label, out);
+    agent_ok1f(body);
 }
 
 fn agent_uilog(a: *App, lines: i32) void {
@@ -1020,14 +1494,24 @@ fn agent_uilog(a: *App, lines: i32) void {
     let start: i32 = 0;
     if (lines > 0 && lines < a.*.log.len) { start = a.*.log.len - lines; }
     let i: i32 = start;
-    let body: []u8 = "";
+    let body: []u8 = _zag_strdup("");
     while (i < a.*.log.len) {
-        if (i > start) { body = _zag_str_concat(body, "\n"); }
-        body = _zag_str_concat(body, list.get[[]u8](a.*.log, i));
+        if (i > start) {
+            let nl: []u8 = _zag_str_concat(body, "\n");
+            _zag_str_free(body);
+            body = nl;
+        }
+        let entry: []u8 = list.get[[]u8](a.*.log, i);
+        let grown: []u8 = _zag_str_concat(body, entry);
+        _zag_str_free(body);
+        body = grown;
         i = i + 1;
     }
-    let label: []u8 = _zag_str_concat(_zag_str_concat("ui log lines=", _zag_i64_to_str((a.*.log.len - start) as i64)), "\n");
-    agent_ok1(_zag_str_concat(label, body));
+    let label: []u8 = prepend_f("ui log lines=", fmt_i((a.*.log.len - start) as i64));
+    label = append_f(label, "\n");
+    let result: []u8 = append_f(label, body);
+    _zag_str_free(body);
+    agent_ok1f(result);
 }
 
 fn agent_check_device_model_version(path: []u8) bool {
@@ -1046,8 +1530,9 @@ fn agent_check_device_model_version(path: []u8) bool {
             while (i < line.len && (line[i] as i32) != 32) { i = i + 1; }
             let schema: i64 = _zag_str_to_i64(line[start..i]);
             if (schema < model_schema_min() || schema > model_schema_current()) {
-                let msg: []u8 = _zag_str_concat("E_MODEL_VERSION unsupported device model schema ", _zag_i64_to_str(schema));
-                agent_err(_zag_str_concat(msg, " supported 1..2"));
+                let out: []u8 = prepend_f("E_MODEL_VERSION unsupported device model schema ", fmt_i(schema));
+                out = append_f(out, " supported 1..2");
+                agent_errf(out);
                 return false;
             }
             return true;
@@ -1103,6 +1588,14 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
          tok_eq(line, list.get[Tok](toks, 1), "decline") ||
          tok_eq(line, list.get[Tok](toks, 1), "ignore") ||
          tok_eq(line, list.get[Tok](toks, 1), "details"))) { required = cap_edit(); }
+    if (tok_eq(line, verb, "builder") && toks.*.len >= 2 &&
+        (tok_eq(line, list.get[Tok](toks, 1), "apply") ||
+         tok_eq(line, list.get[Tok](toks, 1), "accept"))) { required = cap_edit(); }
+    if (tok_eq(line, verb, "builder") && toks.*.len >= 2 &&
+        (tok_eq(line, list.get[Tok](toks, 1), "generate") ||
+         tok_eq(line, list.get[Tok](toks, 1), "decline") ||
+         tok_eq(line, list.get[Tok](toks, 1), "ignore") ||
+         tok_eq(line, list.get[Tok](toks, 1), "details"))) { required = cap_inspect(); }
     if (tok_eq(line, verb, "new") || tok_eq(line, verb, "demo") ||
         tok_eq(line, verb, "place") || tok_eq(line, verb, "place_here") ||
         tok_eq(line, verb, "place_on") || tok_eq(line, verb, "route") ||
@@ -1165,16 +1658,24 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         return;
     }
     if (tok_eq(line, verb, "camera")) {
-        if (toks.*.len < 4) { agent_err("usage: camera <x> <y> <z>"); return; }
+        if (toks.*.len < 2) { agent_err("usage: camera <x> <y> <z> | camera orbit <yaw> <pitch> | camera pan <dx> <dz> | camera zoom <factor>"); return; }
+        // Subcommands: orbit, pan, zoom
+        let sub: Tok = list.get[Tok](toks, 1);
+        if (tok_eq(line, sub, "orbit")) { agent_camera_orbit(a, line, toks); return; }
+        if (tok_eq(line, sub, "pan")) { agent_camera_pan(a, line, toks); return; }
+        if (tok_eq(line, sub, "zoom")) { agent_camera_zoom(a, line, toks); return; }
+        // Default: teleport to <x> <y> <z>
+        if (toks.*.len < 4) { agent_err("usage: camera <x> <y> <z> | camera orbit <yaw> <pitch> | camera pan <dx> <dz> | camera zoom <factor>"); return; }
         let cx: i64 = tok_i64(line, list.get[Tok](toks, 1));
         let cy: i64 = tok_i64(line, list.get[Tok](toks, 2));
         let cz: i64 = tok_i64(line, list.get[Tok](toks, 3));
         app_camera_teleport(a, cx as f64, cy as f64, cz as f64);
-        let msgc: []u8 = _zag_str_concat("camera x=", _zag_i64_to_str(cx));
-        let msgc2: []u8 = _zag_str_concat(msgc, " y=");
-        let msgc3: []u8 = _zag_str_concat(msgc2, _zag_i64_to_str(cy));
-        let msgc4: []u8 = _zag_str_concat(msgc3, " z=");
-        agent_ok1(_zag_str_concat(msgc4, _zag_i64_to_str(cz)));
+        let out: []u8 = prepend_f("camera x=", fmt_i(cx));
+        out = append_f(out, " y=");
+        out = append_ff(out, fmt_i(cy));
+        out = append_f(out, " z=");
+        out = append_ff(out, fmt_i(cz));
+        agent_ok1f(out);
         return;
     }
     if (tok_eq(line, verb, "render_at")) {
@@ -1194,11 +1695,12 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
             agent_err("no pick (hover viewport in GUI or use place_here after view)");
             return;
         }
-        let msg: []u8 = _zag_str_concat("x=", _zag_i64_to_str(cell.x as i64));
-        let m2: []u8 = _zag_str_concat(msg, " y=");
-        let m3: []u8 = _zag_str_concat(m2, _zag_i64_to_str(cell.y as i64));
-        let m4: []u8 = _zag_str_concat(m3, " z=");
-        agent_ok1(_zag_str_concat(m4, _zag_i64_to_str(cell.z as i64)));
+        let out: []u8 = prepend_f("x=", fmt_i(cell.x as i64));
+        out = append_f(out, " y=");
+        out = append_ff(out, fmt_i(cell.y as i64));
+        out = append_f(out, " z=");
+        out = append_ff(out, fmt_i(cell.z as i64));
+        agent_ok1f(out);
         return;
     }
     if (tok_eq(line, verb, "place_here")) {
@@ -1215,8 +1717,11 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         session_after_edit(a);
         let ci: i32 = scene_comp_index(a.*.scene, id);
         let nm: []u8 = a.*.scene.*.comps.data[ci].name_;
-        let pmsg: []u8 = _zag_str_concat("id=", _zag_i64_to_str(id as i64));
-        agent_mutation_ok(a, _zag_str_concat(_zag_str_concat(pmsg, " name="), nm), id);
+        let pmsg: []u8 = prepend_f("id=", fmt_i(id as i64));
+        pmsg = append_f(pmsg, " name=");
+        pmsg = append_f(pmsg, nm);
+        agent_mutation_ok(a, pmsg, id);
+        _zag_str_free(pmsg);
         return;
     }
     if (tok_eq(line, verb, "place_on")) {
@@ -1237,8 +1742,11 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         op_add_comp(&a.*.jrn, a.*.scene, id);
         session_after_edit(a);
         let ci: i32 = scene_comp_index(a.*.scene, id);
-        let pmsg2: []u8 = _zag_str_concat("id=", _zag_i64_to_str(id as i64));
-        agent_mutation_ok(a, _zag_str_concat(_zag_str_concat(pmsg2, " name="), a.*.scene.*.comps.data[ci].name_), id);
+        let pmsg2: []u8 = prepend_f("id=", fmt_i(id as i64));
+        pmsg2 = append_f(pmsg2, " name=");
+        pmsg2 = append_f(pmsg2, a.*.scene.*.comps.data[ci].name_);
+        agent_mutation_ok(a, pmsg2, id);
+        _zag_str_free(pmsg2);
         return;
     }
     if (tok_eq(line, verb, "list")) {
@@ -1355,17 +1863,22 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         let ngid: i32 = scene_add_guide(a.*.scene, fc, fp, tc, tp, path);
         op_add_guide(&a.*.jrn, a.*.scene, ngid);
         session_after_edit(a);
-        agent_mutation_ok(a, _zag_str_concat("id=", _zag_i64_to_str(ngid as i64)), ngid);
+        let rrmsg: []u8 = prepend_f("id=", fmt_i(ngid as i64));
+        agent_mutation_ok(a, rrmsg, ngid);
+        _zag_str_free(rrmsg);
         return;
     }
     if (tok_eq(line, verb, "inspect")) {
         let comp: []u8 = "no";
         if (model_complete(a.*.scene.*.model)) { comp = "yes"; }
-        let m1: []u8 = _zag_str_concat("schema=", _zag_i64_to_str(a.*.scene.*.model.schema_version as i64));
-        let m2: []u8 = _zag_str_concat(m1, _zag_str_concat(" model_complete=", comp));
-        let m3: []u8 = _zag_str_concat(m2, _zag_str_concat(" components=", _zag_i64_to_str(a.*.scene.*.comps.len as i64)));
-        let m4: []u8 = _zag_str_concat(m3, _zag_str_concat(" guides=", _zag_i64_to_str(a.*.scene.*.guides.len as i64)));
-        agent_ok1(m4);
+        let out: []u8 = prepend_f("schema=", fmt_i(a.*.scene.*.model.schema_version as i64));
+        out = append_f(out, " model_complete=");
+        out = append_f(out, comp);
+        out = append_f(out, " components=");
+        out = append_ff(out, fmt_i(a.*.scene.*.comps.len as i64));
+        out = append_f(out, " guides=");
+        out = append_ff(out, fmt_i(a.*.scene.*.guides.len as i64));
+        agent_ok1f(out);
         return;
     }
     if (tok_eq(line, verb, "close")) {
@@ -1386,6 +1899,34 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         sel_set(a, tok_i64(line, list.get[Tok](toks, 1)) as i32);
         agent_ok1("selected");
         return;
+    }
+    if (tok_eq(line, verb, "select_add")) { agent_select_add(a, line, toks); return; }
+    if (tok_eq(line, verb, "select_remove")) { agent_select_remove(a, line, toks); return; }
+    if (tok_eq(line, verb, "select_clear")) { agent_select_clear(a); return; }
+    if (tok_eq(line, verb, "copy")) { agent_copy(a); return; }
+    if (tok_eq(line, verb, "paste")) { agent_paste(a); return; }
+    if (tok_eq(line, verb, "duplicate")) { agent_duplicate(a); return; }
+    if (tok_eq(line, verb, "group")) { agent_group(a); return; }
+    if (tok_eq(line, verb, "ungroup")) { agent_ungroup(a); return; }
+    if (tok_eq(line, verb, "rename")) { agent_rename(a, line, toks); return; }
+    if (tok_eq(line, verb, "visibility")) { agent_toggle_visibility(a, line, toks); return; }
+    if (tok_eq(line, verb, "lock")) { agent_toggle_lock(a, line, toks); return; }
+    if (tok_eq(line, verb, "panel")) { agent_panel(a, line, toks); return; }
+    if (tok_eq(line, verb, "view")) {
+        if (toks.*.len < 2) { agent_err("usage: view <top|front|right|perspective|reset|frame <selected|all>|toggle <ortho|section|reduced_motion|object_snap>>"); return; }
+        let sub: Tok = list.get[Tok](toks, 1);
+        if (tok_eq(line, sub, "top") || tok_eq(line, sub, "front") ||
+            tok_eq(line, sub, "right") || tok_eq(line, sub, "perspective") ||
+            tok_eq(line, sub, "reset")) { agent_view_preset(a, tok_slice(line, sub)); return; }
+        if (tok_eq(line, sub, "frame")) {
+            if (toks.*.len < 3) { agent_err("usage: view frame <selected|all>"); return; }
+            agent_view_frame(a, tok_slice(line, list.get[Tok](toks, 2))); return;
+        }
+        if (tok_eq(line, sub, "toggle")) {
+            if (toks.*.len < 3) { agent_err("usage: view toggle <ortho|section|reduced_motion|object_snap>"); return; }
+            agent_view_toggle(a, tok_slice(line, list.get[Tok](toks, 2))); return;
+        }
+        agent_err("view: use top|front|right|perspective|reset|frame|toggle"); return;
     }
     if (tok_eq(line, verb, "can_place")) {
         if (toks.*.len < 5) { agent_err("usage: can_place <kind> <x> <y> <z> [rot]"); return; }
@@ -1522,8 +2063,7 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
                 sim_step(a.*.sim, a.*.scene);
                 i = i + 1;
             }
-            let msg: []u8 = _zag_str_concat("symbol=", _zag_i64_to_str(a.*.sim.*.symbol));
-            agent_ok1(msg);
+            agent_ok1f(prepend_f("symbol=", fmt_i(a.*.sim.*.symbol)));
             return;
         }
         if (tok_eq(line, sub, "mode")) {
@@ -1552,18 +2092,20 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
             if (!flash_build_scene(a.*.scene, &ir)) { agent_err("Flash FIR placement or routing failed"); return; }
             let failures: i32 = flash_verify_scene(a.*.scene, a.*.sim);
             session_after_edit(a);
-            let msg: []u8 = _zag_str_concat("ops=", _zag_i64_to_str(ir.ops.len as i64));
-            let m2: []u8 = _zag_str_concat(msg, " components=");
-            let m3: []u8 = _zag_str_concat(m2, _zag_i64_to_str(a.*.scene.*.comps.len as i64));
-            let m4: []u8 = _zag_str_concat(m3, " verification_failures=");
-            agent_mutation_ok(a, _zag_str_concat(m4, _zag_i64_to_str(failures as i64)), 0 - 1);
+            let fmsg: []u8 = prepend_f("ops=", fmt_i(ir.ops.len as i64));
+            fmsg = append_f(fmsg, " components=");
+            fmsg = append_ff(fmsg, fmt_i(a.*.scene.*.comps.len as i64));
+            fmsg = append_f(fmsg, " verification_failures=");
+            fmsg = append_ff(fmsg, fmt_i(failures as i64));
+            agent_mutation_ok(a, fmsg, 0 - 1);
+            _zag_str_free(fmsg);
             return;
         }
         if (tok_eq(line, sub, "verify")) {
             let failures: i32 = flash_verify_scene(a.*.scene, a.*.sim);
             if (failures < 0) { agent_err("active design is not a Flash photonic import"); }
             else if (failures == 0) { agent_ok1("Flash photonic execution verified"); }
-            else { agent_err(_zag_str_concat("Flash mismatches=", _zag_i64_to_str(failures as i64))); }
+            else { agent_errf(prepend_f("Flash mismatches=", fmt_i(failures as i64))); }
             return;
         }
         agent_err("flash: use import or verify");
@@ -1605,7 +2147,7 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         return;
     }
     if (tok_eq(line, verb, "ui")) {
-        if (toks.*.len < 2) { agent_err("usage: ui list|screenshot <path>|activate <id>"); return; }
+        if (toks.*.len < 2) { agent_err("usage: ui list|screenshot <path>|activate <id>|click <x> <y>|type <text>"); return; }
         let sub: Tok = list.get[Tok](toks, 1);
         if (tok_eq(line, sub, "list")) { agent_ui_list(a); return; }
         if (tok_eq(line, sub, "screenshot")) {
@@ -1618,7 +2160,9 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
             if (toks.*.len < 3) { agent_err("usage: ui activate <id>"); return; }
             agent_ui_activate(a, tok_i64(line, list.get[Tok](toks, 2))); return;
         }
-        agent_err("ui: use list, screenshot, or activate"); return;
+        if (tok_eq(line, sub, "click")) { agent_ui_click(a, line, toks); return; }
+        if (tok_eq(line, sub, "type")) { agent_ui_type(a, line, toks); return; }
+        agent_err("ui: use list, screenshot, activate, click, or type"); return;
     }
     if (tok_eq(line, verb, "optimizer")) {
         if (toks.*.len < 2) { agent_err("usage: optimizer apply|accept|decline|ignore|details"); return; }
@@ -1627,6 +2171,15 @@ fn agent_dispatch(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         if (tok_eq(line, sub, "decline") || tok_eq(line, sub, "ignore")) { agent_optimizer_decline(a); return; }
         if (tok_eq(line, sub, "details")) { agent_optimizer_details(a); return; }
         agent_err("optimizer: use apply, accept, decline, ignore, or details"); return;
+    }
+    if (tok_eq(line, verb, "builder")) {
+        if (toks.*.len < 2) { agent_err("usage: builder generate <xmin> <ymin> <zmin> <xmax> <ymax> <zmax> [plate_size]|apply|accept|decline|ignore|details"); return; }
+        let sub: Tok = list.get[Tok](toks, 1);
+        if (tok_eq(line, sub, "generate")) { agent_builder_generate(a, line, toks); return; }
+        if (tok_eq(line, sub, "apply") || tok_eq(line, sub, "accept")) { agent_builder_apply(a); return; }
+        if (tok_eq(line, sub, "decline") || tok_eq(line, sub, "ignore")) { agent_builder_decline(a); return; }
+        if (tok_eq(line, sub, "details")) { agent_builder_details(a); return; }
+        agent_err("builder: use generate, apply, accept, decline, ignore, or details"); return;
     }
     if (tok_eq(line, verb, "model")) { agent_model(a, line, toks); return; }
     agent_err("unknown command (try help)");
@@ -1658,11 +2211,13 @@ fn agent_preview(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         if (toks.*.len >= 7) { rot = tok_i64(line, list.get[Tok](toks, 6)) as i32; }
         let code: i32 = scene_can_place(a.*.scene, kind_at(ki), vox(x, y, z), rot);
         if (code == 0) {
-            let m: []u8 = _zag_str_concat("PREVIEW place ok would-add kind=", tok_slice(line, list.get[Tok](toks, 2)));
-            agent_ok1(_zag_str_concat(m, " writes=none"));
+            let out: []u8 = prepend_f("PREVIEW place ok would-add kind=", _zag_strdup(tok_slice(line, list.get[Tok](toks, 2))));
+            out = append_f(out, " writes=none");
+            agent_ok1f(out);
         } else {
-            let m: []u8 = _zag_str_concat("PREVIEW place blocked ", place_err_text(code));
-            agent_ok1(_zag_str_concat(m, " writes=none"));
+            let out: []u8 = prepend_f("PREVIEW place blocked ", _zag_strdup(place_err_text(code)));
+            out = append_f(out, " writes=none");
+            agent_ok1f(out);
         }
     } else if (tok_eq(line, sub, "delete")) {
         if (toks.*.len < 3) { agent_err("E_PREVIEW usage: preview delete <id>"); return; }
@@ -1670,9 +2225,11 @@ fn agent_preview(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
         let idx: i32 = scene_comp_index(a.*.scene, id);
         if (idx < 0) { agent_ok1("PREVIEW delete blocked no-such-id writes=none"); return; }
         let nm: []u8 = a.*.scene.*.comps.data[idx].name_;
-        let m: []u8 = _zag_str_concat("PREVIEW delete ok would-remove id=", _zag_i64_to_str(id as i64));
-        m = _zag_str_concat(_zag_str_concat(m, " name="), nm);
-        agent_ok1(_zag_str_concat(m, " writes=none"));
+        let out: []u8 = prepend_f("PREVIEW delete ok would-remove id=", fmt_i(id as i64));
+        out = append_f(out, " name=");
+        out = append_f(out, nm);
+        out = append_f(out, " writes=none");
+        agent_ok1f(out);
     } else {
         agent_err("E_PREVIEW unknown subcommand (place delete)");
     }
@@ -1698,18 +2255,22 @@ fn agent_simstream(a: *App, line: []u8, toks: *list.ArrayList[Tok]) void {
     let k: i64 = 0;
     while (k < n) {
         if (agent_cancel_requested()) {
-            let cm: []u8 = _zag_str_concat("CANCELLED step=", _zag_i64_to_str(k));
-            agent_ok1(_zag_str_concat(_zag_str_concat(cm, " of "), _zag_i64_to_str(n)));
+            let out: []u8 = prepend_f("CANCELLED step=", fmt_i(k));
+            out = append_f(out, " of ");
+            out = append_ff(out, fmt_i(n));
+            agent_ok1f(out);
             return;
         }
         sim_step(a.*.sim, a.*.scene);
         k = k + 1;
         if (k % every == 0 || k == n) {
-            let pm: []u8 = _zag_str_concat("PROGRESS ", _zag_i64_to_str(k));
-            agent_ok1(_zag_str_concat(_zag_str_concat(pm, "/"), _zag_i64_to_str(n)));
+            let out: []u8 = prepend_f("PROGRESS ", fmt_i(k));
+            out = append_f(out, "/");
+            out = append_ff(out, fmt_i(n));
+            agent_ok1f(out);
         }
     }
-    agent_ok1(_zag_str_concat("DONE steps=", _zag_i64_to_str(n)));
+    agent_ok1f(prepend_f("DONE steps=", fmt_i(n)));
 }
 
 fn agent_dispatch_line(a: *App, line: []u8) void {

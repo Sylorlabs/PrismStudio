@@ -15,6 +15,14 @@ fn mcp_append(out: *list.ArrayList[u8], s: []u8) void {
     }
 }
 
+// Leak-free integer append: mcp_append(out, _zag_i64_to_str(x)) leaks the i64
+// string. This helper binds, appends, and frees in one call.
+fn mcp_append_i64(out: *list.ArrayList[u8], v: i64) void {
+    let s: []u8 = _zag_i64_to_str(v);
+    mcp_append(out, s);
+    _zag_str_free(s);
+}
+
 fn mcp_json_str(out: *list.ArrayList[u8], s: []u8) void {
     list.push[u8](out, 34);
     let i: i32 = 0;
@@ -122,6 +130,42 @@ fn mcp_find_int(src: []u8, key: []u8) i32 {
     return v as i32;
 }
 
+// Parse a float (number) parameter from a JSON body. Handles sign, integer
+// part, fractional part. Used by camera orbit/pan/zoom.
+fn mcp_find_f64(src: []u8, key: []u8) f64 {
+    let kp: i32 = mcp_key_pos(src, key);
+    if (kp < 0) { return 0.0; }
+    let i: i32 = mcp_skip_ws(src, kp + key.len + 2);
+    if (i >= src.len || src[i] != 58) { return 0.0; }
+    i = mcp_skip_ws(src, i + 1);
+    if (i >= src.len) { return 0.0; }
+    let neg: bool = false;
+    if (src[i] == 45) { neg = true; i = i + 1; }   // '-'
+    else if (src[i] == 43) { i = i + 1; }          // '+'
+    let val: f64 = 0.0;
+    let found: bool = false;
+    while (i < src.len && src[i] >= 48 && src[i] <= 57) {
+        val = val * 10.0 + ((src[i] - 48) as f64);
+        found = true;
+        i = i + 1;
+    }
+    if (i < src.len && src[i] == 46) {   // '.'
+        i = i + 1;
+        let frac: f64 = 0.0;
+        let div: f64 = 10.0;
+        while (i < src.len && src[i] >= 48 && src[i] <= 57) {
+            frac = frac + ((src[i] - 48) as f64) / div;
+            div = div * 10.0;
+            found = true;
+            i = i + 1;
+        }
+        val = val + frac;
+    }
+    if (!found) { return 0.0; }
+    if (neg) { return 0.0 - val; }
+    return val;
+}
+
 fn mcp_load_i32_le(buf: []u8, off: i32) i32 {
     let b0: i32 = buf[off] as i32;
     let b1: i32 = buf[off + 1] as i32;
@@ -200,7 +244,7 @@ fn mcp_read_msg(io: *IoBuf) []u8 {
 fn mcp_send_msg(body: []u8) void {
     let hdr: list.ArrayList[u8] = list.make[u8](64);
     mcp_append(&hdr, "Content-Length: ");
-    mcp_append(&hdr, _zag_i64_to_str(body.len as i64));
+    mcp_append_i64(&hdr, body.len as i64);
     mcp_append(&hdr, "\r\n\r\n");
     _zag_print(hdr.data[0..hdr.len]);
     _zag_print(body);
@@ -211,7 +255,7 @@ fn mcp_send_msg(body: []u8) void {
 fn mcp_send_response(id: i32, result: []u8) void {
     let out: list.ArrayList[u8] = list.make[u8](result.len + 64);
     mcp_append(&out, "{\"jsonrpc\":\"2.0\",\"id\":");
-    mcp_append(&out, _zag_i64_to_str(id as i64));
+    mcp_append_i64(&out, id as i64);
     mcp_append(&out, ",\"result\":");
     mcp_append(&out, result);
     list.push[u8](&out, 125);
@@ -222,7 +266,7 @@ fn mcp_send_response(id: i32, result: []u8) void {
 fn mcp_send_error(id: i32, msg: []u8) void {
     let out: list.ArrayList[u8] = list.make[u8](msg.len + 96);
     mcp_append(&out, "{\"jsonrpc\":\"2.0\",\"id\":");
-    mcp_append(&out, _zag_i64_to_str(id as i64));
+    mcp_append_i64(&out, id as i64);
     mcp_append(&out, ",\"error\":{\"code\":-32603,\"message\":");
     mcp_json_str(&out, msg);
     mcp_append(&out, "}}");
@@ -296,7 +340,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
     if (_zag_strcmp(name, "prismstudio_process_stack") == 1) {
         let sy: i32 = mcp_find_int(body, "y");
         mcp_append(out, "stack");
-        if (sy >= 0) { mcp_append(out, " "); mcp_append(out, _zag_i64_to_str(sy as i64)); }
+        if (sy >= 0) { mcp_append(out, " "); mcp_append_i64(out, sy as i64); }
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_power") == 1) { mcp_append(out, "power"); return true; }
@@ -306,14 +350,14 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         let id: i32 = mcp_find_int(body, "component_id");
         if (id < 0) { return false; }
         mcp_append(out, "get ");
-        mcp_append(out, _zag_i64_to_str(id as i64));
+        mcp_append_i64(out, id as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_select") == 1) {
         let id2: i32 = mcp_find_int(body, "component_id");
         if (id2 < 0) { return false; }
         mcp_append(out, "select ");
-        mcp_append(out, _zag_i64_to_str(id2 as i64));
+        mcp_append_i64(out, id2 as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_can_place") == 1) {
@@ -327,13 +371,13 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, "can_place ");
         mcp_append(out, kind0);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(x0 as i64));
+        mcp_append_i64(out, x0 as i64);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(y0 as i64));
+        mcp_append_i64(out, y0 as i64);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(z0 as i64));
+        mcp_append_i64(out, z0 as i64);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(rot0 as i64));
+        mcp_append_i64(out, rot0 as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_place") == 1) {
@@ -347,13 +391,13 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, "place ");
         mcp_append(out, kind);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(x as i64));
+        mcp_append_i64(out, x as i64);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(y as i64));
+        mcp_append_i64(out, y as i64);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(z as i64));
+        mcp_append_i64(out, z as i64);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(rot as i64));
+        mcp_append_i64(out, rot as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_route") == 1) {
@@ -363,27 +407,27 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         let tp: i32 = mcp_find_int(body, "to_port");
         if (fc < 0 || fp < 0 || tc < 0 || tp < 0) { return false; }
         mcp_append(out, "route ");
-        mcp_append(out, _zag_i64_to_str(fc as i64));
+        mcp_append_i64(out, fc as i64);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(fp as i64));
+        mcp_append_i64(out, fp as i64);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(tc as i64));
+        mcp_append_i64(out, tc as i64);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(tp as i64));
+        mcp_append_i64(out, tp as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_delete") == 1) {
         let did: i32 = mcp_find_int(body, "component_id");
         if (did < 0) { return false; }
         mcp_append(out, "delete ");
-        mcp_append(out, _zag_i64_to_str(did as i64));
+        mcp_append_i64(out, did as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_sim_step") == 1) {
         let n: i32 = mcp_find_int(body, "n");
         if (n < 1) { n = 1; }
         mcp_append(out, "sim step ");
-        mcp_append(out, _zag_i64_to_str(n as i64));
+        mcp_append_i64(out, n as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_sim_state") == 1) { mcp_append(out, "sim state"); return true; }
@@ -409,9 +453,9 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         let cy: i32 = mcp_find_int(body, "y");
         let cz: i32 = mcp_find_int(body, "z");
         mcp_append(out, "camera ");
-        mcp_append(out, _zag_i64_to_str(cx as i64)); mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(cy as i64)); mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(cz as i64));
+        mcp_append_i64(out, cx as i64); mcp_append(out, " ");
+        mcp_append_i64(out, cy as i64); mcp_append(out, " ");
+        mcp_append_i64(out, cz as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_render_at") == 1) {
@@ -421,9 +465,9 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         let ry: i32 = mcp_find_int(body, "y");
         let rz: i32 = mcp_find_int(body, "z");
         mcp_append(out, "render_at "); mcp_append(out, rpath); mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(rx as i64)); mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(ry as i64)); mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(rz as i64));
+        mcp_append_i64(out, rx as i64); mcp_append(out, " ");
+        mcp_append_i64(out, ry as i64); mcp_append(out, " ");
+        mcp_append_i64(out, rz as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_pick") == 1) { mcp_append(out, "pick"); return true; }
@@ -435,7 +479,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, kind);
         if (rot >= 0) {
             mcp_append(out, " ");
-            mcp_append(out, _zag_i64_to_str(rot as i64));
+            mcp_append_i64(out, rot as i64);
         }
         return true;
     }
@@ -449,14 +493,14 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, "place_on ");
         mcp_append(out, kind);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(pid as i64));
+        mcp_append_i64(out, pid as i64);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(lx as i64));
+        mcp_append_i64(out, lx as i64);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(lz as i64));
+        mcp_append_i64(out, lz as i64);
         if (rot >= 0) {
             mcp_append(out, " ");
-            mcp_append(out, _zag_i64_to_str(rot as i64));
+            mcp_append_i64(out, rot as i64);
         }
         return true;
     }
@@ -474,7 +518,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
             let n: i32 = mcp_find_int(body, "n");
             if (n < 1) { return false; }
             mcp_append(out, "sim step ");
-            mcp_append(out, _zag_i64_to_str(n as i64));
+            mcp_append_i64(out, n as i64);
             return true;
         }
         if (_zag_strcmp(sub, "state") == 1) { mcp_append(out, "sim state"); return true; }
@@ -508,7 +552,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, "audit");
         if (lines > 0) {
             mcp_append(out, " ");
-            mcp_append(out, _zag_i64_to_str(lines as i64));
+            mcp_append_i64(out, lines as i64);
         }
         return true;
     }
@@ -517,7 +561,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, "uilog");
         if (lines > 0) {
             mcp_append(out, " ");
-            mcp_append(out, _zag_i64_to_str(lines as i64));
+            mcp_append_i64(out, lines as i64);
         }
         return true;
     }
@@ -528,7 +572,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         mcp_append(out, "trace ");
         mcp_append(out, tpath);
         mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(steps as i64));
+        mcp_append_i64(out, steps as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_flash_import") == 1) {
@@ -555,6 +599,154 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
     if (_zag_strcmp(name, "prismstudio_optimizer_decline") == 1) { mcp_append(out, "optimizer decline"); return true; }
     if (_zag_strcmp(name, "prismstudio_optimizer_ignore") == 1) { mcp_append(out, "optimizer decline"); return true; }
     if (_zag_strcmp(name, "prismstudio_optimizer_details") == 1) { mcp_append(out, "optimizer details"); return true; }
+    if (_zag_strcmp(name, "prismstudio_builder_generate") == 1) {
+        let xmin: i32 = mcp_find_int(body, "xmin");
+        let ymin: i32 = mcp_find_int(body, "ymin");
+        let zmin: i32 = mcp_find_int(body, "zmin");
+        let xmax: i32 = mcp_find_int(body, "xmax");
+        let ymax: i32 = mcp_find_int(body, "ymax");
+        let zmax: i32 = mcp_find_int(body, "zmax");
+        let plate_size: i32 = mcp_find_int(body, "plate_size");
+        mcp_append(out, "builder generate ");
+        mcp_append_i64(out, xmin as i64); mcp_append(out, " ");
+        mcp_append_i64(out, ymin as i64); mcp_append(out, " ");
+        mcp_append_i64(out, zmin as i64); mcp_append(out, " ");
+        mcp_append_i64(out, xmax as i64); mcp_append(out, " ");
+        mcp_append_i64(out, ymax as i64); mcp_append(out, " ");
+        mcp_append_i64(out, zmax as i64);
+        if (plate_size > 0) {
+            mcp_append(out, " ");
+            mcp_append_i64(out, plate_size as i64);
+        }
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_builder_apply") == 1) { mcp_append(out, "builder apply"); return true; }
+    if (_zag_strcmp(name, "prismstudio_builder_accept") == 1) { mcp_append(out, "builder apply"); return true; }
+    if (_zag_strcmp(name, "prismstudio_builder_decline") == 1) { mcp_append(out, "builder decline"); return true; }
+    if (_zag_strcmp(name, "prismstudio_builder_ignore") == 1) { mcp_append(out, "builder decline"); return true; }
+    if (_zag_strcmp(name, "prismstudio_builder_details") == 1) { mcp_append(out, "builder details"); return true; }
+    // ── component manipulation ──
+    if (_zag_strcmp(name, "prismstudio_copy") == 1) { mcp_append(out, "copy"); return true; }
+    if (_zag_strcmp(name, "prismstudio_paste") == 1) { mcp_append(out, "paste"); return true; }
+    if (_zag_strcmp(name, "prismstudio_duplicate") == 1) { mcp_append(out, "duplicate"); return true; }
+    if (_zag_strcmp(name, "prismstudio_group") == 1) { mcp_append(out, "group"); return true; }
+    if (_zag_strcmp(name, "prismstudio_ungroup") == 1) { mcp_append(out, "ungroup"); return true; }
+    if (_zag_strcmp(name, "prismstudio_rename") == 1) {
+        let cid: i32 = mcp_find_int(body, "id");
+        let nm: []u8 = mcp_find_str(body, "name");
+        if (cid < 0) { return false; }
+        mcp_append(out, "rename ");
+        mcp_append_i64(out, cid as i64); mcp_append(out, " ");
+        mcp_append(out, nm);
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_toggle_visibility") == 1) {
+        let cid: i32 = mcp_find_int(body, "id");
+        if (cid < 0) { return false; }
+        mcp_append(out, "visibility ");
+        mcp_append_i64(out, cid as i64);
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_toggle_lock") == 1) {
+        let cid: i32 = mcp_find_int(body, "id");
+        if (cid < 0) { return false; }
+        mcp_append(out, "lock ");
+        mcp_append_i64(out, cid as i64);
+        return true;
+    }
+    // ── selection manipulation ──
+    if (_zag_strcmp(name, "prismstudio_select_add") == 1) {
+        let cid: i32 = mcp_find_int(body, "id");
+        if (cid < 0) { return false; }
+        mcp_append(out, "select_add ");
+        mcp_append_i64(out, cid as i64);
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_select_remove") == 1) {
+        let cid: i32 = mcp_find_int(body, "id");
+        if (cid < 0) { return false; }
+        mcp_append(out, "select_remove ");
+        mcp_append_i64(out, cid as i64);
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_select_clear") == 1) { mcp_append(out, "select_clear"); return true; }
+    // ── view control ──
+    if (_zag_strcmp(name, "prismstudio_view") == 1) {
+        let preset: []u8 = mcp_find_str(body, "preset");
+        mcp_append(out, "view ");
+        mcp_append(out, preset);
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_view_frame") == 1) {
+        let mode: []u8 = mcp_find_str(body, "mode");
+        mcp_append(out, "view frame ");
+        mcp_append(out, mode);
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_view_toggle") == 1) {
+        let mode: []u8 = mcp_find_str(body, "mode");
+        mcp_append(out, "view toggle ");
+        mcp_append(out, mode);
+        return true;
+    }
+    // ── panel control ──
+    if (_zag_strcmp(name, "prismstudio_panel") == 1) {
+        let pnl: []u8 = mcp_find_str(body, "name");
+        mcp_append(out, "panel ");
+        mcp_append(out, pnl);
+        let act: []u8 = mcp_find_str(body, "action");
+        if (act.len > 0) {
+            mcp_append(out, " ");
+            mcp_append(out, act);
+        }
+        return true;
+    }
+    // ── pixel-based UI click (fallback for screenshots) ──
+    if (_zag_strcmp(name, "prismstudio_ui_click") == 1) {
+        let x: i32 = mcp_find_int(body, "x");
+        let y: i32 = mcp_find_int(body, "y");
+        mcp_append(out, "ui click ");
+        mcp_append_i64(out, x as i64); mcp_append(out, " ");
+        mcp_append_i64(out, y as i64);
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_ui_type") == 1) {
+        let text: []u8 = mcp_find_str(body, "text");
+        mcp_append(out, "ui type ");
+        mcp_append(out, text);
+        return true;
+    }
+    // ── incremental camera control ──
+    if (_zag_strcmp(name, "prismstudio_camera_orbit") == 1) {
+        let yaw: f64 = mcp_find_f64(body, "yaw");
+        let pitch: f64 = mcp_find_f64(body, "pitch");
+        let ys: []u8 = fmt_f1(yaw);
+        let ps: []u8 = fmt_f1(pitch);
+        mcp_append(out, "camera orbit ");
+        mcp_append(out, ys); mcp_append(out, " ");
+        mcp_append(out, ps);
+        _zag_str_free(ys); _zag_str_free(ps);
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_camera_pan") == 1) {
+        let dx: f64 = mcp_find_f64(body, "dx");
+        let dz: f64 = mcp_find_f64(body, "dz");
+        let dxs: []u8 = fmt_f1(dx);
+        let dzs: []u8 = fmt_f1(dz);
+        mcp_append(out, "camera pan ");
+        mcp_append(out, dxs); mcp_append(out, " ");
+        mcp_append(out, dzs);
+        _zag_str_free(dxs); _zag_str_free(dzs);
+        return true;
+    }
+    if (_zag_strcmp(name, "prismstudio_camera_zoom") == 1) {
+        let factor: f64 = mcp_find_f64(body, "factor");
+        let fs: []u8 = fmt_f1(factor);
+        mcp_append(out, "camera zoom ");
+        mcp_append(out, fs);
+        _zag_str_free(fs);
+        return true;
+    }
     if (_zag_strcmp(name, "prismstudio_move") == 1) {
         let cid: i32 = mcp_find_int(body, "id");
         let dx: i32 = mcp_find_int(body, "dx");
@@ -563,10 +755,10 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         if (cid < 0) { return false; }
         if (dx < 0 - 2048 || dy < 0 - 2048 || dz < 0 - 2048) { return false; }
         mcp_append(out, "move ");
-        mcp_append(out, _zag_i64_to_str(cid as i64)); mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(dx as i64)); mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(dy as i64)); mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(dz as i64));
+        mcp_append_i64(out, cid as i64); mcp_append(out, " ");
+        mcp_append_i64(out, dx as i64); mcp_append(out, " ");
+        mcp_append_i64(out, dy as i64); mcp_append(out, " ");
+        mcp_append_i64(out, dz as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_rotate") == 1) {
@@ -575,22 +767,22 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         if (cid < 0) { return false; }
         if (q < 0) { q = 1; }
         mcp_append(out, "rotate ");
-        mcp_append(out, _zag_i64_to_str(cid as i64)); mcp_append(out, " ");
-        mcp_append(out, _zag_i64_to_str(q as i64));
+        mcp_append_i64(out, cid as i64); mcp_append(out, " ");
+        mcp_append_i64(out, q as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_disconnect") == 1) {
         let gid: i32 = mcp_find_int(body, "guide_id");
         if (gid < 0) { return false; }
         mcp_append(out, "disconnect ");
-        mcp_append(out, _zag_i64_to_str(gid as i64));
+        mcp_append_i64(out, gid as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_reroute") == 1) {
         let gid: i32 = mcp_find_int(body, "guide_id");
         if (gid < 0) { return false; }
         mcp_append(out, "reroute ");
-        mcp_append(out, _zag_i64_to_str(gid as i64));
+        mcp_append_i64(out, gid as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_inspect") == 1) { mcp_append(out, "inspect"); return true; }
@@ -609,10 +801,10 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
             if (rot < 0) { rot = 0; }
             mcp_append(out, "preview place ");
             mcp_append(out, kind); mcp_append(out, " ");
-            mcp_append(out, _zag_i64_to_str(x as i64)); mcp_append(out, " ");
-            mcp_append(out, _zag_i64_to_str(y as i64)); mcp_append(out, " ");
-            mcp_append(out, _zag_i64_to_str(z as i64)); mcp_append(out, " ");
-            mcp_append(out, _zag_i64_to_str(rot as i64));
+            mcp_append_i64(out, x as i64); mcp_append(out, " ");
+            mcp_append_i64(out, y as i64); mcp_append(out, " ");
+            mcp_append_i64(out, z as i64); mcp_append(out, " ");
+            mcp_append_i64(out, rot as i64);
             return true;
         }
         if (_zag_strcmp(sub, "delete") == 1) {
@@ -620,7 +812,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
             if (cid < 0) { cid = mcp_find_int(body, "component_id"); }
             if (cid < 0) { return false; }
             mcp_append(out, "preview delete ");
-            mcp_append(out, _zag_i64_to_str(cid as i64));
+            mcp_append_i64(out, cid as i64);
             return true;
         }
         return false;
@@ -629,7 +821,7 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         let steps: i32 = mcp_find_int(body, "steps");
         if (steps < 0) { return false; }
         mcp_append(out, "simstream ");
-        mcp_append(out, _zag_i64_to_str(steps as i64));
+        mcp_append_i64(out, steps as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_timing") == 1) { mcp_append(out, "timing"); return true; }
@@ -637,21 +829,21 @@ fn mcp_tool_cmd(name: []u8, body: []u8, out: *list.ArrayList[u8]) bool {
         let cid: i32 = mcp_find_int(body, "id");
         if (cid < 0) { return false; }
         mcp_append(out, "del ");
-        mcp_append(out, _zag_i64_to_str(cid as i64));
+        mcp_append_i64(out, cid as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_sel") == 1) {
         let cid: i32 = mcp_find_int(body, "id");
         if (cid < 0) { return false; }
         mcp_append(out, "sel ");
-        mcp_append(out, _zag_i64_to_str(cid as i64));
+        mcp_append_i64(out, cid as i64);
         return true;
     }
     if (_zag_strcmp(name, "prismstudio_model_status") == 1) { mcp_append(out, "model status"); return true; }
     if (_zag_strcmp(name, "prismstudio_model_migrate") == 1) {
         let mv: i32 = mcp_find_int(body, "version");
         if (mv < 1) { return false; }
-        mcp_append(out, "model migrate "); mcp_append(out, _zag_i64_to_str(mv as i64)); return true;
+        mcp_append(out, "model migrate "); mcp_append_i64(out, mv as i64); return true;
     }
     if (_zag_strcmp(name, "prismstudio_test") == 1) {
         let tname: []u8 = mcp_find_str(body, "name");
@@ -726,6 +918,10 @@ fn mcp_tool_requires_envelope(name: []u8) bool {
     if (_zag_strcmp(name, "prismstudio_optimizer_decline") == 1) { return true; }
     if (_zag_strcmp(name, "prismstudio_optimizer_ignore") == 1) { return true; }
     if (_zag_strcmp(name, "prismstudio_optimizer_details") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_builder_apply") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_builder_accept") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_builder_decline") == 1) { return true; }
+    if (_zag_strcmp(name, "prismstudio_builder_ignore") == 1) { return true; }
     if (_zag_strcmp(name, "prismstudio_model_migrate") == 1) { return true; }
     return false;
 }
@@ -791,6 +987,38 @@ fn mcp_tools_list_json() []u8 {
     mcp_append_tool(&out, false, "prismstudio_optimizer_decline", "Decline the pending optimizer proposal through native flow.", "", "", true);
     mcp_append_tool(&out, false, "prismstudio_optimizer_ignore", "Alias for optimizer_decline.", "", "", true);
     mcp_append_tool(&out, false, "prismstudio_optimizer_details", "Toggle optimizer proposal details visibility.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_builder_generate", "Synthesize an engine for a lattice envelope via the density-sweep builder. plate_size is optional (0 or omitted = auto-select the smallest plate that fits 64 chambers at the chosen pitch).", "\"xmin\":{\"type\":\"integer\"},\"ymin\":{\"type\":\"integer\"},\"zmin\":{\"type\":\"integer\"},\"xmax\":{\"type\":\"integer\"},\"ymax\":{\"type\":\"integer\"},\"zmax\":{\"type\":\"integer\"},\"plate_size\":{\"type\":\"integer\"}", "\"xmin\",\"ymin\",\"zmin\",\"xmax\",\"ymax\",\"zmax\"", false);
+    mcp_append_tool(&out, false, "prismstudio_builder_apply", "Apply the pending builder proposal through native flow.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_builder_accept", "Alias for builder_apply.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_builder_decline", "Decline the pending builder proposal through native flow.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_builder_ignore", "Alias for builder_decline.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_builder_details", "Toggle builder proposal details visibility.", "", "", false);
+    // ── component manipulation ──
+    mcp_append_tool(&out, false, "prismstudio_copy", "Copy current selection to clipboard.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_paste", "Paste clipboard components at offset (+2 X). Each paste marches further.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_duplicate", "Arm duplicate tool for the primary selection (click in viewport to place).", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_group", "Group the current selection (>=2 components).", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_ungroup", "Ungroup the current selection.", "", "", true);
+    mcp_append_tool(&out, false, "prismstudio_rename", "Rename a component by ID.", "\"id\":{\"type\":\"integer\"},\"name\":{\"type\":\"string\"}", "\"id\",\"name\"", true);
+    mcp_append_tool(&out, false, "prismstudio_toggle_visibility", "Toggle component visibility by ID.", "\"id\":{\"type\":\"integer\"}", "\"id\"", true);
+    mcp_append_tool(&out, false, "prismstudio_toggle_lock", "Toggle component lock by ID.", "\"id\":{\"type\":\"integer\"}", "\"id\"", true);
+    // ── selection manipulation ──
+    mcp_append_tool(&out, false, "prismstudio_select_add", "Add a component to the current selection by ID.", "\"id\":{\"type\":\"integer\"}", "\"id\"", true);
+    mcp_append_tool(&out, false, "prismstudio_select_remove", "Remove a component from the current selection by ID.", "\"id\":{\"type\":\"integer\"}", "\"id\"", true);
+    mcp_append_tool(&out, false, "prismstudio_select_clear", "Clear the entire selection.", "", "", true);
+    // ── view control ──
+    mcp_append_tool(&out, false, "prismstudio_view", "Switch to a view preset: top, front, right, perspective, or reset.", "\"preset\":{\"type\":\"string\",\"enum\":[\"top\",\"front\",\"right\",\"perspective\",\"reset\"]}", "\"preset\"", true);
+    mcp_append_tool(&out, false, "prismstudio_view_frame", "Frame the scene: selected or all.", "\"mode\":{\"type\":\"string\",\"enum\":[\"selected\",\"all\"]}", "\"mode\"", true);
+    mcp_append_tool(&out, false, "prismstudio_view_toggle", "Toggle a view mode: ortho, section, reduced_motion, or object_snap.", "\"mode\":{\"type\":\"string\",\"enum\":[\"ortho\",\"section\",\"reduced_motion\",\"object_snap\"]}", "\"mode\"", true);
+    // ── panel control ──
+    mcp_append_tool(&out, false, "prismstudio_panel", "Open, close, or toggle a panel: optimizer, builder, settings, or palette. Action defaults to toggle.", "\"name\":{\"type\":\"string\",\"enum\":[\"optimizer\",\"builder\",\"settings\",\"palette\"]},\"action\":{\"type\":\"string\",\"enum\":[\"open\",\"close\",\"toggle\"]}", "\"name\"", true);
+    // ── pixel-based UI interaction (fallback for screenshots) ──
+    mcp_append_tool(&out, false, "prismstudio_ui_click", "Click at pixel coordinates (x, y) on the screen. Use as a fallback when element IDs are unknown — e.g. clicking on a screenshot. Returns the element label at that position if any.", "\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}", "\"x\",\"y\"", true);
+    mcp_append_tool(&out, false, "prismstudio_ui_type", "Type text into the currently focused textfield. Use after ui_activate or ui_click to focus a text input.", "\"text\":{\"type\":\"string\"}", "\"text\"", true);
+    // ── incremental camera control ──
+    mcp_append_tool(&out, false, "prismstudio_camera_orbit", "Orbit the camera by yaw and pitch deltas (radians). Positive yaw orbits right, positive pitch orbits up.", "\"yaw\":{\"type\":\"number\"},\"pitch\":{\"type\":\"number\"}", "\"yaw\",\"pitch\"", false);
+    mcp_append_tool(&out, false, "prismstudio_camera_pan", "Pan the camera target by dx (right) and dz (forward) in world units.", "\"dx\":{\"type\":\"number\"},\"dz\":{\"type\":\"number\"}", "\"dx\",\"dz\"", false);
+    mcp_append_tool(&out, false, "prismstudio_camera_zoom", "Zoom the camera by multiplying distance by a factor. >1 zooms out, <1 zooms in, 0.5 halves distance.", "\"factor\":{\"type\":\"number\"}", "\"factor\"", false);
     mcp_append_tool(&out, false, "prismstudio_model_status", "Inspect pinned physical-model schema and all versioned device-type descriptors.", "", "", false);
     mcp_append_tool(&out, false, "prismstudio_model_migrate", "Explicitly migrate a pinned physical-model schema without inventing new evidence.", "\"version\":{\"type\":\"integer\",\"minimum\":2,\"maximum\":2}", "\"version\"", true);
     mcp_append_tool(&out, false, "prismstudio_test", "Run engine|smoke|build verification.", "\"name\":{\"type\":\"string\",\"enum\":[\"engine\",\"smoke\",\"build\"]}", "\"name\"", false);
@@ -840,7 +1068,7 @@ fn mcp_dispatch(a: *App, msg: []u8) void {
             mcp_append(&wrapped, "request ");
             mcp_append(&wrapped, key);
             mcp_append(&wrapped, " ");
-            mcp_append(&wrapped, _zag_i64_to_str(rev as i64));
+            mcp_append_i64(&wrapped, rev as i64);
             mcp_append(&wrapped, " ");
             mcp_append(&wrapped, cmd.data[0..cmd.len]);
             list.free[u8](&cmd);

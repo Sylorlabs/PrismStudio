@@ -52,13 +52,14 @@ fn th_text() i64 { return rgb(232, 236, 244); }
 fn th_text_dim() i64 { return rgb(148, 157, 176); }
 fn th_accent() i64 { return rgb(86, 116, 232); }       // restrained periwinkle
 fn th_accent_hot() i64 { return rgb(121, 148, 255); }
-fn th_select() i64 { return rgb(255, 178, 66); }       // selection amber
-fn th_danger() i64 { return rgb(236, 96, 96); }
-fn th_warning() i64 { return rgb(232, 172, 72); }
-fn th_ok() i64 { return rgb(96, 210, 140); }
+fn th_select() i64 { return rgb(255, 178, 66); }       // selection amber — viewport + outliner
+fn th_danger() i64 { return rgb(236, 96, 96); }        // error / critical / invalid placement
+fn th_warning() i64 { return rgb(232, 172, 72); }      // warning / incomplete state
+fn th_ok() i64 { return rgb(96, 210, 140); }           // success / valid / running
 fn th_disabled() i64 { return rgb(78, 82, 94); }
 fn th_focus() i64 { return rgb(124, 150, 255); }
 fn th_vp_bg() i64 { return rgb(10, 13, 19); }
+fn th_locked() i64 { return rgb(180, 140, 210); }      // locked item — distinct from warning
 
 // ── geometry ──────────────────────────────────────────────────────────────────
 
@@ -204,6 +205,24 @@ fn ui_find(in: *Input, id: i64) i32 {
         i = i + 1;
     }
     return 0 - 1;
+}
+
+// Find the topmost UI element whose bounds contain (x, y). Used by pixel-based
+// clicking (ui click <x> <y>) to report which element was hit, and as a
+// fallback when element IDs are unknown (e.g. clicking on a screenshot).
+fn ui_find_at(in: *Input, x: i32, y: i32) i32 {
+    let best: i32 = 0 - 1;
+    let i: i32 = 0;
+    while (i < in.*.ui_elements.len) {
+        let e: UiElement = in.*.ui_elements.data[i];
+        if (e.bounds.w > 0 && e.bounds.h > 0 &&
+            x >= e.bounds.x && x < e.bounds.x + e.bounds.w &&
+            y >= e.bounds.y && y < e.bounds.y + e.bounds.h) {
+            best = i;   // last match wins (topmost in draw order)
+        }
+        i = i + 1;
+    }
+    return best;
 }
 
 // Labels may describe state (Run/Pause, On/Off) while identity must not. These
@@ -426,6 +445,33 @@ fn ui_mini(f: *FB, in: *Input, r: Rect, label: []u8, tint: i64) bool {
     return (h && btn_released(in, 0)) || ui_key_activate(in, focused);
 }
 
+// Icon-only button: draws a stroke icon centered in the rect. `id` is an
+// ico_* constant from fb.zag. Returns true on click. When `active` the
+// background is accent-tinted and the icon is brighter.
+fn ui_icon_button(f: *FB, in: *Input, r: Rect, id: i32, active: bool) bool {
+    let h: bool = hover(in, r);
+    let focused: bool = ui_focusable(in, r, h);
+    let key: []u8 = "icon-btn";
+    let _eid: i64 = ui_register(in, "button", key, key, r, true, active, focused);
+    let hot: i32 = input_hot(in, ui_key(r), h);
+    let col: i64 = th_panel_alt();
+    if (active) { col = th_accent(); }
+    if (h && btn_down(in, 0)) { col = th_accent_hot(); }
+    else if (active && h) { col = th_accent_hot(); }
+    else if (hot > 0) { col = mix(th_header(), col, hot); }
+    fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), col);
+    let bord: i64 = th_outline();
+    if (active) { bord = th_accent_hot(); }
+    if (focused) { bord = th_focus(); }
+    round_rect_outline(f, r.x, r.y, r.w, r.h, radius_control(), bord);
+    let icol: i64 = th_text();
+    if (active) { icol = rgb(245, 247, 252); }
+    let ix: i32 = r.x + (r.w - 16) / 2;
+    let iy: i32 = r.y + (r.h - 16) / 2;
+    draw_icon(f, ix, iy, id, icol);
+    return (h && btn_released(in, 0)) || ui_key_activate(in, focused);
+}
+
 // ── text field ────────────────────────────────────────────────────────────────
 // Retained single-line editor. The owner keeps one TextEdit per field; the
 // widget grabs the keyboard while focused (in.text_focus) so app shortcuts
@@ -524,6 +570,7 @@ fn ui_section(f: *FB, in: *Input, x: i32, y: i32, w: i32, title: []u8, open: *i3
     if (count >= 0) {
         let cnt: []u8 = _zag_i64_to_str(count as i64);
         draw_text(f, x + w - text_w(cnt) - pad_text() - 2, ty, cnt, th_text_dim());
+        _zag_str_free(cnt);
     }
     if (focused) { round_rect_outline(f, r.x, r.y, r.w, r.h, radius_control(), th_focus()); }
     if ((h && btn_released(in, 0)) || ui_key_activate(in, focused)) {
@@ -564,7 +611,11 @@ fn ui_numfield(f: *FB, in: *Input, r: Rect, value: []u8, unit: []u8, flash_key: 
     if (fl > 0) { bg = mix(th_accent(), bg, fl / 2); }
     fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), bg);
     let vs: []u8 = value;
-    if (unit.len > 0) { vs = _zag_str_concat(_zag_str_concat(value, " "), unit); }
+    if (unit.len > 0) {
+        let sp: []u8 = _zag_str_concat(value, " ");
+        vs = _zag_str_concat(sp, unit);
+        _zag_str_free(sp);
+    }
     draw_text(f, mid.x + (mid.w - text_w(vs)) / 2, r.y + text_cy(face_body(), r.h), vs, th_text());
     let dm: bool = hover(in, minus);
     let dp: bool = hover(in, plus);

@@ -1,0 +1,498 @@
+// workspace_opt.zag — optimizer proposal panel, builder panel, and their
+// journaled apply paths. Extracted from workspace.zag.
+// All functions here import only app.zag and std libraries; workspace.zag
+// imports this file so its declarations are flattened into the build.
+
+@import("../std/list.zag") as list
+@import("app.zag")
+@import("commands.zag")
+@import("strutil.zag")
+@import("sim_region.zag")
+@import("demo.zag")
+@import("capability.zag")
+@import("process_stack.zag")
+
+// Append an append-only audit record for an applied optimization (Section 20.4).
+fn opt_audit(family: i32, gain_pct: i32, removed_n: i32) void {
+    let gp_s: []u8 = _zag_i64_to_str(gain_pct as i64);
+    let rn_s: []u8 = _zag_i64_to_str(removed_n as i64);
+    let line: []u8 = s6("optimizer family=", opt_family_name(family), " gain_pct=", gp_s, " removed=", rn_s);
+    _zag_str_free(gp_s);
+    _zag_str_free(rn_s);
+    audit_append("optimize", line, 0);
+    _zag_str_free(line);
+}
+
+// Owned "(x,y,z)" rendering. Caller frees.
+fn opt_format_vox(v: Vox) []u8 {
+    let x: []u8 = fmt_i(v.x as i64);
+    let y: []u8 = fmt_i(v.y as i64);
+    let z: []u8 = fmt_i(v.z as i64);
+    let xy: []u8 = s3(x, ",", y);
+    let mid: []u8 = s4("(", xy, ",", z);
+    let r: []u8 = s2(mid, ")");
+    _zag_str_free(x);
+    _zag_str_free(y);
+    _zag_str_free(z);
+    _zag_str_free(xy);
+    _zag_str_free(mid);
+    return r;
+}
+
+fn opt_draw_vox_rows(f: *FB, x: i32, y: i32, cells: *list.ArrayList[Vox], max_rows: i32) i32 {
+    let i: i32 = 0;
+    let oy: i32 = y;
+    while (i < cells.len && i < max_rows) {
+        let vs: []u8 = opt_format_vox(cells.data[i]);
+        draw_text(f, x, oy, vs, th_text_dim());
+        _zag_str_free(vs);
+        oy = oy + 12;
+        i = i + 1;
+    }
+    if (cells.len > max_rows) {
+        let more: i32 = cells.len - max_rows;
+        let ms: []u8 = fmt_i(more as i64);
+        let s: []u8 = s3("+", ms, " more cells");
+        _zag_str_free(ms);
+        draw_text(f, x, oy, s, th_text_dim());
+        _zag_str_free(s);
+        oy = oy + 12;
+    }
+    return oy;
+}
+
+// Commit the pending optimizer proposal through the journaled + audited edit path
+// (Section 20.4): re-verify output-equivalence, record ONE undoable op covering
+// every removal and relabel, write an audit record, and mark the document dirty.
+// Both the panel's Apply button and (when enabled) auto-apply route through here.
+fn opt_apply_gui(a: *App) bool {
+    if (!a.*.opt.*.has_pending) { return false; }
+    let p: *OptProposal = &a.*.opt.*.pending;
+    if (!opt_verify(a.*.scene, p)) { app_invalid(a, "optimizer proposal stale; reopen Optimizer"); opt_engine_clear_pending(a.*.opt); return false; }
+
+    let rid: list.ArrayList[i32] = list.make[i32](4);
+    let rnew: list.ArrayList[i32] = list.make[i32](4);
+    let gafter: list.ArrayList[Guide] = list.make[Guide](4);
+    let mids: list.ArrayList[i32] = list.make[i32](4);
+    let mnew: list.ArrayList[Vox] = list.make[Vox](4);
+    let ri: i32 = 0;
+    while (ri < p.*.relabels.len) {
+        list.push[i32](&rid, p.*.relabels.data[ri].comp_id);
+        list.push[i32](&rnew, p.*.relabels.data[ri].new_op);
+        ri = ri + 1;
+    }
+    let gi: i32 = 0;
+    while (gi < p.*.guides.len) {
+        list.push[Guide](&gafter, p.*.guides.data[gi].guide);
+        gi = gi + 1;
+    }
+    let mi: i32 = 0;
+    while (mi < p.*.moves.len) {
+        list.push[i32](&mids, p.*.moves.data[mi].comp_id);
+        list.push[Vox](&mnew, p.*.moves.data[mi].new_origin);
+        mi = mi + 1;
+    }
+    let fam: i32 = p.*.family;
+    let gain: i32 = opt_gain_percent(p.*);
+    let removed_n: i32 = p.*.removed.len;
+    op_optimize_full(&a.*.jrn, a.*.scene, p.*.removed, rid, rnew,
+                     gafter, mids, mnew);
+    list.free[i32](&rid);
+    list.free[i32](&rnew);
+    list.free[Guide](&gafter);
+    list.free[i32](&mids);
+    list.free[Vox](&mnew);
+    opt_audit(fam, gain, removed_n);
+    a.*.opt.*.applied_count = a.*.opt.*.applied_count + 1;
+    a.*.dirty = true;
+    opt_engine_clear_pending(a.*.opt);
+    return true;
+}
+
+// Commit the pending builder proposal through the journaled + audited edit
+// path (Section 22.3): replace the entire scene with the builder's synthesized
+// scene as ONE undoable op (kind 11). Returns true on success.
+fn build_apply_gui(a: *App) bool {
+    if (!a.*.build.*.has_pending) { return false; }
+    let pending: *BuildResult = &a.*.build.*.pending;
+    if (!pending.*.valid) { return false; }
+    // Re-verify structural integrity at apply time (the proposal could be stale
+    // if the live scene's model changed since generation).
+    if (scene_validation_errors(pending.*.scene) != 0) {
+        app_invalid(a, "builder proposal stale; reopen Builder");
+        build_engine_clear_pending(a.*.build);
+        return false;
+    }
+    op_build(&a.*.jrn, a.*.scene, pending.*.scene);
+    a.*.dirty = true;
+    scene_mark_render(a.*.scene);
+    scene_mark_topo_full(a.*.scene);
+    app_frame_all(a);
+    build_engine_clear_pending(a.*.build);
+    return true;
+}
+
+// ── Builder panel (Section 22.4) ──────────────────────────────────────────────
+fn draw_builder_field(f: *FB, inp: *Input, x: i32, y: i32, w: i32,
+                      label: []u8, val: i32, key: i64) i32 {
+    draw_text(f, x, y + 6, label, th_text_dim());
+    let fw: i32 = w - text_w(label) - 8;
+    if (fw < 60) { fw = 60; }
+    let fr: Rect = rect(x + w - fw, y, fw, control_h());
+    let vs: []u8 = fmt_i(val as i64);
+    let step: i32 = ui_numfield(f, inp, fr, vs, "", key);
+    _zag_str_free(vs);
+    return step;
+}
+
+fn draw_builder_panel(a: *App) void {
+    if (!a.*.build_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let cap: i32 = inp.*.capture;
+    inp.*.capture = 0;
+    let bb: Rect = zone_build_btn(a);
+    let pw: i32 = 300;
+    let px: i32 = bb.x + bb.w - pw;
+    if (px < 4) { px = 4; }
+    let ph: i32 = 220;
+    if (a.*.build.*.has_pending && a.*.build_details) { ph = 380; }
+    if (!a.*.build.*.has_pending) { ph = 200; }
+    let pr: Rect = rect(px, menu_h(), pw, ph);
+    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
+    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
+    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
+    draw_text(f, pr.x + pad_panel(), pr.y + 8, "Builder", th_text());
+
+    let env: *BuildEnvelope = &a.*.build.*.env;
+    let fy: i32 = pr.y + 32;
+    let fw: i32 = pr.w - 20;
+    let fx: i32 = pr.x + 10;
+
+    // envelope fields: xmin, xmax on one row; ymin, ymax; zmin, zmax
+    let half_w: i32 = (fw - 8) / 2;
+    let step1: i32 = draw_builder_field(f, inp, fx, fy, half_w, "xmin", env.xmin, ui_key(rect(fx, fy, half_w, control_h())));
+    if (step1 != 0) { env.xmin = env.xmin + step1; if (env.xmin < 0) { env.xmin = 0; } }
+    let step2: i32 = draw_builder_field(f, inp, fx + half_w + 8, fy, half_w, "xmax", env.xmax, ui_key(rect(fx + half_w + 8, fy, half_w, control_h())));
+    if (step2 != 0) { env.xmax = env.xmax + step2; if (env.xmax < env.xmin + 3) { env.xmax = env.xmin + 3; } }
+    let step3: i32 = draw_builder_field(f, inp, fx, fy + 30, half_w, "ymin", env.ymin, ui_key(rect(fx, fy + 30, half_w, control_h())));
+    if (step3 != 0) { env.ymin = env.ymin + step3; }
+    let step4: i32 = draw_builder_field(f, inp, fx + half_w + 8, fy + 30, half_w, "ymax", env.ymax, ui_key(rect(fx + half_w + 8, fy + 30, half_w, control_h())));
+    if (step4 != 0) { env.ymax = env.ymax + step4; }
+    let step5: i32 = draw_builder_field(f, inp, fx, fy + 60, half_w, "zmin", env.zmin, ui_key(rect(fx, fy + 60, half_w, control_h())));
+    if (step5 != 0) { env.zmin = env.zmin + step5; if (env.zmin < 0) { env.zmin = 0; } }
+    let step6: i32 = draw_builder_field(f, inp, fx + half_w + 8, fy + 60, half_w, "zmax", env.zmax, ui_key(rect(fx + half_w + 8, fy + 60, half_w, control_h())));
+    if (step6 != 0) { env.zmax = env.zmax + step6; if (env.zmax < env.zmin + 3) { env.zmax = env.zmin + 3; } }
+
+    // Generate button
+    let gy: i32 = fy + 96;
+    if (ui_button(f, inp, rect(fx, gy, 82, 20), "Generate", false)) {
+        let ok: bool = build_engine_generate(a.*.build, a.*.scene.*.model);
+        if (ok) { app_log(a, "builder: engine synthesized"); }
+        else { app_log(a, "builder: no non-degenerate engine fits envelope"); }
+    }
+
+    if (a.*.build.*.has_pending) {
+        let p: *BuildResult = &a.*.build.*.pending;
+        draw_text(f, fx, gy + 26, "density-sweep", th_text());
+        let sy: i32 = gy + 42;
+        draw_text(f, fx, sy, "outputs ", th_accent_hot());
+        let sx: i32 = fx + text_w("outputs ");
+        let _sw: i32 = draw_int(f, sx, sy, p.*.computed_outputs as i64, th_accent_hot());
+        draw_text(f, sx + 24, sy, "pitch ", th_text_dim());
+        let _pw: i32 = draw_int(f, sx + 24 + text_w("pitch "), sy, p.*.pitch as i64, th_text_dim());
+
+        let by: i32 = gy + 60;
+        if (ui_button(f, inp, rect(fx, by, 82, 20), "Apply", true)) {
+            if (build_apply_gui(a)) {
+                a.*.build_open = false;
+                a.*.build_details = false;
+            }
+        }
+        if (ui_button(f, inp, rect(fx + 90, by, 82, 20), "Decline", false)) {
+            build_engine_clear_pending(a.*.build);
+            a.*.build_open = false;
+            a.*.build_details = false;
+        }
+        if (ui_button(f, inp, rect(fx + 180, by, 82, 20), "Details", a.*.build_details)) {
+            a.*.build_details = !a.*.build_details;
+        }
+        if (a.*.build_details) {
+            let rep: []u8 = build_report(p.*);
+            // simple multi-line render: split on '\n'
+            let dy: i32 = by + 28;
+            let si: i32 = 0;
+            let line_start: i32 = 0;
+            while (si <= rep.len) {
+                if (si == rep.len || rep[si] == 10) {
+                    let line: []u8 = rep[line_start..si];
+                    if (line.len > 0) { draw_text(f, fx, dy, line, th_text_dim()); }
+                    dy = dy + 12;
+                    line_start = si + 1;
+                }
+                si = si + 1;
+            }
+            _zag_str_free(rep);
+        }
+    } else {
+        draw_text(f, fx, gy + 26, "No engine generated yet.", th_text_dim());
+    }
+
+    inp.*.capture = cap;
+}
+
+// ── Optimizer proposal panel (Section 20.4) ──────────────────────────────────
+fn draw_opt_panel(a: *App) void {
+    if (!a.*.opt_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let cap: i32 = inp.*.capture;
+    inp.*.capture = 0;   // topmost panel owns the pointer (see draw_settings_panel)
+    let ob: Rect = zone_opt_btn(a);
+    let pw: i32 = 300;
+    let px: i32 = ob.x + ob.w - pw;
+    if (px < 4) { px = 4; }
+    let ph: i32 = 96;
+    if (a.*.opt.*.has_pending && a.*.opt_details) { ph = 340; }
+    if (!a.*.opt.*.has_pending) { ph = 56; }
+    let pr: Rect = rect(px, menu_h(), pw, ph);
+    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
+    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
+    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
+    draw_text(f, pr.x + pad_panel(), pr.y + 8, "Optimizer", th_text());
+
+    if (!a.*.opt.*.has_pending) {
+        draw_text(f, pr.x + 10, pr.y + 32, "No optimizations found.", th_text_dim());
+    } else {
+        draw_text(f, pr.x + 10, pr.y + 28, opt_family_name(opt_engine_pending_family(a.*.opt)), th_text());
+        let gy: i32 = pr.y + 44;
+        draw_text(f, pr.x + 10, gy, "gain ", th_accent_hot());
+        let gx: i32 = pr.x + 10 + text_w("gain ");
+        gx = gx + draw_int(f, gx, gy, opt_engine_pending_gain(a.*.opt) as i64, th_accent_hot());
+        draw_text(f, gx, gy, "%  ", th_accent_hot());
+        gx = gx + text_w("%  ");
+        gx = gx + draw_int(f, gx, gy, 0 - a.*.opt.*.pending.removed.len as i64, th_text_dim());
+        draw_text(f, gx, gy, " parts", th_text_dim());
+
+        let by: i32 = pr.y + 62;
+        if (ui_button(f, inp, rect(pr.x + 10, by, 82, 20), "Apply", true)) {
+            if (opt_apply_gui(a)) {
+                a.*.opt_open = false;
+                a.*.opt_details = false;
+                a.*.opt_previewed = false;
+            }
+        }
+        if (ui_button(f, inp, rect(pr.x + 98, by, 82, 20), "Ignore", false)) {
+            opt_engine_ignore_pending(a.*.opt);
+            a.*.opt_open = false;
+            a.*.opt_details = false;
+        }
+        if (ui_button(f, inp, rect(pr.x + 186, by, 82, 20), "Details", a.*.opt_details)) {
+            a.*.opt_details = !a.*.opt_details;
+            if (a.*.opt_details) { a.*.opt_previewed = true; }
+        }
+        if (a.*.opt_details) {
+            let s: *Scene = a.*.scene;
+            let p: *OptProposal = &a.*.opt.*.pending;
+            let dy: i32 = pr.y + 90;
+
+            draw_text(f, pr.x + 10, dy, "removes", th_text_dim()); dy = dy + 12;
+            let r: i32 = 0;
+            if (p.*.removed.len == 0) {
+                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
+                dy = dy + 12;
+            } else {
+                while (r < p.*.removed.len) {
+                    let rid: i32 = p.*.removed.data[r];
+                    let ri: i32 = scene_comp_index(s, rid);
+                    let rid_s: []u8 = fmt_i(rid as i64);
+                    let rs: []u8 = s2(" - #", rid_s);
+                    _zag_str_free(rid_s);
+                    if (ri >= 0) {
+                        let rc: Comp = s.*.comps.data[ri];
+                        let vox_s: []u8 = opt_format_vox(rc.origin);
+                        let line: []u8 = s5(rs, " ", kind_short(rc.kind), " @ ", vox_s);
+                        _zag_str_free(vox_s);
+                        draw_text(f, pr.x + 10, dy, line, th_text_dim());
+                        _zag_str_free(line);
+                        dy = dy + 12;
+                        let cc: list.ArrayList[Vox] = list.make[Vox](8);
+                        scene_cells_comp(rc, &cc);
+                        dy = opt_draw_vox_rows(f, pr.x + 22, dy, &cc, 4);
+                        list.free[Vox](&cc);
+                    } else {
+                        let np: []u8 = s2(rs, " no longer present");
+                        draw_text(f, pr.x + 10, dy, np, th_text_dim());
+                        _zag_str_free(np);
+                        dy = dy + 12;
+                    }
+                    _zag_str_free(rs);
+                    r = r + 1;
+                }
+            }
+
+            draw_text(f, pr.x + 10, dy, "moves", th_text_dim()); dy = dy + 12;
+            let mv: i32 = 0;
+            if (p.*.moves.len == 0) {
+                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
+                dy = dy + 12;
+            } else {
+                while (mv < p.*.moves.len) {
+                    let m: OptMove = p.*.moves.data[mv];
+                    let mi: i32 = scene_comp_index(s, m.comp_id);
+                    let mc_s: []u8 = fmt_i(m.comp_id as i64);
+                    let ms: []u8 = s2(" - #", mc_s);
+                    _zag_str_free(mc_s);
+                    if (mi >= 0) {
+                        let mc: Comp = s.*.comps.data[mi];
+                        let mc_s2: []u8 = fmt_i(m.comp_id as i64);
+                        let vox_old: []u8 = opt_format_vox(mc.origin);
+                        let vox_new: []u8 = opt_format_vox(m.new_origin);
+                        let mline: []u8 = s4(" - ", kind_short(mc.kind), " #", mc_s2);
+                        _zag_str_free(mc_s2);
+                        let mline2: []u8 = s3(mline, " @ ", vox_old);
+                        _zag_str_free(mline);
+                        _zag_str_free(vox_old);
+                        let mline3: []u8 = s3(mline2, " -> ", vox_new);
+                        _zag_str_free(mline2);
+                        _zag_str_free(vox_new);
+                        draw_text(f, pr.x + 10, dy, mline3, th_text_dim());
+                        _zag_str_free(mline3);
+                        let mcells: list.ArrayList[Vox] = list.make[Vox](8);
+                        let nmcells: list.ArrayList[Vox] = list.make[Vox](8);
+                        scene_cells_comp(mc, &mcells);
+                        draw_text(f, pr.x + 22, dy, "cells @ old", th_text_dim());
+                        dy = dy + 12;
+                        dy = opt_draw_vox_rows(f, pr.x + 34, dy, &mcells, 4);
+                        let mi2: i32 = 0;
+                        while (mi2 < mcells.len) {
+                            let c: Vox = mcells.data[mi2];
+                            let nv: Vox = vox(
+                                c.x - mc.origin.x + m.new_origin.x,
+                                c.y - mc.origin.y + m.new_origin.y,
+                                c.z - mc.origin.z + m.new_origin.z
+                            );
+                            list.push[Vox](&nmcells, nv);
+                            mi2 = mi2 + 1;
+                        }
+                        draw_text(f, pr.x + 22, dy, "cells @ new", th_text_dim());
+                        dy = dy + 12;
+                        dy = opt_draw_vox_rows(f, pr.x + 34, dy, &nmcells, 4);
+                        list.free[Vox](&mcells);
+                        list.free[Vox](&nmcells);
+                    } else {
+                        let np: []u8 = s2(ms, " no longer present");
+                        draw_text(f, pr.x + 10, dy, np, th_text_dim());
+                        _zag_str_free(np);
+                    }
+                    _zag_str_free(ms);
+                    dy = dy + 12;
+                    mv = mv + 1;
+                }
+            }
+
+            draw_text(f, pr.x + 10, dy, "relabels", th_text_dim()); dy = dy + 12;
+            let rl: i32 = 0;
+            if (p.*.relabels.len == 0) {
+                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
+                dy = dy + 12;
+            } else {
+                while (rl < p.*.relabels.len) {
+                    let rel: OptRelabel = p.*.relabels.data[rl];
+                    let ci2: i32 = scene_comp_index(s, rel.comp_id);
+                    let rel_s: []u8 = fmt_i(rel.comp_id as i64);
+                    let rs: []u8 = s2(" - #", rel_s);
+                    _zag_str_free(rel_s);
+                    if (ci2 >= 0) {
+                        let rc: Comp = s.*.comps.data[ci2];
+                        let vox_s: []u8 = opt_format_vox(rc.origin);
+                        let op_old: []u8 = fmt_i(rc.logic_op as i64);
+                        let op_new: []u8 = fmt_i(rel.new_op as i64);
+                        let head: []u8 = s5(rs, " ", kind_short(rc.kind), " @ ", vox_s);
+                        _zag_str_free(vox_s);
+                        let mid: []u8 = s4(head, " op ", op_old, " -> ");
+                        _zag_str_free(head);
+                        _zag_str_free(op_old);
+                        let line: []u8 = s2(mid, op_new);
+                        _zag_str_free(mid);
+                        _zag_str_free(op_new);
+                        draw_text(f, pr.x + 10, dy, line, th_text_dim());
+                        _zag_str_free(line);
+                        let rcells: list.ArrayList[Vox] = list.make[Vox](8);
+                        scene_cells_comp(rc, &rcells);
+                        draw_text(f, pr.x + 22, dy, "cells", th_text_dim());
+                        dy = dy + 12;
+                        dy = opt_draw_vox_rows(f, pr.x + 34, dy, &rcells, 4);
+                        list.free[Vox](&rcells);
+                    } else {
+                        let np: []u8 = s2(rs, " op change, no longer present");
+                        draw_text(f, pr.x + 10, dy, np, th_text_dim());
+                        _zag_str_free(np);
+                    }
+                    _zag_str_free(rs);
+                    dy = dy + 12;
+                    rl = rl + 1;
+                }
+            }
+
+            draw_text(f, pr.x + 10, dy, "guides", th_text_dim()); dy = dy + 12;
+            let gi: i32 = 0;
+            if (p.*.guides.len == 0) {
+                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
+                dy = dy + 12;
+            } else {
+                while (gi < p.*.guides.len) {
+                    let g: Guide = p.*.guides.data[gi].guide;
+                    let gid_s: []u8 = fmt_i(g.id as i64);
+                    let gh: []u8 = s2(" - guide ", gid_s);
+                    _zag_str_free(gid_s);
+                    if (g.path.len > 0) {
+                        let vox_a: []u8 = opt_format_vox(g.path.data[0]);
+                        let vox_b: []u8 = opt_format_vox(g.path.data[g.path.len - 1]);
+                        let gs: []u8 = s2(gh, " path");
+                        let gl: []u8 = s3(gs, " start ", vox_a);
+                        _zag_str_free(gs);
+                        _zag_str_free(vox_a);
+                        let ge: []u8 = s3(gl, " -> ", vox_b);
+                        _zag_str_free(gl);
+                        _zag_str_free(vox_b);
+                        draw_text(f, pr.x + 10, dy, ge, th_text_dim());
+                        _zag_str_free(ge);
+                        dy = dy + 12;
+                        dy = opt_draw_vox_rows(f, pr.x + 22, dy, &g.path, 4);
+                    } else {
+                        let ge2: []u8 = s2(gh, " empty path");
+                        draw_text(f, pr.x + 10, dy, ge2, th_text_dim());
+                        _zag_str_free(ge2);
+                        dy = dy + 12;
+                    }
+                    _zag_str_free(gh);
+                    gi = gi + 1;
+                }
+            }
+
+            let sy: i32 = dy;
+            draw_text(f, pr.x + 10, sy, "cost before ", th_text_dim());
+            let sx: i32 = pr.x + 10 + text_w("cost before ");
+            let cost_b: []u8 = fmt_i(opt_cost_score(a.*.opt.*.pending.before));
+            let cost_a: []u8 = fmt_i(opt_cost_score(a.*.opt.*.pending.after));
+            draw_text(f, sx, sy, cost_b, th_text_dim());
+            sx = sx + text_w(cost_b);
+            sx = sx + 12; // spacing after before value
+            draw_text(f, sx, sy, " -> ", th_text_dim());
+            sx = sx + text_w(" -> ");
+            sx = sx + text_w(cost_a);
+            sx = sx + 12; // spacing before suffix
+            draw_text(f, sx, sy, cost_a, th_text_dim());
+            _zag_str_free(cost_b);
+            _zag_str_free(cost_a);
+            draw_text(f, pr.x + 10, pr.y + 312, "equivalent over all inputs", th_ok());
+        }
+    }
+
+    if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my) &&
+        !rect_has(ob, inp.*.mx, inp.*.my)) {
+        a.*.opt_open = false;
+    }
+    inp.*.capture = cap;
+}

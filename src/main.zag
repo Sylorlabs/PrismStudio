@@ -155,8 +155,8 @@ fn run_gpu_virtual_display(out_path: []u8, w: i32, h: i32) i32 {
     if(!ok||!gpu_isa_display_end(&d)||!gpu_isa_display_present(&d,&frame)){_zag_eprintln("gpu-virtual-display: execution failed");return 1;}
     fb_write_bmp(&frame,out_path);
     _zag_print("gpu-virtual-display: wrote ");_zag_println(out_path);
-    _zag_print("gpu-virtual-display: submissions=");_zag_println(_zag_i64_to_str(d.queue.submissions));
-    _zag_print("gpu-virtual-display: decoded_instructions=");_zag_println(_zag_i64_to_str(d.queue.instructions));
+    _zag_print("gpu-virtual-display: submissions=");println_i64(d.queue.submissions);
+    _zag_print("gpu-virtual-display: decoded_instructions=");println_i64(d.queue.instructions);
     return 0;
 }
 
@@ -176,8 +176,8 @@ fn run_gpu_virtual_shadow(out_path: []u8, w: i32, h: i32) i32 {
     if(!ok){_zag_eprintln("gpu-virtual-shadow: full-frame comparison failed");return 1;}
     fb_write_bmp(&candidate,out_path);
     _zag_print("gpu-virtual-shadow: wrote ");_zag_println(out_path);
-    _zag_print("gpu-virtual-shadow: submissions=");_zag_println(_zag_i64_to_str(d.queue.submissions));
-    _zag_print("gpu-virtual-shadow: decoded_instructions=");_zag_println(_zag_i64_to_str(d.queue.instructions));
+    _zag_print("gpu-virtual-shadow: submissions=");println_i64(d.queue.submissions);
+    _zag_print("gpu-virtual-shadow: decoded_instructions=");println_i64(d.queue.instructions);
     return 0;
 }
 
@@ -231,11 +231,11 @@ fn run_interactive() i32 {
                     fb_write_shm(&a.*.f, fb_path());
 
                     _zag_print("F ");
-                    _zag_print(_zag_i64_to_str(a.*.inp.w as i64));
+                    print_i64(a.*.inp.w as i64);
                     _zag_print(" ");
-                    _zag_print(_zag_i64_to_str(a.*.inp.h as i64));
+                    print_i64(a.*.inp.h as i64);
                     _zag_print(" ");
-                    _zag_print(_zag_i64_to_str(a.*.frame));
+                    print_i64(a.*.frame);
                     _zag_print("\n");
                     _zag_flush();
                 }
@@ -263,44 +263,44 @@ fn run_gpu_info() i32 {
     }
     _zag_println("gpu: amdgpu render node (queried via pure-Zag DRM ioctls)");
     _zag_print("  render minor  : ");
-    _zag_println(_zag_i64_to_str(g.render_minor as i64));
+    println_i64(g.render_minor as i64);
     _zag_print("  PCI device id : ");
-    _zag_println(_zag_i64_to_str(g.device_id));
+    println_i64(g.device_id);
     _zag_print("  family        : ");
-    _zag_println(_zag_i64_to_str(g.family));
+    println_i64(g.family);
     _zag_print("  shader engines: ");
-    _zag_println(_zag_i64_to_str(g.shader_engines));
+    println_i64(g.shader_engines);
     _zag_print("  compute units : ");
-    _zag_println(_zag_i64_to_str(g.cu_active));
+    println_i64(g.cu_active);
     _zag_print("  engine clock  : ");
-    _zag_print(_zag_i64_to_str(g.engine_clock_khz / 1000));
+    print_i64(g.engine_clock_khz / 1000);
     _zag_println(" MHz");
     _zag_print("  memory clock  : ");
-    _zag_print(_zag_i64_to_str(g.memory_clock_khz / 1000));
+    print_i64(g.memory_clock_khz / 1000);
     _zag_println(" MHz");
     _zag_print("  GFX IP/rings  : ");
-    _zag_print(_zag_i64_to_str(g.gfx_ip_major as i64)); _zag_print(".");
-    _zag_print(_zag_i64_to_str(g.gfx_ip_minor as i64)); _zag_print(" / ");
-    _zag_println(_zag_i64_to_str(g.gfx_rings));
+    print_i64(g.gfx_ip_major as i64); _zag_print(".");
+    print_i64(g.gfx_ip_minor as i64); _zag_print(" / ");
+    println_i64(g.gfx_rings);
     _zag_print("  compute IP/rings: ");
-    _zag_print(_zag_i64_to_str(g.compute_ip_major as i64)); _zag_print(".");
-    _zag_print(_zag_i64_to_str(g.compute_ip_minor as i64)); _zag_print(" / ");
-    _zag_println(_zag_i64_to_str(g.compute_rings));
+    print_i64(g.compute_ip_major as i64); _zag_print(".");
+    print_i64(g.compute_ip_minor as i64); _zag_print(" / ");
+    println_i64(g.compute_rings);
     _zag_print("  MEC/SDMA firmware: ");
-    _zag_print(_zag_i64_to_str(g.fw_mec_ver)); _zag_print(" / ");
-    _zag_println(_zag_i64_to_str(g.fw_sdma_ver));
+    print_i64(g.fw_mec_ver); _zag_print(" / ");
+    println_i64(g.fw_sdma_ver);
     _zag_print("  VRAM total/usable: ");
-    _zag_print(_zag_i64_to_str(g.vram_total)); _zag_print(" / ");
-    _zag_println(_zag_i64_to_str(g.vram_usable));
+    print_i64(g.vram_total); _zag_print(" / ");
+    println_i64(g.vram_usable);
     _zag_print("  GTT total/usable : ");
-    _zag_print(_zag_i64_to_str(g.gtt_total)); _zag_print(" / ");
-    _zag_println(_zag_i64_to_str(g.gtt_usable));
+    print_i64(g.gtt_total); _zag_print(" / ");
+    println_i64(g.gtt_usable);
     _zag_print("  RAS enabled mask : ");
-    _zag_println(_zag_i64_to_str(g.ras_enabled));
+    println_i64(g.ras_enabled);
     _zag_print("  last VM fault query/status: ");
     if (g.fault_query_ok) {
-        _zag_print(_zag_i64_to_str(g.fault_addr)); _zag_print(" / ");
-        _zag_println(_zag_i64_to_str(g.fault_status));
+        print_i64(g.fault_addr); _zag_print(" / ");
+        println_i64(g.fault_status);
     } else { _zag_println("unavailable"); }
     gpu_close(&g);
     return 0;
@@ -315,8 +315,8 @@ fn gpu_file_hash(path:[]u8) i64 {
 fn run_gpu_cert_status() i32 {
     let g:Gpu=gpu_open();
     if(!g.ok){_zag_println("gpu-cert: denied code=10 reason=no AMDGPU render node next=use CPU or virtual ISA execution");return 0;}
-    let root:[]u8=_zag_str_concat("/sys/class/drm/renderD",_zag_i64_to_str(g.render_minor as i64));
-    root=_zag_str_concat(root,"/device");let iso:LinuxGpuIsolation=linux_gpu_isolation_probe(root);
+    let root:[]u8=prepend_f("/sys/class/drm/renderD",fmt_i(g.render_minor as i64));
+    root=append_f(root,"/device");let iso:LinuxGpuIsolation=linux_gpu_isolation_probe(root);
     let kh:i64=(gpu_file_hash("examples/gpu_fill_kernel.zgk")*3+
         gpu_file_hash("examples/gpu_depth_kernel.zgk")*5+gpu_file_hash("examples/gpu_blend_kernel.zgk")*7)%4294967296;
     let t:ZagGpuTuple=ZagGpuTuple{.device=g.device_id,.gfx_ip=(g.gfx_ip_major as i64)*100+(g.gfx_ip_minor as i64),
@@ -337,21 +337,21 @@ fn run_gpu_cert_status() i32 {
         .workgroups=1,.instructions=59,.writable_bytes=4,.deadline_ms=50,
         .allow_shared_display_override=false,.acknowledge_reset_or_system_hang=false};
     let containment:ZagGpuDecision=zag_gpu_execution_decide(req);
-    _zag_print("gpu-cert: tuple device=");_zag_print(_zag_i64_to_str(t.device));
-    _zag_print(" gfx_ip=");_zag_print(_zag_i64_to_str(t.gfx_ip));
-    _zag_print(" gfx_discovery=");_zag_print(_zag_i64_to_str(t.gfx_discovery));
-    _zag_print(" gfx_rings=");_zag_print(_zag_i64_to_str(t.gfx_rings));
-    _zag_print(" compute_ip=");_zag_print(_zag_i64_to_str(t.compute_ip));
-    _zag_print(" compute_discovery=");_zag_print(_zag_i64_to_str(t.compute_discovery));
-    _zag_print(" compute_rings=");_zag_print(_zag_i64_to_str(t.compute_rings));
-    _zag_print(" mec=");_zag_print(_zag_i64_to_str(t.mec_firmware));
-    _zag_print(" sdma=");_zag_print(_zag_i64_to_str(t.sdma_firmware));_zag_print(" kernels=");_zag_print(_zag_i64_to_str(t.kernel));
-    _zag_print(" compiler=");_zag_print(_zag_i64_to_str(t.compiler));_zag_print(" runtime=");_zag_println(_zag_i64_to_str(t.runtime));
+    _zag_print("gpu-cert: tuple device=");print_i64(t.device);
+    _zag_print(" gfx_ip=");print_i64(t.gfx_ip);
+    _zag_print(" gfx_discovery=");print_i64(t.gfx_discovery);
+    _zag_print(" gfx_rings=");print_i64(t.gfx_rings);
+    _zag_print(" compute_ip=");print_i64(t.compute_ip);
+    _zag_print(" compute_discovery=");print_i64(t.compute_discovery);
+    _zag_print(" compute_rings=");print_i64(t.compute_rings);
+    _zag_print(" mec=");print_i64(t.mec_firmware);
+    _zag_print(" sdma=");print_i64(t.sdma_firmware);_zag_print(" kernels=");print_i64(t.kernel);
+    _zag_print(" compiler=");print_i64(t.compiler);_zag_print(" runtime=");println_i64(t.runtime);
     _zag_print("gpu-cert: isolation=");_zag_print(linux_gpu_isolation_name(iso.level));
-    _zag_print(" auto=");if(d.allowed){_zag_println("allowed");}else{_zag_print("denied code=");_zag_println(_zag_i64_to_str(d.code as i64));}
+    _zag_print(" auto=");if(d.allowed){_zag_println("allowed");}else{_zag_print("denied code=");println_i64(d.code as i64);}
     _zag_print("gpu-cert: reason=");_zag_println(d.reason);_zag_print("gpu-cert: next=");_zag_println(d.next_action);
     _zag_print("gpu-cert: physical-containment=");if(containment.allowed){_zag_println("admitted");}else{
-        _zag_print("denied code=");_zag_println(_zag_i64_to_str(containment.code as i64));}
+        _zag_print("denied code=");println_i64(containment.code as i64);}
     _zag_print("gpu-cert: containment-reason=");_zag_println(containment.reason);
     gpu_close(&g);return 0;
 }
@@ -361,11 +361,11 @@ fn run_gpu_backend_status()i32{
     let status:PrismGpuBackendStatus=prism_gpu_backend_resolve(name);
     _zag_print("gpu-backend: requested=");_zag_print(zag_gpu_backend_name(status.requested));
     _zag_print(" selected=");_zag_print(zag_gpu_backend_name(status.choice.selected));
-    _zag_print(" ok=");_zag_print(_zag_i64_to_str(status.choice.ok as i64));
-    _zag_print(" code=");_zag_println(_zag_i64_to_str(status.choice.code as i64));
+    _zag_print(" ok=");print_i64(status.choice.ok as i64);
+    _zag_print(" code=");println_i64(status.choice.code as i64);
     _zag_print("gpu-backend: reason=");_zag_println(status.choice.reason);
-    _zag_print("gpu-backend: drm_probed=");_zag_print(_zag_i64_to_str(status.drm_probed as i64));
-    _zag_print(" render_minor=");_zag_print(_zag_i64_to_str(status.render_minor as i64));
+    _zag_print("gpu-backend: drm_probed=");print_i64(status.drm_probed as i64);
+    _zag_print(" render_minor=");print_i64(status.render_minor as i64);
     _zag_print(" isolation=");_zag_println(linux_gpu_isolation_name(status.isolation_level));
     if(!status.choice.ok){return 1;}return 0;
 }
@@ -415,20 +415,20 @@ fn run_x11() i32 {
     }
     if (arg_has("--ui-debug")) {
         _zag_println("ui: renderer=cpu backend=x11");
-        _zag_print("ui: window_width="); _zag_println(_zag_i64_to_str(x.*.win_w as i64));
-        _zag_print("ui: window_height="); _zag_println(_zag_i64_to_str(x.*.win_h as i64));
-        _zag_print("ui: framebuffer_width="); _zag_println(_zag_i64_to_str(fb_pw(&a.*.f) as i64));
-        _zag_print("ui: framebuffer_height="); _zag_println(_zag_i64_to_str(fb_ph(&a.*.f) as i64));
-        _zag_print("ui: logical_width="); _zag_println(_zag_i64_to_str(a.*.f.w as i64));
-        _zag_print("ui: logical_height="); _zag_println(_zag_i64_to_str(a.*.f.h as i64));
-        _zag_print("ui: bytes_per_pixel="); _zag_println(_zag_i64_to_str((x.*.pixmap_bpp / 8) as i64));
-        _zag_print("ui: stride="); _zag_println(_zag_i64_to_str((fb_pw(&a.*.f) * (x.*.pixmap_bpp / 8)) as i64));
-        _zag_print("ui: depth="); _zag_println(_zag_i64_to_str(x.*.root_depth as i64));
-        _zag_print("ui: bits_per_pixel="); _zag_println(_zag_i64_to_str(x.*.pixmap_bpp as i64));
-        _zag_print("ui: scanline_pad="); _zag_println(_zag_i64_to_str(x.*.scanline_pad as i64));
-        _zag_print("ui: display_dpi="); _zag_println(_zag_i64_to_str(density.dpi as i64));
-        _zag_print("ui: density_source="); _zag_println(_zag_i64_to_str(density.source as i64));
-        _zag_print("ui: scale="); _zag_println(_zag_i64_to_str(a.*.ui_scale as i64));
+        _zag_print("ui: window_width="); println_i64(x.*.win_w as i64);
+        _zag_print("ui: window_height="); println_i64(x.*.win_h as i64);
+        _zag_print("ui: framebuffer_width="); println_i64(fb_pw(&a.*.f) as i64);
+        _zag_print("ui: framebuffer_height="); println_i64(fb_ph(&a.*.f) as i64);
+        _zag_print("ui: logical_width="); println_i64(a.*.f.w as i64);
+        _zag_print("ui: logical_height="); println_i64(a.*.f.h as i64);
+        _zag_print("ui: bytes_per_pixel="); println_i64((x.*.pixmap_bpp / 8) as i64);
+        _zag_print("ui: stride="); println_i64((fb_pw(&a.*.f) * (x.*.pixmap_bpp / 8)) as i64);
+        _zag_print("ui: depth="); println_i64(x.*.root_depth as i64);
+        _zag_print("ui: bits_per_pixel="); println_i64(x.*.pixmap_bpp as i64);
+        _zag_print("ui: scanline_pad="); println_i64(x.*.scanline_pad as i64);
+        _zag_print("ui: display_dpi="); println_i64(density.dpi as i64);
+        _zag_print("ui: density_source="); println_i64(density.source as i64);
+        _zag_print("ui: scale="); println_i64(a.*.ui_scale as i64);
         _zag_println("ui: pixel_format=0x00RRGGBB");
     }
     x11_put_frame(x, a.*.f.px.data, fb_pw(&a.*.f), fb_ph(&a.*.f));
@@ -568,7 +568,7 @@ fn run_x11_capture(path: []u8, w: i32, h: i32) i32 {
     x11_sleep_ms(40);
     x11_close(x);
     _zag_print("x11-capture: wrote "); _zag_println(path);
-    _zag_print("x11-capture: frame_ms="); _zag_println(_zag_i64_to_str(frame_ms));
+    _zag_print("x11-capture: frame_ms="); println_i64(frame_ms);
     return 0;
 }
 
@@ -687,11 +687,46 @@ fn run_x11_selftest() i32 {
     return 1;
 }
 
+fn print_usage() void {
+    _zag_println("PrismStudio — photonic processor design studio");
+    _zag_println("");
+    _zag_println("Usage: zagpa [mode] [options]");
+    _zag_println("");
+    _zag_println("Modes:");
+    _zag_println("  (no flag)         Launch X11 GUI (default)");
+    _zag_println("  --smoke [out.bmp] Headless render of demo design to BMP");
+    _zag_println("  --pipe            Interactive pipe mode (stdin commands)");
+    _zag_println("  --agent [script]  Agent protocol (script.tcmd or interactive stdin)");
+    _zag_println("  --agent --once \"cmd\"  Run a single agent command");
+    _zag_println("  --mcp             MCP server mode (stdio JSON-RPC)");
+    _zag_println("  --mcp-install <dir>   Write mcp-config.json to <dir>");
+    _zag_println("");
+    _zag_println("Diagnostics:");
+    _zag_println("  --x11-selftest    X11 wire-protocol round-trip selftest");
+    _zag_println("  --x11-capture <out.bmp>  Capture one X11 frame to BMP");
+    _zag_println("  --gpu-info        Show GPU adapter info");
+    _zag_println("  --gpu-cert-status Show GPU certification status");
+    _zag_println("  --gpu-backend-status  Show GPU backend availability");
+    _zag_println("  --gpu-virtual-display <out.bmp>  Render via GPU to BMP");
+    _zag_println("  --gpu-virtual-shadow <out.bmp>   GPU shadow-ray render to BMP");
+    _zag_println("");
+    _zag_println("Environment:");
+    _zag_println("  PRISMSTUDIO_CAPS  Capability grant (read,inspect,simulate or all)");
+    _zag_println("  DISPLAY           X11 display (default: :0)");
+    _zag_println("");
+    _zag_println("Help:");
+    _zag_println("  --help            Show this message and exit");
+}
+
 fn main() i32 {
     let argc: i32 = _zag_argc();
     let i: i32 = 1;
     while (i < argc) {
         let arg: []u8 = _zag_arg(i);
+        if (_zag_strcmp(arg, "--help") == 1 || _zag_strcmp(arg, "-h") == 1) {
+            print_usage();
+            return 0;
+        }
         if (_zag_strcmp(arg, "--smoke") == 1) {
             let out: []u8 = "smoke_app.bmp";
             if (i + 1 < argc) { out = _zag_arg(i + 1); }
@@ -754,6 +789,14 @@ fn main() i32 {
                 }
             }
             return run_agent(script, once);
+        }
+        if ((arg[0] as i32) == 45) {
+            let p1: []u8 = _zag_str_concat("zagpa: unknown flag '", arg);
+            let msg: []u8 = _zag_str_concat(p1, "' (try --help)");
+            _zag_str_free(p1);
+            _zag_eprintln(msg);
+            _zag_str_free(msg);
+            return 2;
         }
         i = i + 1;
     }

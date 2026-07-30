@@ -3,6 +3,7 @@
 // the live device read-only so the reason is grounded in current hardware.
 
 @import("gpu_rt.zag")
+@import("strutil.zag")
 @import("std:gpu")
 @import("std:gpu_platform")
 @import("std:linux_gpu_isolation")
@@ -25,9 +26,10 @@ fn prism_gpu_backend_resolve(name:[]u8)PrismGpuBackendStatus{
     let available:bool=false;let minor:i32=0;let level:i32=gpu_isolation_none();let isolated:bool=false;
     if(physical){
         let g:Gpu=gpu_open();if(g.ok){available=true;minor=g.render_minor;
-            let root:[]u8=_zag_str_concat("/sys/class/drm/renderD",_zag_i64_to_str(g.render_minor as i64));
-            root=_zag_str_concat(root,"/device");let iso:LinuxGpuIsolation=linux_gpu_isolation_probe(root);
+            let root:[]u8=prepend_f("/sys/class/drm/renderD",fmt_i(g.render_minor as i64));
+            root=append_f(root,"/device");let iso:LinuxGpuIsolation=linux_gpu_isolation_probe(root);
             level=iso.level;isolated=iso.destructive_test_safe;gpu_close(&g);
+            _zag_str_free(root);
         }
     }
     let ack:bool=_zag_strcmp(_zag_getenv("PRISM_GPU_SHARED_DISPLAY_OVERRIDE"),"I_ACCEPT_DISPLAY_RESET_OR_SYSTEM_HANG")==1;

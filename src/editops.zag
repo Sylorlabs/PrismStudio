@@ -185,6 +185,7 @@ struct UOp {
     move_ids: list.ArrayList[i32],     // 6: optimizer placement edits
     move_old: list.ArrayList[Vox],
     move_new: list.ArrayList[Vox],
+    build_comps_after: list.ArrayList[Comp],  // 11: post-build comp snapshots (for redo)
 }
 
 struct Journal {
@@ -223,6 +224,7 @@ fn uop_empty() UOp {
         .move_ids = list.make[i32](1),
         .move_old = list.make[Vox](1),
         .move_new = list.make[Vox](1),
+        .build_comps_after = list.make[Comp](1),
     };
 }
 
@@ -261,6 +263,12 @@ fn uop_free(op: *UOp) void {
     list.free[i32](&op.*.move_ids);
     list.free[Vox](&op.*.move_old);
     list.free[Vox](&op.*.move_new);
+    let bci: i32 = 0;
+    while (bci < op.*.build_comps_after.len) {
+        if (op.*.build_comps_after.data[bci].name_.len > 0) { _zag_str_free(op.*.build_comps_after.data[bci].name_); }
+        bci = bci + 1;
+    }
+    list.free[Comp](&op.*.build_comps_after);
 }
 
 fn journal_clear_redo(j: *Journal) void {
@@ -565,6 +573,76 @@ fn op_resize(j: *Journal, s: *Scene, id: i32, new_size: Vox) i32 {
     return 0;
 }
 
+// Restore a scene from a snapshot of comps and guides. Used by kind 11 undo/redo.
+fn build_restore_scene(s: *Scene, comps: list.ArrayList[Comp], guides: list.ArrayList[Guide]) void {
+    scene_clear(s);
+    let ci: i32 = 0;
+    while (ci < comps.len) {
+        let c: Comp = comps.data[ci];
+        let nc: Comp = c;
+        nc.name_ = _zag_strdup(c.name_);
+        scene_restore_comp(s, nc);
+        ci = ci + 1;
+    }
+    let gi: i32 = 0;
+    while (gi < guides.len) {
+        scene_restore_guide(s, guide_clone(guides.data[gi]));
+        gi = gi + 1;
+    }
+}
+
+// Replace the entire scene with a builder-synthesized scene as one undoable op
+// (kind 11). The pre-build scene is snapshot for undo; the post-build scene is
+// snapshot for redo. Both snapshots own their name_ strings.
+fn op_build(j: *Journal, s: *Scene, built: *Scene) void {
+    // snapshot pre-build comps + guides (for undo)
+    let pre_comps: list.ArrayList[Comp] = list.make[Comp](s.*.comps.len);
+    let pre_guides: list.ArrayList[Guide] = list.make[Guide](s.*.guides.len);
+    let ci: i32 = 0;
+    while (ci < s.*.comps.len) {
+        let c: Comp = s.*.comps.data[ci];
+        c.name_ = _zag_strdup(c.name_);
+        list.push[Comp](&pre_comps, c);
+        ci = ci + 1;
+    }
+    let gi: i32 = 0;
+    while (gi < s.*.guides.len) {
+        list.push[Guide](&pre_guides, guide_clone(s.*.guides.data[gi]));
+        gi = gi + 1;
+    }
+    // snapshot post-build comps + guides (for redo)
+    let post_comps: list.ArrayList[Comp] = list.make[Comp](built.*.comps.len);
+    let post_guides: list.ArrayList[Guide] = list.make[Guide](built.*.guides.len);
+    let bci: i32 = 0;
+    while (bci < built.*.comps.len) {
+        let c: Comp = built.*.comps.data[bci];
+        c.name_ = _zag_strdup(c.name_);
+        list.push[Comp](&post_comps, c);
+        bci = bci + 1;
+    }
+    let bgi: i32 = 0;
+    while (bgi < built.*.guides.len) {
+        list.push[Guide](&post_guides, guide_clone(built.*.guides.data[bgi]));
+        bgi = bgi + 1;
+    }
+    // apply the built scene to the live scene
+    build_restore_scene(s, post_comps, post_guides);
+    // record the op
+    let op: UOp = uop_empty();
+    op.kind = 11;
+    op.comps = pre_comps;
+    op.guides = pre_guides;
+    op.build_comps_after = post_comps;
+    // post_guides go into opt_guides_after (reuse, already allocated)
+    let ogi: i32 = 0;
+    while (ogi < post_guides.len) {
+        list.push[Guide](&op.opt_guides_after, post_guides.data[ogi]);
+        ogi = ogi + 1;
+    }
+    list.free[Guide](&post_guides);
+    journal_push(j, op);
+}
+
 // apply the inverse of `op` to the scene (op moves undo->redo)
 fn journal_undo(j: *Journal, s: *Scene) bool {
     if (j.*.undo.len == 0) { return false; }
@@ -669,6 +747,10 @@ fn journal_undo(j: *Journal, s: *Scene) bool {
     if (op.kind == 10) {
         let _rs: i32 = scene_resize(s, op.relabel_ids.data[0], op.old_origin);
     }
+    if (op.kind == 11) {
+        // undo: restore the pre-build scene (comps + guides snapshots)
+        build_restore_scene(s, op.comps, op.guides);
+    }
     list.push[UOp](&j.*.redo, op);
     return true;
 }
@@ -749,6 +831,10 @@ fn journal_redo(j: *Journal, s: *Scene) bool {
     if (op.kind == 10) {
         let _rs: i32 = scene_resize(s, op.relabel_ids.data[0], op.new_origin);
     }
+    if (op.kind == 11) {
+        // redo: restore the post-build scene (comps + guides snapshots)
+        build_restore_scene(s, op.build_comps_after, op.opt_guides_after);
+    }
     list.push[UOp](&j.*.undo, op);
     return true;
 }
@@ -775,6 +861,7 @@ fn ser_int(out: *list.ArrayList[u8], v: i64) void {
         i = i + 1;
     }
     list.push[u8](out, 32);
+    _zag_str_free(s);
 }
 
 fn ser_text(out: *list.ArrayList[u8], s: []u8) void {

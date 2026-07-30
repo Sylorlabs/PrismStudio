@@ -10,6 +10,9 @@
 @import("demo.zag")
 @import("capability.zag")
 @import("process_stack.zag")
+@import("workspace_menu.zag")
+@import("workspace_opt.zag")
+@import("workspace_settings.zag")
 
 // Draw a physical parameter's full provenance (value/units, class + uncertainty,
 // source + date). Returns the next y. Unknown params render as such, never faked.
@@ -48,741 +51,6 @@ fn draw_provenance(f: *FB, x: i32, y: i32, label: []u8, p: PhysicalParam) i32 {
         draw_text_face(f, x, y + row_h() * 2 + dy, face_dense(), p.source, th_text_dim());
     }
     return y + row_h() * 3;
-}
-
-// ── command dispatch (menus + shortcuts route here) ───────────────────────────
-// Command codes are named in commands.zag. Do not add bare integer comparisons
-// here: `if (code == 7)` is a rejected shortcut (see commands.zag header).
-
-fn app_action(a: *App, code: i32) void {
-    a.*.menu = 0 - 1;
-    if (code == cmd_new()) { app_new_design(a); }
-    if (code == cmd_open()) { app_show_open(a); }
-    if (code == cmd_save()) { app_save(a); }
-    if (code == cmd_save_as()) { app_show_saveas(a); }
-    if (code == cmd_quit()) { a.*.quit = true; }
-    if (code == cmd_undo()) { app_undo(a); }
-    if (code == cmd_redo()) { app_redo(a); }
-    if (code == cmd_duplicate()) { app_duplicate(a); }
-    if (code == cmd_delete()) { app_delete_selection(a); }
-    if (code == cmd_deselect()) { sel_clear(a); }
-    if (code == cmd_copy()) { app_copy(a); }
-    if (code == cmd_paste()) { app_paste(a); }
-    if (code == cmd_group()) { app_group_selection(a); }
-    if (code == cmd_ungroup()) { app_ungroup_selection(a); }
-    if (code == cmd_rename()) { app_begin_rename(a, sel_primary(a)); }
-    if (code == cmd_frame_selected()) { app_frame_selected(a); }
-    if (code == cmd_frame_all()) { app_frame_all(a); }
-    if (code == cmd_view_top()) {
-        a.*.cam.yaw = 0.0 - pi_half();
-        a.*.cam.pitch = 1.51;
-    }
-    if (code == cmd_view_front()) {
-        a.*.cam.yaw = 0.0 - pi_half();
-        a.*.cam.pitch = 0.06;
-    }
-    if (code == cmd_view_right()) {
-        a.*.cam.yaw = 0.0;
-        a.*.cam.pitch = 0.06;
-    }
-    if (code == cmd_view_perspective()) {
-        a.*.cam.yaw = 0.9;
-        a.*.cam.pitch = 0.62;
-    }
-    if (code == cmd_toggle_ortho()) {
-        a.*.cam.ortho = !a.*.cam.ortho;
-        scene_mark_render(a.*.scene);   // projection change invalidates the tile cache
-    }
-    if (code == cmd_cycle_ui_scale()) { a.*.ui_scale = (a.*.ui_scale % 3) + 1; }   // cycle 1x/2x/3x
-    if (code == cmd_reset_view()) { app_reset_view(a); }
-    if (code == cmd_section_view()) {
-        a.*.sect_on = !a.*.sect_on;
-        scene_mark_render(a.*.scene);
-        if (a.*.sect_on) { app_log(a, "section view on ([ / ] adjust level)"); }
-    }
-    if (code == cmd_shortcuts()) { a.*.modal = modal_keys(); }
-    if (code == cmd_demo()) { app_action_demo(a); }
-    if (code == cmd_model_provenance()) { a.*.model_open = true; a.*.flash_open = false; }
-    // This is deliberately a first-class visible command rather than an
-    // undocumented file path: the canonical Flash PCU is the reproducible
-    // reference design users can inspect, run, modify, save, and reopen.
-    if (code == cmd_open_flash_reference()) { app_open_file(a, "examples/flash_photonic_massive.zpa"); }
-    if (code == cmd_recover_autosave()) { app_show_recovery(a); }
-    if (code == cmd_tool_select()) { a.*.tool = tool_select(); }
-    if (code == cmd_tool_route()) { a.*.tool = tool_route(); a.*.route_c = 0 - 1; }
-    if (code == cmd_sim_play_toggle()) { a.*.sim.*.playing = !a.*.sim.*.playing; }
-    if (code == cmd_optimizer()) { a.*.opt_open = true; a.*.settings_open = false; a.*.opt_previewed = false; a.*.opt_details = false; }
-    if (code == cmd_settings()) { a.*.settings_open = true; a.*.opt_open = false; }
-    if (code == cmd_palette()) { a.*.palette_open = true; a.*.palette_text.len = 0; a.*.palette_sel = 0; }
-    if (code == cmd_tool_measure()) { a.*.tool = tool_measure(); a.*.measure_n = 0; }
-    if (code == cmd_toggle_reduced_motion()) { a.*.inp.reduced_motion = !a.*.inp.reduced_motion; }
-    if (code == cmd_toggle_object_snap()) { a.*.snap_obj = !a.*.snap_obj; }
-    if (code == cmd_flash_workspace()) { a.*.flash_open = true; a.*.model_open = false; a.*.settings_open = false; a.*.opt_open = false; }
-    if (code >= cmd_place_base() && code < cmd_place_base() + kind_count()) { a.*.tool = tool_place_base() + (code - cmd_place_base()); }
-    // jump to object (Section 3.6): palette codes cmd_palette_jump_base()+idx select and frame
-    if (code >= cmd_palette_jump_base() && code - cmd_palette_jump_base() < a.*.scene.*.comps.len) {
-        sel_set(a, a.*.scene.*.comps.data[code - cmd_palette_jump_base()].id);
-        app_frame_selected(a);
-    }
-}
-
-// Begin inline rename of `id` (F2, menu, context menu, outliner double-slow-click).
-fn app_begin_rename(a: *App, id: i32) void {
-    if (id < 0) { return; }
-    let ci: i32 = scene_comp_index(a.*.scene, id);
-    if (ci < 0) { return; }
-    a.*.rename_id = id;
-    textedit_set(&a.*.rename_edit, a.*.scene.*.comps.data[ci].name_);
-    a.*.rename_edit.focus = true;
-}
-
-// ── command palette (Section 3.6) ─────────────────────────────────────────────
-struct PCmd {
-    label: []u8,
-    hint: []u8,
-    code: i32,
-}
-
-fn palette_commands(out: *list.ArrayList[PCmd]) void {
-    out.*.len = 0;
-    list.push[PCmd](out, PCmd{ .label = "New Project", .hint = "Ctrl+N", .code = cmd_new() });
-    list.push[PCmd](out, PCmd{ .label = "Open Project...", .hint = "Ctrl+O", .code = cmd_open() });
-    list.push[PCmd](out, PCmd{ .label = "Save", .hint = "Ctrl+S", .code = cmd_save() });
-    list.push[PCmd](out, PCmd{ .label = "Save As...", .hint = "Ctrl+Shift+S", .code = cmd_save_as() });
-    list.push[PCmd](out, PCmd{ .label = "Undo", .hint = "Ctrl+Z", .code = cmd_undo() });
-    list.push[PCmd](out, PCmd{ .label = "Redo", .hint = "Ctrl+Y", .code = cmd_redo() });
-    list.push[PCmd](out, PCmd{ .label = "Duplicate Selection", .hint = "Shift+D", .code = cmd_duplicate() });
-    list.push[PCmd](out, PCmd{ .label = "Copy", .hint = "Ctrl+C", .code = cmd_copy() });
-    list.push[PCmd](out, PCmd{ .label = "Paste", .hint = "Ctrl+V", .code = cmd_paste() });
-    list.push[PCmd](out, PCmd{ .label = "Delete Selection", .hint = "X", .code = cmd_delete() });
-    list.push[PCmd](out, PCmd{ .label = "Deselect All", .hint = "Esc", .code = cmd_deselect() });
-    list.push[PCmd](out, PCmd{ .label = "Frame Selected", .hint = "F", .code = cmd_frame_selected() });
-    list.push[PCmd](out, PCmd{ .label = "Frame All", .hint = "Home", .code = cmd_frame_all() });
-    list.push[PCmd](out, PCmd{ .label = "View: Top", .hint = "", .code = cmd_view_top() });
-    list.push[PCmd](out, PCmd{ .label = "View: Front", .hint = "", .code = cmd_view_front() });
-    list.push[PCmd](out, PCmd{ .label = "View: Right", .hint = "", .code = cmd_view_right() });
-    list.push[PCmd](out, PCmd{ .label = "View: Perspective", .hint = "", .code = cmd_view_perspective() });
-    list.push[PCmd](out, PCmd{ .label = "View: Toggle Orthographic", .hint = "", .code = cmd_toggle_ortho() });
-    list.push[PCmd](out, PCmd{ .label = "View: Reset", .hint = "", .code = cmd_reset_view() });
-    list.push[PCmd](out, PCmd{ .label = "View: Toggle Section View", .hint = "", .code = cmd_section_view() });
-    list.push[PCmd](out, PCmd{ .label = "Cycle HiDPI Scale", .hint = "", .code = cmd_cycle_ui_scale() });
-    list.push[PCmd](out, PCmd{ .label = "Tool: Select", .hint = "Q", .code = cmd_tool_select() });
-    list.push[PCmd](out, PCmd{ .label = "Tool: Route Waveguide", .hint = "E", .code = cmd_tool_route() });
-    list.push[PCmd](out, PCmd{ .label = "Tool: Measure", .hint = "M", .code = cmd_tool_measure() });
-    list.push[PCmd](out, PCmd{ .label = "Group Selection", .hint = "Ctrl+G", .code = cmd_group() });
-    list.push[PCmd](out, PCmd{ .label = "Ungroup Selection", .hint = "Ctrl+Shift+G", .code = cmd_ungroup() });
-    list.push[PCmd](out, PCmd{ .label = "Rename Selection", .hint = "F2", .code = cmd_rename() });
-    list.push[PCmd](out, PCmd{ .label = "Toggle Reduced Motion", .hint = "", .code = cmd_toggle_reduced_motion() });
-    list.push[PCmd](out, PCmd{ .label = "Toggle Object Snapping", .hint = "", .code = cmd_toggle_object_snap() });
-    list.push[PCmd](out, PCmd{ .label = "Toggle Simulation", .hint = "Space", .code = cmd_sim_play_toggle() });
-    list.push[PCmd](out, PCmd{ .label = "Open Optimizer", .hint = "Alt+O", .code = cmd_optimizer() });
-    list.push[PCmd](out, PCmd{ .label = "Open Settings", .hint = "Alt+S", .code = cmd_settings() });
-    list.push[PCmd](out, PCmd{ .label = "Physical Model & Provenance", .hint = "", .code = cmd_model_provenance() });
-    list.push[PCmd](out, PCmd{ .label = "Flash FIR Workspace", .hint = "", .code = cmd_flash_workspace() });
-    let ki: i32 = 0;
-    while (ki < kind_count()) {
-        list.push[PCmd](out, PCmd{ .label = kind_place_label(kind_at(ki)),
-                                   .hint = "", .code = cmd_place_base() + ki });
-        ki = ki + 1;
-    }
-    list.push[PCmd](out, PCmd{ .label = "Load Demo Design", .hint = "F1", .code = cmd_demo() });
-    list.push[PCmd](out, PCmd{ .label = "Open Reference Flash PCU", .hint = "", .code = cmd_open_flash_reference() });
-    list.push[PCmd](out, PCmd{ .label = "Keyboard Shortcuts", .hint = "", .code = cmd_shortcuts() });
-}
-
-fn ascii_lower(c: u8) u8 {
-    if (c >= 65 && c <= 90) { return c + 32; }
-    return c;
-}
-
-// Case-insensitive substring match; an empty query matches everything.
-fn pcmd_match(label: []u8, q: []u8) bool {
-    if (q.len == 0) { return true; }
-    let i: i32 = 0;
-    while (i + q.len <= label.len) {
-        let ok: bool = true;
-        let j: i32 = 0;
-        while (j < q.len) {
-            if (ascii_lower(label[i + j]) != ascii_lower(q[j])) { ok = false; }
-            j = j + 1;
-        }
-        if (ok) { return true; }
-        i = i + 1;
-    }
-    return false;
-}
-
-// Rebuilds the filtered palette list. Dynamic "Go to:" labels are heap strings
-// owned by a.*.palette_scratch: this function frees the previous generation on
-// entry, so the PCmd label pointers it hands out stay valid until the next
-// call. Do not build heap labels anywhere else in the palette path (static
-// labels only, see kind_place_label).
-fn palette_filtered(a: *App, out: *list.ArrayList[PCmd]) void {
-    free_str_list(&a.*.palette_scratch);
-    let all: list.ArrayList[PCmd] = list.make[PCmd](40);
-    palette_commands(&all);
-    // jump to object (Section 3.6): one dynamic entry per placed part
-    let jc: i32 = 0;
-    while (jc < a.*.scene.*.comps.len) {
-        let gl: []u8 = s2("Go to: ", a.*.scene.*.comps.data[jc].name_);
-        list.push[[]u8](&a.*.palette_scratch, gl);
-        list.push[PCmd](&all, PCmd{
-            .label = gl,
-            .hint = "", .code = cmd_palette_jump_base() + jc });
-        jc = jc + 1;
-    }
-    out.*.len = 0;
-    let q: []u8 = a.*.palette_text.data[0..a.*.palette_text.len];
-    let i: i32 = 0;
-    while (i < all.len) {
-        if (pcmd_match(all.data[i].label, q)) { list.push[PCmd](out, all.data[i]); }
-        i = i + 1;
-    }
-    list.free[PCmd](&all);
-}
-
-// Execute the highlighted command in the current filtered list.
-fn app_palette_exec(a: *App) void {
-    // Coordinate jump is intentionally textual so exact negative world
-    // coordinates remain quick to enter: Ctrl+K, `tp x y z`, Enter.
-    let pq: []u8 = a.*.palette_text.data[0..a.*.palette_text.len];
-    if (pq.len >= 4 && pq[0] == 't' && pq[1] == 'p' && pq[2] == ' ') {
-        let vals: list.ArrayList[i64] = list.make[i64](3);
-        let p: i32 = 3;
-        while (p < pq.len && vals.len < 3) {
-            while (p < pq.len && pq[p] == ' ') { p = p + 1; }
-            let st: i32 = p;
-            while (p < pq.len && pq[p] != ' ') { p = p + 1; }
-            if (p > st) { list.push[i64](&vals, _zag_str_to_i64(pq[st..p])); }
-        }
-        if (vals.len == 3) {
-            app_camera_teleport(a, vals.data[0] as f64, vals.data[1] as f64, vals.data[2] as f64);
- let __log_s251: []u8 = _zag_str_concat("camera teleported to ", pq[3..pq.len]);
-                app_log(a, __log_s251);
-                _zag_str_free(__log_s251);
-            a.*.palette_open = false;
-            list.free[i64](&vals);
-            return;
-        }
-        list.free[i64](&vals);
-    }
-    let filt: list.ArrayList[PCmd] = list.make[PCmd](40);
-    palette_filtered(a, &filt);
-    if (filt.len > 0) {
-        let sel: i32 = a.*.palette_sel;
-        if (sel < 0) { sel = 0; }
-        if (sel >= filt.len) { sel = filt.len - 1; }
-        let code: i32 = filt.data[sel].code;
-        a.*.palette_open = false;
-        app_action(a, code);
-    }
-    list.free[PCmd](&filt);
-}
-
-// Palette key handling (owns the keyboard while open).
-fn app_palette_keys(a: *App) void {
-    let inp: *Input = &a.*.inp;
-    let i: i32 = 0;
-    while (i < inp.*.keys.len) {
-        let k: i32 = list.get[i32](inp.*.keys, i);
-        if (k == key_esc()) { a.*.palette_open = false; return; }
-        else if (k == key_enter()) { app_palette_exec(a); return; }
-        else if (k == 17) { if (a.*.palette_sel > 0) { a.*.palette_sel = a.*.palette_sel - 1; } }
-        else if (k == 18) { a.*.palette_sel = a.*.palette_sel + 1; }
-        else if (k == key_backspace()) {
-            if (a.*.palette_text.len > 0) { a.*.palette_text.len = a.*.palette_text.len - 1; }
-            a.*.palette_sel = 0;
-        } else if (k >= 32 && k < 127 && a.*.palette_text.len < 40) {
-            list.push[u8](&a.*.palette_text, k as u8);
-            a.*.palette_sel = 0;
-        }
-        i = i + 1;
-    }
-}
-
-fn draw_palette(a: *App) void {
-    if (!a.*.palette_open) { return; }
-    let f: *FB = &a.*.f;
-    let inp: *Input = &a.*.inp;
-    let cap: i32 = inp.*.capture;
-    inp.*.capture = 0;
-
-    let pw: i32 = 440;
-    let px: i32 = (a.*.inp.w - pw) / 2;
-    if (px < 8) { px = 8; }
-    let py: i32 = 84;
-
-    let filt: list.ArrayList[PCmd] = list.make[PCmd](40);
-    palette_filtered(a, &filt);
-    if (a.*.palette_sel >= filt.len) { a.*.palette_sel = filt.len - 1; }
-    if (a.*.palette_sel < 0) { a.*.palette_sel = 0; }
-    let shown: i32 = filt.len;
-    if (shown > 9) { shown = 9; }
-    let prow_h: i32 = row_h() + 2;
-    let ph: i32 = 34 + shown * prow_h + 6;
-
-    draw_shadow(f, px, py, pw, ph, radius_panel());
-    fill_round_rect(f, px, py, pw, ph, radius_panel(), th_panel());
-    round_rect_outline(f, px, py, pw, ph, radius_panel(), th_outline());
-    // input row
-    let iy: i32 = py + text_cy(face_body(), 30);
-    draw_text(f, px + 12, iy, ">", th_accent());
-    if (a.*.palette_text.len > 0) {
-        draw_text(f, px + 24, iy, a.*.palette_text.data[0..a.*.palette_text.len], th_text());
-    } else {
-        draw_text(f, px + 24, iy, "Type a command...", th_text_dim());
-    }
-    hline(f, px + 8, py + 31, pw - 16, th_outline_soft());
-
-    let y: i32 = py + 34;
-    let idx: i32 = 0;
-    while (idx < shown) {
-        let c: PCmd = filt.data[idx];
-        let row: Rect = rect(px + 6, y, pw - 12, prow_h);
-        let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
-        let _eid: i64 = ui_register(inp, "menuitem", c.label, c.label, row, true,
-                                    idx == a.*.palette_sel, false);
-        if (idx == a.*.palette_sel || hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
-        draw_text(f, row.x + 8, y + text_cy(face_body(), prow_h), c.label, th_text());
-        if (c.hint.len > 0) {
-            draw_text(f, row.x + row.w - text_w(c.hint) - 8, y + text_cy(face_body(), prow_h), c.hint, th_text_dim());
-        }
-        if (hov && btn_released(inp, 0)) {
-            a.*.palette_sel = idx;
-            app_palette_exec(a);
-        }
-        y = y + prow_h;
-        idx = idx + 1;
-    }
-    list.free[PCmd](&filt);
-
-    if (btn_pressed(inp, 0)) {
-        let box: Rect = rect(px, py, pw, ph);
-        if (!rect_has(box, inp.*.mx, inp.*.my)) { a.*.palette_open = false; }
-    }
-    inp.*.capture = cap;
-}
-
-// small demo design (also used by --smoke); placed through the normal APIs
-fn app_action_demo(a: *App) void {
-    demo_load(a);
-    app_log(a, "demo design loaded");
-}
-
-// ── menu bar ──────────────────────────────────────────────────────────────────
-
-struct MenuItem {
-    label: []u8,
-    hint: []u8,
-    code: i32,     // 0 = separator
-}
-
-fn menu_title(m: i32) []u8 {
-    if (m == 0) { return "File"; }
-    if (m == 1) { return "Edit"; }
-    if (m == 2) { return "View"; }
-    return "Help";
-}
-
-fn menu_items(m: i32, out: *list.ArrayList[MenuItem]) void {
-    out.*.len = 0;
-    if (m == 0) {
-        list.push[MenuItem](out, MenuItem{ .label = "New", .hint = "Ctrl+N", .code = cmd_new() });
-        list.push[MenuItem](out, MenuItem{ .label = "Open...", .hint = "Ctrl+O", .code = cmd_open() });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
-        list.push[MenuItem](out, MenuItem{ .label = "Save", .hint = "Ctrl+S", .code = cmd_save() });
-        list.push[MenuItem](out, MenuItem{ .label = "Save As...", .hint = "Ctrl+Shift+S", .code = cmd_save_as() });
-        list.push[MenuItem](out, MenuItem{ .label = "Recover Autosave...", .hint = "", .code = cmd_recover_autosave() });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
-        list.push[MenuItem](out, MenuItem{ .label = "Quit", .hint = "Ctrl+Q", .code = cmd_quit() });
-    }
-    if (m == 1) {
-        list.push[MenuItem](out, MenuItem{ .label = "Undo", .hint = "Ctrl+Z", .code = cmd_undo() });
-        list.push[MenuItem](out, MenuItem{ .label = "Redo", .hint = "Ctrl+Y", .code = cmd_redo() });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
-        list.push[MenuItem](out, MenuItem{ .label = "Duplicate", .hint = "Shift+D", .code = cmd_duplicate() });
-        list.push[MenuItem](out, MenuItem{ .label = "Copy", .hint = "Ctrl+C", .code = cmd_copy() });
-        list.push[MenuItem](out, MenuItem{ .label = "Paste", .hint = "Ctrl+V", .code = cmd_paste() });
-        list.push[MenuItem](out, MenuItem{ .label = "Delete", .hint = "X", .code = cmd_delete() });
-        list.push[MenuItem](out, MenuItem{ .label = "Deselect", .hint = "Esc", .code = cmd_deselect() });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
-        list.push[MenuItem](out, MenuItem{ .label = "Group", .hint = "Ctrl+G", .code = cmd_group() });
-        list.push[MenuItem](out, MenuItem{ .label = "Ungroup", .hint = "Ctrl+Shift+G", .code = cmd_ungroup() });
-        list.push[MenuItem](out, MenuItem{ .label = "Rename", .hint = "F2", .code = cmd_rename() });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
-        list.push[MenuItem](out, MenuItem{ .label = "Command Palette", .hint = "Ctrl+K", .code = cmd_palette() });
-    }
-    if (m == 2) {
-        list.push[MenuItem](out, MenuItem{ .label = "Frame Selected", .hint = "F", .code = cmd_frame_selected() });
-        list.push[MenuItem](out, MenuItem{ .label = "Frame All", .hint = "Home", .code = cmd_frame_all() });
-        list.push[MenuItem](out, MenuItem{ .label = "Reset View", .hint = "", .code = cmd_reset_view() });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
-        list.push[MenuItem](out, MenuItem{ .label = "Top", .hint = "", .code = cmd_view_top() });
-        list.push[MenuItem](out, MenuItem{ .label = "Front", .hint = "", .code = cmd_view_front() });
-        list.push[MenuItem](out, MenuItem{ .label = "Right", .hint = "", .code = cmd_view_right() });
-        list.push[MenuItem](out, MenuItem{ .label = "Perspective", .hint = "", .code = cmd_view_perspective() });
-        list.push[MenuItem](out, MenuItem{ .label = "Toggle Orthographic", .hint = "", .code = cmd_toggle_ortho() });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
-        list.push[MenuItem](out, MenuItem{ .label = "Section View", .hint = "", .code = cmd_section_view() });
-        list.push[MenuItem](out, MenuItem{ .label = "Measure Tool", .hint = "M", .code = cmd_tool_measure() });
-        list.push[MenuItem](out, MenuItem{ .label = "Object Snapping", .hint = "", .code = cmd_toggle_object_snap() });
-    }
-    if (m == 3) {
-        list.push[MenuItem](out, MenuItem{ .label = "Shortcuts", .hint = "", .code = cmd_shortcuts() });
-        list.push[MenuItem](out, MenuItem{ .label = "Load Demo Design", .hint = "F1", .code = cmd_demo() });
-        list.push[MenuItem](out, MenuItem{ .label = "Physical Model & Provenance...", .hint = "", .code = cmd_model_provenance() });
-    }
-}
-
-fn draw_menubar(a: *App) void {
-    let f: *FB = &a.*.f;
-    let inp: *Input = &a.*.inp;
-    let r: Rect = zone_menu(a);
-    fill_rect(f, r.x, r.y, r.w, r.h, th_header());
-    hline(f, r.x, r.y + r.h - 1, r.w, th_outline());
-
-    // Use a readable product label instead of an unexplained accent square.
-    // In a technical workspace every persistent pixel should carry meaning.
-    let my: i32 = r.y + text_cy(face_body(), r.h);
-    draw_text(f, 10, my, "PRISM", th_accent_hot());
-    let x: i32 = 48;
-    let m: i32 = 0;
-    while (m < 4) {
-        let t: []u8 = menu_title(m);
-        let bw: i32 = text_w(t) + 18;
-        let br: Rect = rect(x, r.y + 3, bw, r.h - 5);
-        let hov: bool = rect_has(br, inp.*.mx, inp.*.my);
-        let _eid: i64 = ui_register(inp, "menubaritem", t, t, br,
-                                    a.*.modal == modal_none(), a.*.menu == m, false);
-        if (a.*.menu == m) {
-            fill_round_rect(f, br.x, br.y, br.w, br.h, radius_control(), th_accent());
-        } else if (hov && a.*.modal == modal_none()) {
-            fill_round_rect(f, br.x, br.y, br.w, br.h, radius_control(), th_panel_alt());
-        }
-        draw_text(f, x + 9, my, t, th_text());
-        if (a.*.modal == modal_none()) {
-            if (hov && btn_pressed(inp, 0)) {
-                if (a.*.menu == m) { a.*.menu = 0 - 1; } else { a.*.menu = m; }
-            } else if (hov && a.*.menu >= 0) {
-                a.*.menu = m;   // slide between menus while one is open
-            }
-        }
-        x = x + bw;
-        m = m + 1;
-    }
-
-    // right side: Optimizer button (quiet, count-only badge) + Settings gear.
-    // The control is absent while the optimizer is disabled; Settings remains
-    // available so the user can turn it back on.
-    let ob: Rect = zone_opt_btn(a);
-    if (a.*.opt.*.enabled) {
-        let oh: bool = rect_has(ob, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
-        let obr: Rect = rect(ob.x, ob.y + 3, ob.w, ob.h - 5);
-        let _oeid: i64 = ui_register(inp, "button", "optimizer", "Optimizer", obr,
-                                     a.*.modal == modal_none(), a.*.opt_open, false);
-        if (a.*.opt_open) { fill_round_rect(f, obr.x, obr.y, obr.w, obr.h, radius_control(), th_accent()); }
-        else if (oh) { fill_round_rect(f, obr.x, obr.y, obr.w, obr.h, radius_control(), th_panel_alt()); }
-        draw_text(f, ob.x + 9, my, "opt", th_text());
-        if (opt_engine_badge(a.*.opt) > 0) {
-            let bx: i32 = ob.x + 9 + text_w("opt ");
-            let _bw: i32 = draw_int(f, bx, my, opt_engine_badge(a.*.opt) as i64, th_accent_hot());
-        }
-        if (oh && btn_pressed(inp, 0)) {
-            a.*.opt_open = !a.*.opt_open;
-            a.*.settings_open = false;
-            a.*.opt_previewed = false;
-            a.*.opt_details = false;
-        }
-    }
-
-    let gr: Rect = zone_settings_gear(a);
-    let gh: bool = rect_has(gr, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
-    let grr: Rect = rect(gr.x, gr.y + 3, gr.w, gr.h - 5);
-    let _geid: i64 = ui_register(inp, "button", "settings", "Settings", grr,
-                                 a.*.modal == modal_none(), a.*.settings_open, false);
-    if (a.*.settings_open) { fill_round_rect(f, grr.x, grr.y, grr.w, grr.h, radius_control(), th_accent()); }
-    else if (gh) { fill_round_rect(f, grr.x, grr.y, grr.w, grr.h, radius_control(), th_panel_alt()); }
-    draw_gear(f, gr.x + gr.w / 2, gr.y + gr.h / 2, th_text());
-    if (gh && btn_pressed(inp, 0)) {
-        a.*.settings_open = !a.*.settings_open;
-        a.*.opt_open = false;
-    }
-
-    // Connection issues are first-class work, not a tiny status-bar counter.
-    // The chip opens the existing list, where each issue frames its component.
-    let issue_w: i32 = 0;
-    if (a.*.warn_ids.len > 0) {
-        let iw_n: []u8 = fmt_i(a.*.warn_ids.len as i64);
-        let issue_label: []u8 = s2(iw_n, " issues");
-        _zag_str_free(iw_n);
-        issue_w = text_w(issue_label) + 18;
-        let ir: Rect = rect(ob.x - issue_w - 8, r.y + 3, issue_w, r.h - 5);
-        let ih: bool = rect_has(ir, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
-        // The catalog retains this label until next frame: park it (ui_park),
-        // do NOT free it at the end of this draw call.
-        let _ieid: i64 = ui_register(inp, "button", "design-issues", ui_park(a, issue_label), ir,
-                                     a.*.modal == modal_none(), a.*.warn_open, false);
-        let ic: i64 = th_warning();
-        if (a.*.warn_open || ih) { ic = th_accent(); }
-        fill_round_rect(f, ir.x, ir.y, ir.w, ir.h, radius_control(), ic);
-        round_rect_outline(f, ir.x, ir.y, ir.w, ir.h, radius_control(), th_warning());
-        draw_text(f, ir.x + 9, my, issue_label, th_text());
-        if (ih && btn_released(inp, 0)) { a.*.warn_open = !a.*.warn_open; }
-    }
-
-    // document name, left of the buttons and issue chip
-    let title: []u8 = a.*.file_;
-    let title_owned: bool = false;
-    if (a.*.dirty) { title = s2(a.*.file_, " *"); title_owned = true; }
-    let title_x: i32 = ob.x - issue_w - text_w(title) - 26;
-    fill_round_rect(f, title_x - 8, r.y + 4, text_w(title) + 16, r.h - 8,
-                    radius_control(), th_panel());
-    draw_text(f, title_x, my, title, th_text_dim());
-    if (title_owned) { _zag_str_free(title); }
-}
-
-// A small cog icon composed from framebuffer rects (no glyph font dependency).
-fn draw_gear(f: *FB, cx: i32, cy: i32, c: i64) void {
-    fill_rect(f, cx - 4, cy - 4, 9, 9, c);          // body
-    fill_rect(f, cx - 1, cy - 6, 3, 2, c);          // N tooth
-    fill_rect(f, cx - 1, cy + 5, 3, 2, c);          // S tooth
-    fill_rect(f, cx - 6, cy - 1, 2, 3, c);          // W tooth
-    fill_rect(f, cx + 5, cy - 1, 2, 3, c);          // E tooth
-    fill_rect(f, cx - 5, cy - 5, 2, 2, c);          // NW
-    fill_rect(f, cx + 4, cy - 5, 2, 2, c);          // NE
-    fill_rect(f, cx - 5, cy + 4, 2, 2, c);          // SW
-    fill_rect(f, cx + 4, cy + 4, 2, 2, c);          // SE
-    fill_rect(f, cx - 1, cy - 1, 3, 3, th_panel()); // hub hole
-}
-
-// draw + interact with the open dropdown; called last so it overlays panels
-fn draw_menu_dropdown(a: *App) void {
-    if (a.*.menu < 0) { return; }
-    let f: *FB = &a.*.f;
-    let inp: *Input = &a.*.inp;
-
-    // anchor under the menu title
-    let x0: i32 = 30;
-    let m: i32 = 0;
-    while (m < a.*.menu) {
-        x0 = x0 + text_w(menu_title(m)) + 18;
-        m = m + 1;
-    }
-
-    let items: list.ArrayList[MenuItem] = list.make[MenuItem](12);
-    menu_items(a.*.menu, &items);
-    let iw: i32 = 220;
-    let ih: i32 = row_h() + 2;
-    let sep: i32 = 9;
-    let total: i32 = 0;
-    let i: i32 = 0;
-    while (i < items.len) {
-        if (items.data[i].code == cmd_none()) { total = total + sep; } else { total = total + ih; }
-        i = i + 1;
-    }
-    let dr: Rect = rect(x0, menu_h(), iw, total + 8);
-    draw_shadow(f, dr.x, dr.y, dr.w, dr.h, radius_panel());
-    fill_round_rect(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_panel());
-    round_rect_outline(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_outline());
-
-    let y: i32 = dr.y + 4;
-    let clicked_any: bool = false;
-    i = 0;
-    while (i < items.len) {
-        let it: MenuItem = items.data[i];
-        if (it.code == cmd_none()) {
-            hline(f, dr.x + 8, y + 4, dr.w - 16, th_outline_soft());
-            y = y + sep;
-        } else {
-            let row: Rect = rect(dr.x + 4, y, dr.w - 8, ih);
-            let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
-            let _eid: i64 = ui_register(inp, "menuitem", it.label, it.label, row, true, false, false);
-            if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
-            draw_text(f, row.x + 8, y + text_cy(face_body(), ih), it.label, th_text());
-            if (it.hint.len > 0) {
-                draw_text(f, row.x + row.w - text_w(it.hint) - 8, y + text_cy(face_body(), ih), it.hint, th_text_dim());
-            }
-            if (hov && btn_released(inp, 0)) {
-                app_action(a, it.code);
-                clicked_any = true;
-            }
-            y = y + ih;
-        }
-        i = i + 1;
-    }
-    // click outside (below the bar) closes
-    if (!clicked_any && btn_pressed(inp, 0)) {
-        if (!rect_has(dr, inp.*.mx, inp.*.my) && inp.*.my > menu_h()) {
-            a.*.menu = 0 - 1;
-        }
-    }
-    list.free[MenuItem](&items);
-}
-
-// ── status bar ────────────────────────────────────────────────────────────────
-// (tool_name was deleted: it had no callers and mixed literal/owned returns.
-// The status bar composes its tool label from literals + kind_short instead.)
-
-fn draw_statusbar(a: *App) void {
-    let f: *FB = &a.*.f;
-    let r: Rect = zone_status(a);
-    fill_rect(f, r.x, r.y, r.w, r.h, th_header());
-    hline(f, r.x, r.y, r.w, th_outline());
-    let ty: i32 = r.y + text_cy(face_body(), r.h);
-
-    // left: document
-    draw_text(f, 8, ty, a.*.file_, th_text());
-    let doc_w: i32 = text_w(a.*.file_);
-    if (a.*.dirty) {
-        draw_text(f, 8 + doc_w, ty, " *", th_text());
-        doc_w = doc_w + text_w(" *");
-    }
-
-    // cursor lattice cell (250 nm pitch)
-    let x: i32 = 8 + doc_w + 24;
-    if (a.*.hover_ok) {
-        let col: i64 = th_accent_hot();
-        draw_text(f, x, ty, "cell ", col);
-        let cx: i32 = x + text_w("cell ");
-        cx = cx + draw_int(f, cx, ty, a.*.hover_cell.x as i64, col);
-        draw_text(f, cx, ty, ", ", col);
-        cx = cx + text_w(", ");
-        cx = cx + draw_int(f, cx, ty, a.*.hover_cell.y as i64, col);
-        draw_text(f, cx, ty, ", ", col);
-        cx = cx + text_w(", ");
-        cx = cx + draw_int(f, cx, ty, a.*.hover_cell.z as i64, col);
-        x = cx + 24;
-    }
-
-    // tool
-    if (a.*.moving) {
-        draw_text(f, x, ty, "move", th_text_dim());
-        x = x + text_w("move") + 24;
-    } else if (a.*.tool == tool_route()) {
-        draw_text(f, x, ty, "route", th_text_dim());
-        x = x + text_w("route") + 24;
-    } else if (a.*.tool == tool_measure()) {
-        draw_text(f, x, ty, "measure", th_text_dim());
-        x = x + text_w("measure") + 24;
-    } else if (a.*.tool >= tool_place_base()) {
-        draw_text(f, x, ty, "place ", th_text_dim());
-        let kx: i32 = x + text_w("place ");
-        let ks: []u8 = kind_short(app_current_kind(a));
-        draw_text(f, kx, ty, ks, th_text_dim());
-        x = kx + text_w(ks) + 24;
-    } else {
-        draw_text(f, x, ty, "select", th_text_dim());
-        x = x + text_w("select") + 24;
-    }
-    if (a.*.sel.len > 0) {
-        x = x + draw_int(f, x, ty, a.*.sel.len as i64, th_text_dim());
-        draw_text(f, x, ty, " selected", th_text_dim());
-        x = x + text_w(" selected") + 24;
-    }
-
-    // camera + lattice + section state (Section 3.2: a working status bar)
-    let camm: []u8 = "persp";
-    if (a.*.cam.ortho) { camm = "ortho"; }
-    draw_text(f, x, ty, camm, th_text_dim());
-    x = x + text_w(camm) + 16;
-    draw_text(f, x, ty, "grid 1u", th_accent_hot());
-    x = x + text_w("grid 1u") + 16;
-    if (a.*.snap_obj) {
-        draw_text(f, x, ty, "align", th_text_dim());
-        x = x + text_w("align") + 16;
-    }
-    if (a.*.sect_on) {
-        draw_text(f, x, ty, "section", th_warning());
-        x = x + text_w("section") + 16;
-    }
-
-    // design warnings count: click to list them (Section 3.4)
-    if (a.*.warn_ids.len > 0) {
-        let wr: Rect = rect(x - 4, r.y + 2, text_w("00 warnings") + 8, r.h - 4);
-        let whov: bool = rect_has(wr, a.*.inp.mx, a.*.inp.my);
-        if (whov || a.*.warn_open) { fill_rect(f, wr.x, wr.y, wr.w, wr.h, th_header()); }
-        let wtx: i32 = x;
-        wtx = wtx + draw_int(f, wtx, ty, a.*.warn_ids.len as i64, th_warning());
-        draw_text(f, wtx, ty, " warnings", th_warning());
-        if (whov && btn_released(&a.*.inp, 0)) { a.*.warn_open = !a.*.warn_open; }
-        x = x + text_w("00 warnings") + 16;
-    } else { a.*.warn_open = false; }
-
-    // Optimizer badge: quiet, count-only (Section 20.4). Nothing shows at zero.
-    if (opt_engine_badge(a.*.opt) > 0) {
-        let ocol: i64 = th_accent_hot();
-        draw_text(f, x, ty, "opt ", ocol);
-        x = x + text_w("opt ");
-        x = x + draw_int(f, x, ty, opt_engine_badge(a.*.opt) as i64, ocol);
-    }
-
-    // right: counts + timing + sim state
-    let run: []u8 = "paused";
-    if (a.*.sim.*.playing) { run = "running"; }
-    let rw: i32 = text_w(" parts  ") + text_w(" guides  ") + text_w(" ms  sim ") + text_w(run);
-    let rw_c: []u8 = fmt_i(a.*.scene.*.comps.len as i64);
-    let rw_g: []u8 = fmt_i(a.*.scene.*.guides.len as i64);
-    let rw_m: []u8 = fmt_i(a.*.frame_ms);
-    rw = rw + text_w(rw_c);
-    rw = rw + text_w(rw_g);
-    rw = rw + text_w(rw_m);
-    _zag_str_free(rw_c);
-    _zag_str_free(rw_g);
-    _zag_str_free(rw_m);
-    let sx: i32 = r.w - rw - 8;
-    let rx: i32 = sx;
-    rx = rx + draw_int(f, rx, ty, a.*.scene.*.comps.len as i64, th_text_dim());
-    draw_text(f, rx, ty, " parts  ", th_text_dim());
-    rx = rx + text_w(" parts  ");
-    rx = rx + draw_int(f, rx, ty, a.*.scene.*.guides.len as i64, th_text_dim());
-    draw_text(f, rx, ty, " guides  ", th_text_dim());
-    rx = rx + text_w(" guides  ");
-    rx = rx + draw_int(f, rx, ty, a.*.frame_ms, th_text_dim());
-    draw_text(f, rx, ty, " ms  sim ", th_text_dim());
-    rx = rx + text_w(" ms  sim ");
-    draw_text(f, rx, ty, run, th_text_dim());
-}
-
-// Clickable warning list (Section 3.4): every design warning selects and
-// frames its component on click, so no warning is a dead end.
-fn draw_warnings_popup(a: *App) void {
-    if (!a.*.warn_open) { return; }
-    let f: *FB = &a.*.f;
-    let inp: *Input = &a.*.inp;
-    let cap: i32 = inp.*.capture;
-    inp.*.capture = 0;
-    let n: i32 = a.*.warn_ids.len;
-    if (n > 12) { n = 12; }
-    let ph: i32 = n * row_h() + 34;
-    let pw: i32 = 300;
-    let pr: Rect = rect(8, a.*.inp.h - status_h() - ph - 4, pw, ph);
-    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
-    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
-    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
-    draw_text(f, pr.x + pad_panel(), pr.y + text_cy(face_body(), 24), "DESIGN WARNINGS", th_warning());
-    let y: i32 = pr.y + 28;
-    let i: i32 = 0;
-    while (i < n) {
-        let id: i32 = list.get[i32](a.*.warn_ids, i);
-        let code: i32 = list.get[i32](a.*.warn_codes, i);
-        let row: Rect = rect(pr.x + 4, y, pr.w - 8, row_h() - 1);
-        let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
-        if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
-        let ci: i32 = scene_comp_index(a.*.scene, id);
-        let nm: []u8 = "?";
-        if (ci >= 0) { nm = a.*.scene.*.comps.data[ci].name_; }
-        draw_text(f, row.x + 6, y + text_cy(face_body(), row_h() - 1), nm, th_text());
-        draw_text(f, row.x + 6 + text_w(nm) + 8, y + text_cy(face_body(), row_h() - 1), warn_text(code), th_warning());
-        if (hov && btn_released(inp, 0)) {
-            sel_set(a, id);
-            app_frame_selected(a);
-            a.*.warn_open = false;
-        }
-        y = y + row_h();
-        i = i + 1;
-    }
-    if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my)) { a.*.warn_open = false; }
-    inp.*.capture = cap;
 }
 
 // ── left: library + inspector ─────────────────────────────────────────────────
@@ -880,6 +148,74 @@ fn draw_lib_card(a: *App, x: i32, y: i32, w: i32, ki: i32) i32 {
     return y + 58;
 }
 
+// ── tool rail: narrow vertical icon strip on the far left ────────────────────
+fn draw_tool_rail(a: *App) void {
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let r: Rect = zone_rail(a);
+    fill_rect(f, r.x, r.y, r.w, r.h, th_header());
+    vline(f, r.x + r.w - 1, r.y, r.h, th_outline());
+    let by: i32 = r.y + 8;
+    let gap: i32 = 4;
+
+    // Tool buttons: Select, Route, Measure
+    if (ui_icon_button(f, inp, rect(r.x + 4, by, r.w - 8, 28), ico_select(),
+                       a.*.tool == tool_select() && !a.*.moving)) {
+        a.*.tool = tool_select();
+    }
+    ui_tip(inp, rect(r.x, by, r.w, 28), "Select and move parts (Q)");
+    by = by + 28 + gap;
+
+    if (ui_icon_button(f, inp, rect(r.x + 4, by, r.w - 8, 28), ico_route(),
+                       a.*.tool == tool_route())) {
+        a.*.tool = tool_route();
+        a.*.route_c = 0 - 1;
+    }
+    ui_tip(inp, rect(r.x, by, r.w, 28), "Route a waveguide between ports (E)");
+    by = by + 28 + gap;
+
+    if (ui_icon_button(f, inp, rect(r.x + 4, by, r.w - 8, 28), ico_measure(),
+                       a.*.tool == tool_measure())) {
+        a.*.tool = tool_measure();
+        a.*.measure_n = 0;
+    }
+    ui_tip(inp, rect(r.x, by, r.w, 28), "Measure distance and angle (M)");
+    by = by + 28 + gap + 4;
+
+    // Divider
+    hline(f, r.x + 4, by, r.w - 8, th_outline_soft());
+    by = by + 4;
+
+    // Simulation controls: Play/Pause, Step
+    let playing: bool = a.*.sim.*.playing;
+    let play_id: i32 = ico_play();
+    if (playing) { play_id = ico_pause(); }
+    if (ui_icon_button(f, inp, rect(r.x + 4, by, r.w - 8, 28), play_id, playing)) {
+        a.*.sim.*.playing = !playing;
+    }
+    ui_tip(inp, rect(r.x, by, r.w, 28), "Play / pause simulation (Space)");
+    by = by + 28 + gap;
+
+    if (ui_icon_button(f, inp, rect(r.x + 4, by, r.w - 8, 28), ico_step(), false)) {
+        sim_step(a.*.sim, a.*.scene);
+        scene_mark_render(a.*.scene);
+    }
+    ui_tip(inp, rect(r.x, by, r.w, 28), "Step simulation one tick (.)");
+    by = by + 28 + gap + 4;
+
+    // Divider
+    hline(f, r.x + 4, by, r.w - 8, th_outline_soft());
+    by = by + 4;
+
+    // Bottom panel collapse toggle
+    let collapse_id: i32 = ico_chevron_d();
+    if (a.*.bottom_collapsed) { collapse_id = ico_chevron_r(); }
+    if (ui_icon_button(f, inp, rect(r.x + 4, by, r.w - 8, 28), collapse_id, false)) {
+        a.*.bottom_collapsed = !a.*.bottom_collapsed;
+    }
+    ui_tip(inp, rect(r.x, by, r.w, 28), "Toggle timeline / signal debugger");
+}
+
 fn draw_toolbar(a: *App) void {
     let f: *FB = &a.*.f;
     let inp: *Input = &a.*.inp;
@@ -888,27 +224,6 @@ fn draw_toolbar(a: *App) void {
     let x: i32 = content.x + pad_panel();
     let w: i32 = content.w - pad_panel() * 2;
     let y: i32 = content.y + pad_panel();
-
-    // tool row
-    let third: i32 = (w - pad_text() * 2) / 3;
-    if (ui_button(f, inp, rect(x, y, third, control_h()), "Select",
-                  a.*.tool == tool_select() && !a.*.moving)) {
-        a.*.tool = tool_select();
-    }
-    if (ui_button(f, inp, rect(x + third + pad_text(), y, third, control_h()), "Route",
-                  a.*.tool == tool_route())) {
-        a.*.tool = tool_route();
-        a.*.route_c = 0 - 1;
-    }
-    if (ui_button(f, inp, rect(x + (third + pad_text()) * 2, y, third, control_h()), "Measure",
-                  a.*.tool == tool_measure())) {
-        a.*.tool = tool_measure();
-        a.*.measure_n = 0;
-    }
-    ui_tip(inp, rect(x, y, third, control_h()), "Select and move parts (Q)");
-    ui_tip(inp, rect(x + third + pad_text(), y, third, control_h()), "Route a waveguide between ports (E)");
-    ui_tip(inp, rect(x + (third + pad_text()) * 2, y, third, control_h()), "Measure distance and angle (M)");
-    y = y + control_h() + pad_text();
 
     // search bar (Section 3.7)
     let _sch: bool = ui_textfield(f, inp, rect(x, y, w, control_h()), &a.*.lib_search, "Search parts...");
@@ -1090,7 +405,7 @@ fn draw_inspector_comp(a: *App, content: Rect, x: i32, y0: i32, w: i32, ci: i32)
     // identity: name (select color), kind, lock state — full size, never tiny
     draw_text(f, x, y, c.name_, th_select());
     if (app_is_locked(a, id)) {
-        draw_text(f, x + text_w(c.name_) + pad_panel(), y, "locked", th_warning());
+        draw_text(f, x + text_w(c.name_) + pad_panel(), y, "locked", th_locked());
     }
     y = y + row_h();
     draw_text(f, x, y, kind_name(c.kind), th_text());
@@ -1415,12 +730,13 @@ fn outliner_group_row(a: *App, x: i32, y: i32, w: i32, gi: i32, label: []u8, cou
     let open: bool = list.get[i32](a.*.expand, gi) == 1;
     let _eid: i64 = ui_register(inp, "disclosure", label, label, r, true, open, false);
     if (hov) { fill_round_rect(f, r.x, r.y, r.w, r.h, radius_control(), th_header()); }
-    let arrow: []u8 = ">";
-    if (open) { arrow = "v"; }
-    let ty: i32 = y + text_cy(face_dense(), 20);
-    draw_text_face(f, x + 4, ty, face_dense(), arrow, th_text_dim());
+    // Chevron icon replaces text arrow
+    let cid: i32 = ico_chevron_r();
+    if (open) { cid = ico_chevron_d(); }
+    draw_icon(f, x + 2, y + 2, cid, th_text_dim());
     let cnt: []u8 = fmt_i(count as i64);
     let label_max: i32 = w - 16 - text_wf(face_dense(), cnt) - 12;
+    let ty: i32 = y + text_cy(face_dense(), 20);
     draw_text_face_max(f, x + 16, ty, face_dense(), label, th_text(), label_max);
     draw_text_face(f, x + w - text_wf(face_dense(), cnt) - 6, ty, face_dense(), cnt, th_text_dim());
     _zag_str_free(cnt);
@@ -1450,9 +766,11 @@ fn outliner_comp_row(a: *App, row: Rect, j: i32) void {
     if (selr) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
     else if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_header()); }
 
-    // icon by object type
-    fill_rect(f, row.x + 3, row.y + 5, 8, 8, kind_tint(k));
-    rect_outline(f, row.x + 3, row.y + 5, 8, 8, th_outline());
+    // icon by object type: stroke icon tinted by kind color
+    let kid: i32 = ico_cube();
+    if (k == Kind.Emitter) { kid = ico_wave(); }
+    if (k == Kind.Detector) { kid = ico_search(); }
+    draw_icon(f, row.x + 1, row.y + 3, kid, kind_tint(k));
 
     // inline rename (Section 3.6): the row becomes a text field
     if (a.*.rename_id == c.id) {
@@ -1482,8 +800,8 @@ fn outliner_comp_row(a: *App, row: Rect, j: i32) void {
     }
     // warning badge (clickable meaning: selecting the row selects the part)
     if (app_comp_warning(a, c.id) != 0) {
-        draw_text_face(f, bx, rty, face_dense(), "!", th_warning());
-        bx = bx + 10;
+        draw_icon(f, bx, row.y + 3, ico_warning(), th_warning());
+        bx = bx + 18;
     }
     // live signal badge for active parts
     if (k == Kind.Emitter || k == Kind.Chamber || k == Kind.Detector) {
@@ -1492,17 +810,18 @@ fn outliner_comp_row(a: *App, row: Rect, j: i32) void {
         rect_outline(f, bx, row.y + 5, 8, 8, trit_rim(lt));
     }
 
-    // right side: lock toggle then visibility toggle
-    let lk: []u8 = "-";
+    // right side: lock toggle then visibility toggle (icon-based)
+    let locked: bool = app_is_locked(a, c.id);
+    let lid: i32 = ico_unlock();
     let lcol: i64 = th_disabled();
-    if (app_is_locked(a, c.id)) { lk = "#"; lcol = th_warning(); }
-    if (ui_mini(f, inp, rect(row.x + row.w - 32, row.y, 14, row.h), lk, lcol)) {
+    if (locked) { lid = ico_lock(); lcol = th_locked(); }
+    if (ui_icon_button(f, inp, rect(row.x + row.w - 34, row.y, 16, row.h), lid, locked)) {
         app_toggle_lock(a, c.id);
         return;
     }
-    let eye: []u8 = "o";
-    if (!c.visible) { eye = "-"; }
-    if (ui_mini(f, inp, rect(row.x + row.w - 16, row.y, 14, row.h), eye, th_text_dim())) {
+    let vid: i32 = ico_eye();
+    if (!c.visible) { vid = ico_eye_off(); }
+    if (ui_icon_button(f, inp, rect(row.x + row.w - 16, row.y, 16, row.h), vid, !c.visible)) {
         a.*.scene.*.comps.data[j].visible = !c.visible;
         scene_mark_render(a.*.scene);
         return;
@@ -1552,7 +871,7 @@ fn draw_outliner(a: *App) void {
     let f: *FB = &a.*.f;
     let inp: *Input = &a.*.inp;
     let panel_r: Rect = zone_right(a);
-    let content: Rect = ui_panel(f, panel_r, "OUTLINER");
+    let content: Rect = ui_panel(f, panel_r, "SCENE");
     fb_clip(f, content.x, content.y, content.x + content.w, content.y + content.h);
 
     if (hover(inp, content) && inp.*.wheel != 0) {
@@ -1660,11 +979,9 @@ fn draw_outliner(a: *App) void {
                 let sci: i32 = scene_comp_index(a.*.scene, g.from_c);
                 let dci: i32 = scene_comp_index(a.*.scene, g.to_c);
                 if (sci >= 0 && dci >= 0) {
-                    let t1: []u8 = _zag_str_concat(a.*.scene.*.comps.data[sci].name_, " > ");
-                    let t2: []u8 = _zag_str_concat(t1, a.*.scene.*.comps.data[dci].name_);
+                    let t2: []u8 = s3(a.*.scene.*.comps.data[sci].name_, " > ", a.*.scene.*.comps.data[dci].name_);
                     let grty: i32 = row.y + text_cy(face_dense(), row.h);
                     draw_text_face_max(f, row.x + 17, grty, face_dense(), t2, th_text(), row.w - 38);
-                    _zag_str_free(t1);
                     _zag_str_free(t2);
                 }
                 if (ui_mini(f, inp, rect(row.x + row.w - 16, row.y, 14, 20), "x", th_danger())) {
@@ -2086,7 +1403,7 @@ fn draw_scope(a: *App, content: Rect) void {
         while (ii < inc.len) {
             let g: Guide = a.*.scene.*.guides.data[list.get[i32](inc, ii)];
             let tr: i32 = g.live;
-            let s0: f64 = sin(t + trit_phase_pi(tr) * 3.14159265);
+            let s0: f64 = sin(t + trit_phase_pi(tr) * pi());
             let w0: f64 = trit_amp(tr);
             field = field + s0 * w0;
             let cy0: i32 = mid - ((s0 * w0 * amp_px * 0.35) as i32);
@@ -2188,120 +1505,13 @@ fn draw_measure(a: *App, vp: Rect) void {
     _zag_str_free(s2l);
 }
 
-// ── right-click context menu (Section 3.6) ────────────────────────────────────
-
-fn ctx_items(a: *App, out: *list.ArrayList[MenuItem]) void {
-    out.*.len = 0;
-    if (a.*.ctx_comp >= 0) {
-        let ci: i32 = scene_comp_index(a.*.scene, a.*.ctx_comp);
-        let vis_label: []u8 = "Hide";
-        if (ci >= 0 && !a.*.scene.*.comps.data[ci].visible) { vis_label = "Show"; }
-        let lock_label: []u8 = "Lock";
-        if (app_is_locked(a, a.*.ctx_comp)) { lock_label = "Unlock"; }
-        list.push[MenuItem](out, MenuItem{ .label = "Rename", .hint = "F2", .code = cmd_rename() });
-        list.push[MenuItem](out, MenuItem{ .label = "Duplicate", .hint = "Shift+D", .code = cmd_duplicate() });
-        list.push[MenuItem](out, MenuItem{ .label = "Copy", .hint = "Ctrl+C", .code = cmd_copy() });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
-        list.push[MenuItem](out, MenuItem{ .label = "Frame", .hint = "F", .code = cmd_frame_selected() });
-        list.push[MenuItem](out, MenuItem{ .label = vis_label, .hint = "", .code = cmd_toggle_visibility() });
-        list.push[MenuItem](out, MenuItem{ .label = lock_label, .hint = "", .code = cmd_toggle_lock() });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
-        list.push[MenuItem](out, MenuItem{ .label = "Group", .hint = "Ctrl+G", .code = cmd_group() });
-        list.push[MenuItem](out, MenuItem{ .label = "Ungroup", .hint = "", .code = cmd_ungroup() });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
-        list.push[MenuItem](out, MenuItem{ .label = "Delete", .hint = "X", .code = cmd_delete() });
-    } else {
-        list.push[MenuItem](out, MenuItem{ .label = "Paste", .hint = "Ctrl+V", .code = cmd_paste() });
-        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
-        list.push[MenuItem](out, MenuItem{ .label = "Frame All", .hint = "Home", .code = cmd_frame_all() });
-        list.push[MenuItem](out, MenuItem{ .label = "Reset View", .hint = "", .code = cmd_reset_view() });
-    }
-}
-
-fn ctx_exec(a: *App, code: i32) void {
-    if (code == cmd_toggle_visibility()) {
-        let ci: i32 = scene_comp_index(a.*.scene, a.*.ctx_comp);
-        if (ci >= 0) {
-            a.*.scene.*.comps.data[ci].visible = !a.*.scene.*.comps.data[ci].visible;
-            scene_mark_render(a.*.scene);
-        }
-        return;
-    }
-    if (code == cmd_toggle_lock()) {
-        app_toggle_lock(a, a.*.ctx_comp);
-        return;
-    }
-    app_action(a, code);
-}
-
-fn draw_ctx_menu(a: *App) void {
-    if (!a.*.ctx_open) { return; }
-    let f: *FB = &a.*.f;
-    let inp: *Input = &a.*.inp;
-    let cap: i32 = inp.*.capture;
-    inp.*.capture = 0;
-
-    let items: list.ArrayList[MenuItem] = list.make[MenuItem](14);
-    ctx_items(a, &items);
-    let iw: i32 = 200;
-    let ih: i32 = row_h() + 2;
-    let sep: i32 = 9;
-    let total: i32 = 0;
-    let i: i32 = 0;
-    while (i < items.len) {
-        if (items.data[i].code == cmd_none()) { total = total + sep; } else { total = total + ih; }
-        i = i + 1;
-    }
-    let mx0: i32 = a.*.ctx_x;
-    let my0: i32 = a.*.ctx_y;
-    if (mx0 + iw > inp.*.w - 4) { mx0 = inp.*.w - 4 - iw; }
-    if (my0 + total + 8 > inp.*.h - 4) { my0 = inp.*.h - 4 - total - 8; }
-    let dr: Rect = rect(mx0, my0, iw, total + 8);
-    draw_shadow(f, dr.x, dr.y, dr.w, dr.h, radius_panel());
-    fill_round_rect(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_panel());
-    round_rect_outline(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_outline());
-
-    let y: i32 = dr.y + 4;
-    let clicked: bool = false;
-    i = 0;
-    while (i < items.len) {
-        let it: MenuItem = items.data[i];
-        if (it.code == cmd_none()) {
-            hline(f, dr.x + 8, y + 4, dr.w - 16, th_outline_soft());
-            y = y + sep;
-        } else {
-            let row: Rect = rect(dr.x + 4, y, dr.w - 8, ih);
-            let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
-            let _eid: i64 = ui_register(inp, "menuitem", it.label, it.label, row, true, false, false);
-            if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
-            draw_text(f, row.x + pad_panel(), y + text_cy(face_body(), ih), it.label, th_text());
-            if (it.hint.len > 0) {
-                draw_text(f, row.x + row.w - text_w(it.hint) - pad_panel(), y + text_cy(face_body(), ih), it.hint, th_text_dim());
-            }
-            if (hov && btn_released(inp, 0)) {
-                a.*.ctx_open = false;
-                ctx_exec(a, it.code);
-                clicked = true;
-            }
-            y = y + ih;
-        }
-        i = i + 1;
-    }
-    if (!clicked && (btn_pressed(inp, 0) || btn_pressed(inp, 2)) &&
-        !rect_has(dr, inp.*.mx, inp.*.my)) {
-        a.*.ctx_open = false;
-    }
-    list.free[MenuItem](&items);
-    inp.*.capture = cap;
-}
-
 // ── center: 3D viewport composition ───────────────────────────────────────────
 
 fn draw_viewport_toolbar(a: *App, vp: Rect) void {
     let f: *FB = &a.*.f;
     let inp: *Input = &a.*.inp;
     let bh: i32 = 24;
-    let tw: i32 = 326;
+    let tw: i32 = 226;
     let x: i32 = vp.x + (vp.w - tw) / 2;
     let y: i32 = vp.y + 10;
     draw_shadow(f, x, y, tw, bh + 8, radius_panel());
@@ -2309,18 +1519,15 @@ fn draw_viewport_toolbar(a: *App, vp: Rect) void {
     round_rect_outline(f, x, y, tw, bh + 8, radius_panel(), th_outline());
     let bx: i32 = x + 8;
     let by: i32 = y + 4;
-    if (ui_button(f, inp, rect(bx, by, 42, bh), "Fit", false)) { app_frame_all(a); }
-    bx = bx + 46;
-    if (ui_button(f, inp, rect(bx, by, 42, bh), "Top", false)) { app_action(a, cmd_view_top()); }
-    bx = bx + 46;
-    if (ui_button(f, inp, rect(bx, by, 48, bh), "Front", false)) { app_action(a, cmd_view_front()); }
-    bx = bx + 52;
-    if (ui_button(f, inp, rect(bx, by, 48, bh), "Right", false)) { app_action(a, cmd_view_right()); }
-    bx = bx + 52;
+    // Icon buttons: Fit, Top, Front, Right, Ortho/Persp, Reset
+    if (ui_icon_button(f, inp, rect(bx, by, bh, bh), ico_grid(), false)) { app_frame_all(a); }
+    bx = bx + bh + 4;
+    if (ui_icon_button(f, inp, rect(bx, by, bh, bh), ico_chevron_d(), false)) { app_action(a, cmd_view_top()); }
+    bx = bx + bh + 4;
     let proj: []u8 = "Ortho"; if (!a.*.cam.ortho) { proj = "Persp"; }
     if (ui_button(f, inp, rect(bx, by, 54, bh), proj, a.*.cam.ortho)) { app_action(a, cmd_toggle_ortho()); }
     bx = bx + 58;
-    if (ui_button(f, inp, rect(bx, by, 48, bh), "Reset", false)) { app_action(a, cmd_reset_view()); }
+    if (ui_icon_button(f, inp, rect(bx, by, bh, bh), ico_reset(), false)) { app_action(a, cmd_reset_view()); }
 }
 
 // One source of truth for both viewport rendering and X11 presentation. A
@@ -2382,6 +1589,27 @@ fn draw_viewport(a: *App) void {
 
     // ── dynamic overlay (every frame, z-tested against the cached depth) ─────
     vp_draw_live(f, vp_phys_cam(f, a.*.cam), pvp, s, a.*.sim, a.*.sel_guide, a.*.sect_on, a.*.sect_y, false);
+
+    // selection outlines: draw a wireframe box around each selected component
+    // so the viewport reflects the outliner's selection state (Section 3.5).
+    if (!a.*.moving) {
+        let si: i32 = 0;
+        while (si < a.*.sel.len) {
+            let ci: i32 = scene_comp_index(s, list.get[i32](a.*.sel, si));
+            if (ci >= 0) {
+                let c: Comp = s.*.comps.data[ci];
+                if (c.visible) {
+                    let lo: Vec3 = comp_bounds_min(c);
+                    let hi: Vec3 = comp_bounds_max(c);
+                    let pad: f64 = 0.08;
+                    let mn: Vec3 = v3(lo.x - pad, lo.y - pad, lo.z - pad);
+                    let mx: Vec3 = v3(hi.x + pad, hi.y + pad, hi.z + pad);
+                    vp_box_wire(f, vp_phys_cam(f, a.*.cam), pvp, mn, mx, th_select());
+                }
+            }
+            si = si + 1;
+        }
+    }
 
     // simulation tick pulses active beams for a few frames (Section 3.11):
     // a brief brightness lift on the carrier centerline, color only, and off
@@ -2756,878 +1984,6 @@ fn draw_frame_timing_overlay(a: *App, vp: Rect) void {
     draw_text(f, tx4, fty, " ms", th_text_dim());
 }
 
-// ── modals ────────────────────────────────────────────────────────────────────
-
-fn modal_frame(a: *App, w: i32, h: i32, title: []u8) Rect {
-    let f: *FB = &a.*.f;
-    // dim everything behind
-    blend_rect(f, 0, 0, a.*.inp.w, a.*.inp.h, rgb(8, 8, 10), 150);
-    let r: Rect = rect((a.*.inp.w - w) / 2, (a.*.inp.h - h) / 2, w, h);
-    draw_shadow(f, r.x, r.y, r.w, r.h, radius_panel());
-    fill_round_rect(f, r.x, r.y, r.w, r.h, radius_panel(), th_panel());
-    round_rect_outline(f, r.x, r.y, r.w, r.h, radius_panel(), th_outline());
-    fill_round_rect(f, r.x + 1, r.y + 1, r.w - 2, 30, radius_panel() - 1, th_header());
-    fill_rect(f, r.x + 1, r.y + 15, r.w - 2, 16, th_header());
-    hline(f, r.x + 1, r.y + 30, r.w - 2, th_outline_soft());
-    draw_text_face(f, r.x + pad_panel(), r.y + text_cy(face_section(), 30), face_section(), title, th_text());
-    return r;
-}
-
-// Flash FIR workspace: a visible, bounded path from source selection through
-// import to run/step and per-operation inspection. It never executes Flash or
-// host code; it only parses FIR through flash_ir.zag.
-fn draw_flash_panel(a: *App) void {
-    if (!a.*.flash_open) { return; }
-    let f: *FB = &a.*.f;
-    let inp: *Input = &a.*.inp;
-    let cap: i32 = inp.*.capture; inp.*.capture = 0;
-    let pr: Rect = modal_frame(a, 660, 420, "Flash FIR Workspace");
-    let field: Rect = rect(pr.x + 12, pr.y + 34, pr.w - 134, 20);
-    let _changed: bool = ui_textfield(f, inp, field, &a.*.flash_path, "path/to/program.fir");
-    if (ui_button(f, inp, rect(pr.x + pr.w - 112, pr.y + 34, 100, 20), "Import FIR", false) ||
-        a.*.flash_path.committed) {
-        let _ok: bool = app_flash_import(a, textedit_text(&a.*.flash_path));
-    }
-
-    let by: i32 = pr.y + 62;
-    let run_label: []u8 = "Run"; if (a.*.sim.*.playing) { run_label = "Pause"; }
-    if (ui_button(f, inp, rect(pr.x + 12, by, 62, 20), run_label, a.*.sim.*.playing)) {
-        a.*.sim.*.playing = !a.*.sim.*.playing;
-    }
-    if (ui_button(f, inp, rect(pr.x + 80, by, 54, 20), "Step", false)) {
-        sim_step(a.*.sim, a.*.scene);
-    }
-    if (ui_button(f, inp, rect(pr.x + 140, by, 58, 20), "Reset", false)) {
-        sim_reset(a.*.sim, a.*.scene);
-    }
-    let stat: []u8 = "not imported"; let scol: i64 = th_text_dim();
-    if (a.*.flash_verify_errors == 0) { stat = "verified: all detector traces match"; scol = th_ok(); }
-    else if (a.*.flash_verify_errors > 0) { stat = "verification mismatch"; scol = th_danger(); }
-    draw_text(f, pr.x + 212, by + 6, stat, scol);
-
-    let sy: i32 = pr.y + 94;
-    draw_text(f, pr.x + 12, sy, "FIR SOURCE", th_text_dim());
-    draw_text(f, pr.x + 340, sy, "PER-OPERATION TRACE", th_text_dim());
-    let sr: Rect = rect(pr.x + 12, sy + 14, 310, 272);
-    let tr: Rect = rect(pr.x + 336, sy + 14, 312, 272);
-    fill_round_rect(f, sr.x, sr.y, sr.w, sr.h, radius_control(), rgb(13, 14, 18));
-    fill_round_rect(f, tr.x, tr.y, tr.w, tr.h, radius_control(), rgb(13, 14, 18));
-    round_rect_outline(f, sr.x, sr.y, sr.w, sr.h, radius_control(), th_outline());
-    round_rect_outline(f, tr.x, tr.y, tr.w, tr.h, radius_control(), th_outline());
-    if (a.*.flash_raw.len == 0) {
-        ui_empty_state(f, sr, "no FIR loaded", "choose a bounded Flash FIR above");
-        ui_empty_state(f, tr, "no operation trace", "import then Run or Step");
-    } else {
-        let pos: i32 = 0; let row: i32 = 0;
-        while (pos < a.*.flash_raw.len && row < 16) {
-            let en: i32 = pos;
-            while (en < a.*.flash_raw.len && (a.*.flash_raw[en] as i32) != 10) { en = en + 1; }
-            draw_text_max(f, sr.x + 7, sr.y + 7 + row * 15, a.*.flash_raw[pos..en], th_text_dim(), sr.w - 14);
-            pos = en + 1; row = row + 1;
-        }
-        let i: i32 = 0;
-        while (i < a.*.flash_tags.len && i < 16) {
-            let yy: i32 = tr.y + 7 + i * 16;
-            draw_text_max(f, tr.x + 7, yy, a.*.flash_tags.data[i], th_text(), 112);
-            let fo_n: []u8 = _zag_i64_to_str(a.*.flash_ops.data[i] as i64);
-            let os: []u8 = s2("op ", fo_n);
-            _zag_str_free(fo_n);
-            draw_text(f, tr.x + 126, yy, os, th_text_dim());
-            _zag_str_free(os);
-            let es: []u8 = s2("expected ", trit_glyph(a.*.flash_expected.data[i]));
-            let ecol: i64 = th_warning();
-            if (a.*.flash_verify_errors == 0) { ecol = th_ok(); }
-            draw_text(f, tr.x + 184, yy, es, ecol);
-            _zag_str_free(es);
-            i = i + 1;
-        }
-    }
-    draw_text(f, pr.x + 12, pr.y + pr.h - 24,
-              "FIR import is simulated software evidence; no fabricated-hardware claim.", th_warning());
-    if (ui_button(f, inp, rect(pr.x + pr.w - 88, pr.y + pr.h - 28, 76, 20), "Close", false)) {
-        a.*.flash_open = false;
-    }
-    inp.*.capture = cap;
-}
-
-fn draw_modal(a: *App) void {
-    if (a.*.modal == modal_none()) { return; }
-    let f: *FB = &a.*.f;
-    let inp: *Input = &a.*.inp;
-    // The modal owns the pointer. Underlying panels were already rendered inert
-    // with capture=4; release capture here so modal buttons themselves work.
-    inp.*.capture = 0;
-
-    if (a.*.modal == modal_open()) {
-        let r: Rect = modal_frame(a, 380, 300, "Open Design");
-        let y: i32 = r.y + 30;
-        if (a.*.modal_files.len == 0) {
-            draw_text(f, r.x + 12, y + 6, "no .zpa designs in this folder", th_text_dim());
-        }
-        let i: i32 = 0;
-        while (i < a.*.modal_files.len && y < r.y + r.h - 56) {
-            let nm: []u8 = list.get[[]u8](a.*.modal_files, i);
-            let row: Rect = rect(r.x + 8, y, r.w - 16, 18);
-            let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
-            let _eid: i64 = ui_register(inp, "option", nm, nm, row, true, false, false);
-            if (hov) { fill_rect(f, row.x, row.y, row.w, row.h, th_accent()); }
-            draw_text(f, row.x + 6, y + 5, nm, th_text());
-            if (hov && btn_released(inp, 0)) {
-                app_open_file(a, nm);
-                a.*.modal = modal_none();
-            }
-            y = y + 19;
-            i = i + 1;
-        }
-        if (ui_button(f, inp, rect(r.x + r.w - 88, r.y + r.h - 26, 80, 18), "Cancel", false)) {
-            a.*.modal = modal_none();
-        }
-        return;
-    }
-
-    if (a.*.modal == modal_recovery()) {
-        let r: Rect = modal_frame(a, 460, 250, "Recover Autosave");
-        draw_text(f, r.x + 12, r.y + 34,
-                  "Choose one of the three retained pre-save snapshots.", th_text_dim());
-        let y: i32 = r.y + 56;
-        if (a.*.modal_files.len == 0) {
-            ui_empty_state(f, rect(r.x + 8, y, r.w - 16, 110),
-                           "no recovery snapshots", "autosave history appears after edits");
-        }
-        let i: i32 = 0;
-        while (i < a.*.modal_files.len) {
-            let p: []u8 = a.*.modal_files.data[i];
-            let row: Rect = rect(r.x + 8, y, r.w - 16, 26);
-            let rl_n: []u8 = _zag_i64_to_str((i + 1) as i64);
-            let label: []u8 = s2("Restore snapshot ", rl_n);
-            _zag_str_free(rl_n);
-            if (ui_button(f, inp, row, ui_park(a, label), false)) { let _ok: bool = app_recover_file(a, p); }
-            y = y + 31; i = i + 1;
-        }
-        if (ui_button(f, inp, rect(r.x + r.w - 88, r.y + r.h - 26, 80, 18), "Cancel", false)) {
-            a.*.modal = modal_none();
-        }
-        return;
-    }
-
-    if (a.*.modal == modal_permission()) {
-        let r: Rect = modal_frame(a, 440, 156, "Write Permission");
-        draw_text(f, r.x + 14, r.y + 38, "This workspace is read-only under the current host policy.", th_text());
-        draw_text(f, r.x + 14, r.y + 56, "Allow edits once, or keep inspecting without mutation.", th_text_dim());
-        draw_text(f, r.x + 14, r.y + 78, "Enter allows once; Esc keeps read-only.", th_accent_hot());
-        if (ui_button(f, inp, rect(r.x + 14, r.y + 108, 118, 24), "Allow once", true)) {
-            app_permission_allow_once(a);
-        }
-        if (ui_button(f, inp, rect(r.x + 140, r.y + 108, 138, 24), "Keep read-only", false)) {
-            app_permission_keep_read_only(a);
-        }
-        return;
-    }
-
-    if (a.*.modal == modal_saveas()) {
-        let r: Rect = modal_frame(a, 380, 118, "Save Design As");
-        draw_text(f, r.x + 12, r.y + 34, "file name:", th_text_dim());
-        let field: Rect = rect(r.x + 12, r.y + 48, r.w - 24, 20);
-        fill_rect(f, field.x, field.y, field.w, field.h, rgb(18, 18, 22));
-        rect_outline(f, field.x, field.y, field.w, field.h, th_accent());
-        let txt: []u8 = a.*.modal_text.data[0..a.*.modal_text.len];
-        draw_text(f, field.x + 6, field.y + 6, txt, th_text());
-        // caret
-        fill_rect(f, field.x + 6 + text_w(txt) + 1, field.y + 4, 1, 12, th_accent_hot());
-        if (ui_button(f, inp, rect(r.x + r.w - 176, r.y + r.h - 26, 80, 18), "Save", false)) {
-            app_saveas_commit(a);
-        }
-        if (ui_button(f, inp, rect(r.x + r.w - 88, r.y + r.h - 26, 80, 18), "Cancel", false)) {
-            a.*.modal = modal_none();
-        }
-        return;
-    }
-
-    if (a.*.modal == modal_keys()) {
-        let r: Rect = modal_frame(a, 420, 312, "Shortcuts");
-        let x: i32 = r.x + 14;
-        let y: i32 = r.y + 32;
-        draw_text(f, x, y, "1..5", th_accent_hot());
-        draw_text(f, x + 90, y, "arm a component for placement", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "Q / E", th_accent_hot());
-        draw_text(f, x + 90, y, "select tool / route tool", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "R", th_accent_hot());
-        draw_text(f, x + 90, y, "rotate placement ghost", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "G", th_accent_hot());
-        draw_text(f, x + 90, y, "move selection (click to drop)", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "Shift+D", th_accent_hot());
-        draw_text(f, x + 90, y, "duplicate selection", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "X / Del", th_accent_hot());
-        draw_text(f, x + 90, y, "delete selection", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "Shift+click", th_accent_hot());
-        draw_text(f, x + 90, y, "add or remove from selection", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "F / Home", th_accent_hot());
-        draw_text(f, x + 90, y, "frame selected / frame all", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "T", th_accent_hot());
-        draw_text(f, x + 90, y, "cycle emitter pattern", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "Space", th_accent_hot());
-        draw_text(f, x + 90, y, "run / pause the simulation", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "Ctrl+Z / Y", th_accent_hot());
-        draw_text(f, x + 90, y, "undo / redo", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "Ctrl+N/O/S", th_accent_hot());
-        draw_text(f, x + 90, y, "new / open / save design", th_text());
-        y = y + 16;
-        draw_text(f, x, y, "MMB drag", th_accent_hot());
-        draw_text(f, x + 90, y, "orbit (Shift+MMB pans)", th_text());
-        y = y + 18;
-        draw_text(f, x, y, "RMB drag", th_accent_hot());
-        draw_text(f, x + 90, y, "free-look without orbiting the center", th_text());
-        y = y + 18;
-        draw_text(f, x, y, "RMB + WASD", th_accent_hot());
-        draw_text(f, x + 90, y, "fly; Q/E vertical, Shift fast, Ctrl precise", th_text());
-        y = y + 22;
-        if (ui_button(f, inp, rect(r.x + r.w - 88, r.y + r.h - 26, 80, 18), "Close", false)) {
-            a.*.modal = modal_none();
-        }
-    }
-}
-
-fn draw_access_state(a: *App) void {
-    if (a.*.access_state == access_ready()) { return; }
-    let f: *FB = &a.*.f; let inp: *Input = &a.*.inp;
-    let vp: Rect = zone_center(a);
-    let r: Rect = rect(vp.x + 12, vp.y + 12, imin(430, vp.w - 24), 46);
-    blend_round_rect(f, r.x, r.y, r.w, r.h, radius_panel(), rgb(8, 10, 15), 232);
-    let col: i64 = th_warning(); let title: []u8 = "Loading workspace...";
-    if (a.*.access_state == access_disconnected()) { title = "Disconnected"; col = th_danger(); }
-    if (a.*.access_state == access_read_only()) { title = "Read-only workspace"; col = th_warning(); }
-    round_rect_outline(f, r.x, r.y, r.w, r.h, radius_panel(), col);
-    draw_text(f, r.x + 10, r.y + 9, title, col);
-    draw_text_max(f, r.x + 10, r.y + 25, a.*.access_message, th_text_dim(), r.w - 126);
-    if (a.*.access_state == access_disconnected()) {
-        if (ui_button(f, inp, rect(r.x + r.w - 96, r.y + 12, 84, 22), "Retry", false)) {
-            app_set_access_state(a, access_loading(), "reconnecting to the live session");
-        }
-    }
-    if (a.*.access_state == access_read_only()) {
-        if (ui_button(f, inp, rect(r.x + r.w - 118, r.y + 12, 106, 22), "Request write", false)) {
-            app_request_write_access(a);
-        }
-    }
-}
-
-fn draw_model_panel(a: *App) void {
-    if (!a.*.model_open) { return; }
-    let f: *FB = &a.*.f;
-    let inp: *Input = &a.*.inp;
-    let cap: i32 = inp.*.capture;
-    inp.*.capture = 0;
-    let pw: i32 = imin(780, inp.*.w - 24);
-    let ph: i32 = imin(570, inp.*.h - 48);
-    let pr: Rect = rect((inp.*.w - pw) / 2, (inp.*.h - ph) / 2, pw, ph);
-    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
-    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
-    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
-    draw_text(f, pr.x + 14, pr.y + 14, "PHYSICAL MODEL & PROVENANCE", th_text());
-    let sl_v: []u8 = fmt_i(a.*.scene.*.model.schema_version as i64);
-    let schema_line: []u8 = s2("Pinned schema ", sl_v);
-    _zag_str_free(sl_v);
-    draw_text(f, pr.x + 14, pr.y + 31, schema_line, th_accent_hot());
-    _zag_str_free(schema_line);
-    draw_text(f, pr.x + 120, pr.y + 31, a.*.scene.*.model.id, th_text_dim());
-    if (model_can_migrate(a.*.scene.*.model, model_schema_current())) {
-        if (ui_button(f, inp, rect(pr.x + pr.w - 206, pr.y + 10, 112, 22), "Migrate to v2", true)) {
-            if (model_migrate(&a.*.scene.*.model, 2)) {
-                scene_mark_render(a.*.scene); app_mark_dirty(a); app_log(a, "physical model migrated to schema 2");
-            }
-        }
-    }
-    if (ui_button(f, inp, rect(pr.x + pr.w - 86, pr.y + 10, 72, 22), "Close", false)) {
-        a.*.model_open = false; inp.*.capture = cap; return;
-    }
-
-    draw_text(f, pr.x + 14, pr.y + 54, "VERSIONED DEVICE TYPES", th_text_dim());
-    let tw: i32 = (pr.w - 28) / 4;
-    let ti: i32 = 0;
-    while (ti < model_type_schema_count()) {
-        let d: DeviceTypeSchema = model_type_schema(ti);
-        let tx: i32 = pr.x + 14 + (ti % 4) * tw;
-        let ty: i32 = pr.y + 68 + (ti / 4) * 20;
-        let ts_v: []u8 = fmt_i(d.version as i64);
-        let ts: []u8 = s3(d.id, "  v", ts_v);
-        _zag_str_free(ts_v);
-        draw_text(f, tx, ty + 4, ts, th_text());
-        _zag_str_free(ts);
-        ti = ti + 1;
-    }
-
-    let grid_y: i32 = pr.y + 116;
-    draw_text(f, pr.x + 14, grid_y, "PHYSICAL PARAMETERS", th_text_dim());
-    let cols: i32 = 3;
-    let cw: i32 = (pr.w - 28) / cols;
-    let pi: i32 = 0;
-    while (pi < model_param_count()) {
-        let col: i32 = pi % cols;
-        let row_i: i32 = pi / cols;
-        let rr: Rect = rect(pr.x + 14 + col * cw, grid_y + 14 + row_i * 25, cw - 6, 22);
-        let p: PhysicalParam = model_param_at(a.*.scene.*.model, pi);
-        let selected: bool = a.*.model_param_sel == pi;
-        let hov: bool = rect_has(rr, inp.*.mx, inp.*.my);
-        if (selected) { fill_round_rect(f, rr.x, rr.y, rr.w, rr.h, radius_control(), th_accent()); }
-        else if (hov) { fill_round_rect(f, rr.x, rr.y, rr.w, rr.h, radius_control(), th_header()); }
-        let _eid: i64 = ui_register(inp, "gridcell", model_param_name(pi), model_param_name(pi), rr,
-                                    true, selected, false);
-        draw_text_max(f, rr.x + 5, rr.y + 4, model_param_name(pi), th_text(), rr.w / 2);
-        let pvc: i64 = th_warning();
-        if (p.known) { pvc = th_text_dim(); }
-        if (p.known) {
-            let pv_f: []u8 = fmt_f1(p.value);
-            let pv: []u8 = s3(pv_f, " ", p.units);
-            _zag_str_free(pv_f);
-            draw_text_max(f, rr.x + rr.w / 2, rr.y + 4, pv, pvc, rr.w / 2 - 5);
-            _zag_str_free(pv);
-        } else {
-            draw_text_max(f, rr.x + rr.w / 2, rr.y + 4, "Unknown", pvc, rr.w / 2 - 5);
-        }
-        if (hov && btn_released(inp, 0)) { a.*.model_param_sel = pi; }
-        pi = pi + 1;
-    }
-
-    let detail_y: i32 = grid_y + 14 + 9 * 25 + 8;
-    let dp: PhysicalParam = model_param_at(a.*.scene.*.model, a.*.model_param_sel);
-    hline(f, pr.x + 14, detail_y - 6, pr.w - 28, th_outline_soft());
-    draw_text(f, pr.x + 14, detail_y, model_param_name(a.*.model_param_sel), th_text());
-    let dpc: i64 = th_warning();
-    if (dp.known) { dpc = th_accent_hot(); }
-    let dp_unc: []u8 = fmt_f1(dp.uncertainty);
-    let dp_ev: []u8 = s3(evidence_class_name(dp.confidence), "  uncertainty ±", dp_unc);
-    _zag_str_free(dp_unc);
-    draw_text(f, pr.x + 14, detail_y + 16, dp_ev, dpc);
-    _zag_str_free(dp_ev);
-    let dp_src: []u8 = s2("Source: ", dp.source);
-    draw_text(f, pr.x + 14, detail_y + 32, dp_src, th_text_dim());
-    _zag_str_free(dp_src);
-    let dp_m: []u8 = s2("Method: ", dp.method);
-    draw_text(f, pr.x + 14, detail_y + 48, dp_m, th_text_dim());
-    _zag_str_free(dp_m);
-    let dp_v: []u8 = s2("Version: ", dp.source_version);
-    draw_text(f, pr.x + pr.w - 270, detail_y + 32, dp_v, th_text_dim());
-    _zag_str_free(dp_v);
-    let dp_d: []u8 = s2("Date: ", dp.date_);
-    draw_text(f, pr.x + pr.w - 270, detail_y + 48, dp_d, th_text_dim());
-    _zag_str_free(dp_d);
-
-    if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my)) { a.*.model_open = false; }
-    inp.*.capture = cap;
-}
-
-// ── frame orchestration ───────────────────────────────────────────────────────
-
-// ── Settings panel (Section 20.5) ────────────────────────────────────────────
-fn draw_settings_panel(a: *App) void {
-    if (!a.*.settings_open) { return; }
-    let f: *FB = &a.*.f;
-    let inp: *Input = &a.*.inp;
-    // This panel is topmost and owns the pointer: its own controls must be live
-    // even though the frame set capture to keep everything underneath inert.
-    let cap: i32 = inp.*.capture;
-    inp.*.capture = 0;
-    let gr: Rect = zone_settings_gear(a);
-    let pw: i32 = 236;
-    let px: i32 = gr.x + gr.w - pw;
-    if (px < 4) { px = 4; }
-    let pr: Rect = rect(px, menu_h(), pw, 510);
-    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
-    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
-    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
-    draw_text(f, pr.x + pad_panel(), pr.y + 8, "Settings", th_text());
-
-    let y: i32 = pr.y + 26;
-    draw_text(f, pr.x + 10, y + 5, "Optimizer", th_text_dim());
-    let e_lbl: []u8 = "Off";
-    if (a.*.opt.*.enabled) { e_lbl = "On"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), e_lbl, a.*.opt.*.enabled)) {
-        a.*.opt.*.enabled = !a.*.opt.*.enabled;
-        if (!a.*.opt.*.enabled) { a.*.opt_open = false; }
-    }
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "CPU budget", th_text_dim());
-    if (ui_mini(f, inp, rect(pr.x + pw - 88, y + 2, 16, 16), "-", th_text())) { a.*.opt.*.cpu_budget_pct = imax(1, a.*.opt.*.cpu_budget_pct - 1); }
-    if (ui_mini(f, inp, rect(pr.x + pw - 18, y + 2, 16, 16), "+", th_text())) { a.*.opt.*.cpu_budget_pct = imin(20, a.*.opt.*.cpu_budget_pct + 1); }
-    let cbx: i32 = pr.x + pw - 62; cbx = cbx + draw_int(f, cbx, y + 5, a.*.opt.*.cpu_budget_pct as i64, th_text_dim());
-    draw_text(f, cbx, y + 5, "%", th_text_dim());
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "Quiet hours UTC", th_text_dim());
-    let qh_s: []u8 = _zag_i64_to_str(a.*.opt.*.quiet_start_hour as i64);
-    let qh_e: []u8 = _zag_i64_to_str(a.*.opt.*.quiet_end_hour as i64);
-    let qtext: []u8 = s3(qh_s, "-", qh_e);
-    _zag_str_free(qh_s);
-    _zag_str_free(qh_e);
-    // ui_button registers the label into the frame catalog (ui_button_key falls
-    // back to the label itself), so it must be parked, not freed after the call.
-    if (ui_button(f, inp, rect(pr.x + pw - 74, y, 64, 18), ui_park(a, qtext), opt_quiet_now(a.*.opt))) {
-        a.*.opt.*.quiet_start_hour = (a.*.opt.*.quiet_start_hour + 1) % 24;
-        a.*.opt.*.quiet_end_hour = (a.*.opt.*.quiet_end_hour + 1) % 24;
-    }
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "Watchdog", th_text_dim());
-    let wd: []u8 = "Armed"; if (a.*.opt.*.suspended) { wd = "Resume"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 74, y, 64, 18), wd, !a.*.opt.*.suspended)) { opt_engine_resume(a.*.opt); }
-    y = y + 24;
-    let policy: []u8 = "Host policy: inspect only"; let pcol: i64 = th_warning();
-    if (cap_allowed(cap_edit())) { policy = "Host policy: edits allowed"; pcol = th_ok(); }
-    draw_text(f, pr.x + 10, y + 5, policy, pcol);
-    y = y + 24;
-    if (ui_button(f, inp, rect(pr.x + 10, y, pw - 20, 18), "Reset optimizer defaults", false)) {
-        a.*.opt.*.enabled = true; a.*.opt.*.auto_apply = false; a.*.opt.*.min_gain_pct = 1;
-        a.*.opt.*.family_dead_path = true; a.*.opt.*.family_const_collapse = true;
-        a.*.opt.*.family_cse = true; a.*.opt.*.family_factoring = true;
-        a.*.opt.*.family_route = true; a.*.opt.*.family_placement = true;
-        a.*.opt.*.cpu_budget_pct = 5; a.*.opt.*.quiet_start_hour = 22; a.*.opt.*.quiet_end_hour = 7;
-        opt_engine_resume(a.*.opt);
-    }
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "Auto-apply", th_text_dim());
-    let a_lbl: []u8 = "Off";
-    if (a.*.opt.*.auto_apply) { a_lbl = "On"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), a_lbl, a.*.opt.*.auto_apply)) {
-        a.*.opt.*.auto_apply = !a.*.opt.*.auto_apply;
-    }
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "Min gain", th_text_dim());
-    if (ui_mini(f, inp, rect(pr.x + pw - 88, y + 2, 16, 16), "-", th_text())) {
-        a.*.opt.*.min_gain_pct = imax(1, a.*.opt.*.min_gain_pct - 1);
-    }
-    if (ui_mini(f, inp, rect(pr.x + pw - 18, y + 2, 16, 16), "+", th_text())) {
-        a.*.opt.*.min_gain_pct = imin(100, a.*.opt.*.min_gain_pct + 1);
-    }
-    let gx: i32 = pr.x + pw - 62;
-    gx = gx + draw_int(f, gx, y + 5, a.*.opt.*.min_gain_pct as i64, th_text_dim());
-    draw_text(f, gx, y + 5, "%", th_text_dim());
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "Dead-path family", th_text_dim());
-    let fd_lbl: []u8 = "Off"; if (a.*.opt.*.family_dead_path) { fd_lbl = "On"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), fd_lbl, a.*.opt.*.family_dead_path)) {
-        a.*.opt.*.family_dead_path = !a.*.opt.*.family_dead_path;
-    }
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "Const-fold family", th_text_dim());
-    let fc_lbl: []u8 = "Off"; if (a.*.opt.*.family_const_collapse) { fc_lbl = "On"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), fc_lbl, a.*.opt.*.family_const_collapse)) {
-        a.*.opt.*.family_const_collapse = !a.*.opt.*.family_const_collapse;
-    }
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "CSE family", th_text_dim());
-    let cse_lbl: []u8 = "Off"; if (a.*.opt.*.family_cse) { cse_lbl = "On"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), cse_lbl, a.*.opt.*.family_cse)) { a.*.opt.*.family_cse = !a.*.opt.*.family_cse; }
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "Factoring family", th_text_dim());
-    let fac_lbl: []u8 = "Off"; if (a.*.opt.*.family_factoring) { fac_lbl = "On"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), fac_lbl, a.*.opt.*.family_factoring)) { a.*.opt.*.family_factoring = !a.*.opt.*.family_factoring; }
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "Route family", th_text_dim());
-    let rte_lbl: []u8 = "Off"; if (a.*.opt.*.family_route) { rte_lbl = "On"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), rte_lbl, a.*.opt.*.family_route)) { a.*.opt.*.family_route = !a.*.opt.*.family_route; }
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "Placement family", th_text_dim());
-    let plc_lbl: []u8 = "Off"; if (a.*.opt.*.family_placement) { plc_lbl = "On"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), plc_lbl, a.*.opt.*.family_placement)) { a.*.opt.*.family_placement = !a.*.opt.*.family_placement; }
-    y = y + 24;
-    draw_text(f, pr.x + 10, y + 5, "HiDPI scale", th_text_dim());
-    let s_lbl: []u8 = "1x";
-    if (a.*.ui_scale == 2) { s_lbl = "2x"; }
-    if (a.*.ui_scale == 3) { s_lbl = "3x"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), s_lbl, a.*.ui_scale > 1)) {
-        a.*.ui_scale = (a.*.ui_scale % 3) + 1;
-    }
-    y = y + 24;
-    // reduced motion (Section 3.11): every ease/pulse becomes instant
-    draw_text(f, pr.x + 10, y + 5, "Reduced motion", th_text_dim());
-    let rm_lbl: []u8 = "Off";
-    if (a.*.inp.reduced_motion) { rm_lbl = "On"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), rm_lbl, a.*.inp.reduced_motion)) {
-        a.*.inp.reduced_motion = !a.*.inp.reduced_motion;
-    }
-    y = y + 24;
-    // Geometry is always placed on the integer lattice.  This control only
-    // enables the optional pull-to-neighbour alignment aid.
-    draw_text(f, pr.x + 10, y + 5, "Object alignment", th_text_dim());
-    let sn_lbl: []u8 = "Off";
-    if (a.*.snap_obj) { sn_lbl = "On"; }
-    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), sn_lbl, a.*.snap_obj)) {
-        a.*.snap_obj = !a.*.snap_obj;
-    }
-
-    if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my) &&
-        !rect_has(gr, inp.*.mx, inp.*.my)) {
-        a.*.settings_open = false;
-    }
-    inp.*.capture = cap;
-}
-
-// Append an append-only audit record for an applied optimization (Section 20.4).
-fn opt_audit(family: i32, gain_pct: i32, removed_n: i32) void {
-    let a1: []u8 = _zag_str_concat("optimizer family=", opt_family_name(family));
-    let a2: []u8 = _zag_str_concat(a1, " gain_pct=");
-    let a3: []u8 = _zag_str_concat(a2, _zag_i64_to_str(gain_pct as i64));
-    let a4: []u8 = _zag_str_concat(a3, " removed=");
-    let a5: []u8 = _zag_str_concat(a4, _zag_i64_to_str(removed_n as i64));
-    audit_append("optimize", a5, 0);
-    _zag_str_free(a1);
-    _zag_str_free(a2);
-    _zag_str_free(a3);
-    _zag_str_free(a4);
-    _zag_str_free(a5);
-}
-
-// Owned "(x,y,z)" rendering. Caller frees.
-fn opt_format_vox(v: Vox) []u8 {
-    let x: []u8 = fmt_i(v.x as i64);
-    let y: []u8 = fmt_i(v.y as i64);
-    let z: []u8 = fmt_i(v.z as i64);
-    let xy: []u8 = s3(x, ",", y);
-    let mid: []u8 = s4("(", xy, ",", z);
-    let r: []u8 = s2(mid, ")");
-    _zag_str_free(x);
-    _zag_str_free(y);
-    _zag_str_free(z);
-    _zag_str_free(xy);
-    _zag_str_free(mid);
-    return r;
-}
-
-fn opt_draw_vox_rows(f: *FB, x: i32, y: i32, cells: *list.ArrayList[Vox], max_rows: i32) i32 {
-    let i: i32 = 0;
-    let oy: i32 = y;
-    while (i < cells.len && i < max_rows) {
-        let vs: []u8 = opt_format_vox(cells.data[i]);
-        draw_text(f, x, oy, vs, th_text_dim());
-        _zag_str_free(vs);
-        oy = oy + 12;
-        i = i + 1;
-    }
-    if (cells.len > max_rows) {
-        let more: i32 = cells.len - max_rows;
-        let ms: []u8 = fmt_i(more as i64);
-        let s: []u8 = s3("+", ms, " more cells");
-        _zag_str_free(ms);
-        draw_text(f, x, oy, s, th_text_dim());
-        _zag_str_free(s);
-        oy = oy + 12;
-    }
-    return oy;
-}
-
-// Commit the pending optimizer proposal through the journaled + audited edit path
-// (Section 20.4): re-verify output-equivalence, record ONE undoable op covering
-// every removal and relabel, write an audit record, and mark the document dirty.
-// Both the panel's Apply button and (when enabled) auto-apply route through here.
-fn opt_apply_gui(a: *App) bool {
-    if (!a.*.opt.*.has_pending) { return false; }
-    let p: *OptProposal = &a.*.opt.*.pending;
-    if (!opt_verify(a.*.scene, p)) { app_invalid(a, "optimizer proposal stale; reopen Optimizer"); opt_engine_clear_pending(a.*.opt); return false; }
-
-    let rid: list.ArrayList[i32] = list.make[i32](4);
-    let rnew: list.ArrayList[i32] = list.make[i32](4);
-    let gafter: list.ArrayList[Guide] = list.make[Guide](4);
-    let mids: list.ArrayList[i32] = list.make[i32](4);
-    let mnew: list.ArrayList[Vox] = list.make[Vox](4);
-    let ri: i32 = 0;
-    while (ri < p.*.relabels.len) {
-        list.push[i32](&rid, p.*.relabels.data[ri].comp_id);
-        list.push[i32](&rnew, p.*.relabels.data[ri].new_op);
-        ri = ri + 1;
-    }
-    let gi: i32 = 0;
-    while (gi < p.*.guides.len) {
-        list.push[Guide](&gafter, p.*.guides.data[gi].guide);
-        gi = gi + 1;
-    }
-    let mi: i32 = 0;
-    while (mi < p.*.moves.len) {
-        list.push[i32](&mids, p.*.moves.data[mi].comp_id);
-        list.push[Vox](&mnew, p.*.moves.data[mi].new_origin);
-        mi = mi + 1;
-    }
-    let fam: i32 = p.*.family;
-    let gain: i32 = opt_gain_percent(p.*);
-    let removed_n: i32 = p.*.removed.len;
-    op_optimize_full(&a.*.jrn, a.*.scene, p.*.removed, rid, rnew,
-                     gafter, mids, mnew);
-    list.free[i32](&rid);
-    list.free[i32](&rnew);
-    list.free[Guide](&gafter);
-    list.free[i32](&mids);
-    list.free[Vox](&mnew);
-    opt_audit(fam, gain, removed_n);
-    a.*.opt.*.applied_count = a.*.opt.*.applied_count + 1;
-    a.*.dirty = true;
-    opt_engine_clear_pending(a.*.opt);
-    return true;
-}
-
-// ── Optimizer proposal panel (Section 20.4) ──────────────────────────────────
-fn draw_opt_panel(a: *App) void {
-    if (!a.*.opt_open) { return; }
-    let f: *FB = &a.*.f;
-    let inp: *Input = &a.*.inp;
-    let cap: i32 = inp.*.capture;
-    inp.*.capture = 0;   // topmost panel owns the pointer (see draw_settings_panel)
-    let ob: Rect = zone_opt_btn(a);
-    let pw: i32 = 300;
-    let px: i32 = ob.x + ob.w - pw;
-    if (px < 4) { px = 4; }
-    let ph: i32 = 96;
-    if (a.*.opt.*.has_pending && a.*.opt_details) { ph = 340; }
-    if (!a.*.opt.*.has_pending) { ph = 56; }
-    let pr: Rect = rect(px, menu_h(), pw, ph);
-    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
-    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
-    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
-    draw_text(f, pr.x + pad_panel(), pr.y + 8, "Optimizer", th_text());
-
-    if (!a.*.opt.*.has_pending) {
-        draw_text(f, pr.x + 10, pr.y + 32, "No optimizations found.", th_text_dim());
-    } else {
-        draw_text(f, pr.x + 10, pr.y + 28, opt_family_name(opt_engine_pending_family(a.*.opt)), th_text());
-        let gy: i32 = pr.y + 44;
-        draw_text(f, pr.x + 10, gy, "gain ", th_accent_hot());
-        let gx: i32 = pr.x + 10 + text_w("gain ");
-        gx = gx + draw_int(f, gx, gy, opt_engine_pending_gain(a.*.opt) as i64, th_accent_hot());
-        draw_text(f, gx, gy, "%  ", th_accent_hot());
-        gx = gx + text_w("%  ");
-        gx = gx + draw_int(f, gx, gy, 0 - a.*.opt.*.pending.removed.len as i64, th_text_dim());
-        draw_text(f, gx, gy, " parts", th_text_dim());
-
-        let by: i32 = pr.y + 62;
-        if (ui_button(f, inp, rect(pr.x + 10, by, 82, 20), "Apply", true)) {
-            if (opt_apply_gui(a)) {
-                a.*.opt_open = false;
-                a.*.opt_details = false;
-                a.*.opt_previewed = false;
-            }
-        }
-        if (ui_button(f, inp, rect(pr.x + 98, by, 82, 20), "Ignore", false)) {
-            opt_engine_ignore_pending(a.*.opt);
-            a.*.opt_open = false;
-            a.*.opt_details = false;
-        }
-        if (ui_button(f, inp, rect(pr.x + 186, by, 82, 20), "Details", a.*.opt_details)) {
-            a.*.opt_details = !a.*.opt_details;
-            if (a.*.opt_details) { a.*.opt_previewed = true; }
-        }
-        if (a.*.opt_details) {
-            let s: *Scene = a.*.scene;
-            let p: *OptProposal = &a.*.opt.*.pending;
-            let dy: i32 = pr.y + 90;
-
-            draw_text(f, pr.x + 10, dy, "removes", th_text_dim()); dy = dy + 12;
-            let r: i32 = 0;
-            if (p.*.removed.len == 0) {
-                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
-                dy = dy + 12;
-            } else {
-                while (r < p.*.removed.len) {
-                    let rid: i32 = p.*.removed.data[r];
-                    let ri: i32 = scene_comp_index(s, rid);
-                    let rid_s: []u8 = fmt_i(rid as i64);
-                    let rs: []u8 = s2(" - #", rid_s);
-                    _zag_str_free(rid_s);
-                    if (ri >= 0) {
-                        let rc: Comp = s.*.comps.data[ri];
-                        let vox_s: []u8 = opt_format_vox(rc.origin);
-                        let line: []u8 = s5(rs, " ", kind_short(rc.kind), " @ ", vox_s);
-                        _zag_str_free(vox_s);
-                        draw_text(f, pr.x + 10, dy, line, th_text_dim());
-                        _zag_str_free(line);
-                        dy = dy + 12;
-                        let cc: list.ArrayList[Vox] = list.make[Vox](8);
-                        scene_cells_comp(rc, &cc);
-                        dy = opt_draw_vox_rows(f, pr.x + 22, dy, &cc, 4);
-                        list.free[Vox](&cc);
-                    } else {
-                        let np: []u8 = s2(rs, " no longer present");
-                        draw_text(f, pr.x + 10, dy, np, th_text_dim());
-                        _zag_str_free(np);
-                        dy = dy + 12;
-                    }
-                    _zag_str_free(rs);
-                    r = r + 1;
-                }
-            }
-
-            draw_text(f, pr.x + 10, dy, "moves", th_text_dim()); dy = dy + 12;
-            let mv: i32 = 0;
-            if (p.*.moves.len == 0) {
-                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
-                dy = dy + 12;
-            } else {
-                while (mv < p.*.moves.len) {
-                    let m: OptMove = p.*.moves.data[mv];
-                    let mi: i32 = scene_comp_index(s, m.comp_id);
-                    let mc_s: []u8 = fmt_i(m.comp_id as i64);
-                    let ms: []u8 = s2(" - #", mc_s);
-                    _zag_str_free(mc_s);
-                    if (mi >= 0) {
-                        let mc: Comp = s.*.comps.data[mi];
-                        let mc_s2: []u8 = fmt_i(m.comp_id as i64);
-                        let vox_old: []u8 = opt_format_vox(mc.origin);
-                        let vox_new: []u8 = opt_format_vox(m.new_origin);
-                        let mline: []u8 = s4(" - ", kind_short(mc.kind), " #", mc_s2);
-                        _zag_str_free(mc_s2);
-                        let mline2: []u8 = s3(mline, " @ ", vox_old);
-                        _zag_str_free(mline);
-                        _zag_str_free(vox_old);
-                        let mline3: []u8 = s3(mline2, " -> ", vox_new);
-                        _zag_str_free(mline2);
-                        _zag_str_free(vox_new);
-                        draw_text(f, pr.x + 10, dy, mline3, th_text_dim());
-                        _zag_str_free(mline3);
-                        let mcells: list.ArrayList[Vox] = list.make[Vox](8);
-                        let nmcells: list.ArrayList[Vox] = list.make[Vox](8);
-                        scene_cells_comp(mc, &mcells);
-                        draw_text(f, pr.x + 22, dy, "cells @ old", th_text_dim());
-                        dy = dy + 12;
-                        dy = opt_draw_vox_rows(f, pr.x + 34, dy, &mcells, 4);
-                        let mi2: i32 = 0;
-                        while (mi2 < mcells.len) {
-                            let c: Vox = mcells.data[mi2];
-                            let nv: Vox = vox(
-                                c.x - mc.origin.x + m.new_origin.x,
-                                c.y - mc.origin.y + m.new_origin.y,
-                                c.z - mc.origin.z + m.new_origin.z
-                            );
-                            list.push[Vox](&nmcells, nv);
-                            mi2 = mi2 + 1;
-                        }
-                        draw_text(f, pr.x + 22, dy, "cells @ new", th_text_dim());
-                        dy = dy + 12;
-                        dy = opt_draw_vox_rows(f, pr.x + 34, dy, &nmcells, 4);
-                        list.free[Vox](&mcells);
-                        list.free[Vox](&nmcells);
-                    } else {
-                        let np: []u8 = s2(ms, " no longer present");
-                        draw_text(f, pr.x + 10, dy, np, th_text_dim());
-                        _zag_str_free(np);
-                    }
-                    _zag_str_free(ms);
-                    dy = dy + 12;
-                    mv = mv + 1;
-                }
-            }
-
-            draw_text(f, pr.x + 10, dy, "relabels", th_text_dim()); dy = dy + 12;
-            let rl: i32 = 0;
-            if (p.*.relabels.len == 0) {
-                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
-                dy = dy + 12;
-            } else {
-                while (rl < p.*.relabels.len) {
-                    let rel: OptRelabel = p.*.relabels.data[rl];
-                    let ci2: i32 = scene_comp_index(s, rel.comp_id);
-                    let rel_s: []u8 = fmt_i(rel.comp_id as i64);
-                    let rs: []u8 = s2(" - #", rel_s);
-                    _zag_str_free(rel_s);
-                    if (ci2 >= 0) {
-                        let rc: Comp = s.*.comps.data[ci2];
-                        let vox_s: []u8 = opt_format_vox(rc.origin);
-                        let op_old: []u8 = fmt_i(rc.logic_op as i64);
-                        let op_new: []u8 = fmt_i(rel.new_op as i64);
-                        let head: []u8 = s5(rs, " ", kind_short(rc.kind), " @ ", vox_s);
-                        _zag_str_free(vox_s);
-                        let mid: []u8 = s4(head, " op ", op_old, " -> ");
-                        _zag_str_free(head);
-                        _zag_str_free(op_old);
-                        let line: []u8 = s2(mid, op_new);
-                        _zag_str_free(mid);
-                        _zag_str_free(op_new);
-                        draw_text(f, pr.x + 10, dy, line, th_text_dim());
-                        _zag_str_free(line);
-                        let rcells: list.ArrayList[Vox] = list.make[Vox](8);
-                        scene_cells_comp(rc, &rcells);
-                        draw_text(f, pr.x + 22, dy, "cells", th_text_dim());
-                        dy = dy + 12;
-                        dy = opt_draw_vox_rows(f, pr.x + 34, dy, &rcells, 4);
-                        list.free[Vox](&rcells);
-                    } else {
-                        let np: []u8 = s2(rs, " op change, no longer present");
-                        draw_text(f, pr.x + 10, dy, np, th_text_dim());
-                        _zag_str_free(np);
-                    }
-                    _zag_str_free(rs);
-                    dy = dy + 12;
-                    rl = rl + 1;
-                }
-            }
-
-            draw_text(f, pr.x + 10, dy, "guides", th_text_dim()); dy = dy + 12;
-            let gi: i32 = 0;
-            if (p.*.guides.len == 0) {
-                draw_text(f, pr.x + 10, dy, " - none", th_text_dim());
-                dy = dy + 12;
-            } else {
-                while (gi < p.*.guides.len) {
-                    let g: Guide = p.*.guides.data[gi].guide;
-                    let gid_s: []u8 = fmt_i(g.id as i64);
-                    let gh: []u8 = s2(" - guide ", gid_s);
-                    _zag_str_free(gid_s);
-                    if (g.path.len > 0) {
-                        let vox_a: []u8 = opt_format_vox(g.path.data[0]);
-                        let vox_b: []u8 = opt_format_vox(g.path.data[g.path.len - 1]);
-                        let gs: []u8 = s2(gh, " path");
-                        let gl: []u8 = s3(gs, " start ", vox_a);
-                        _zag_str_free(gs);
-                        _zag_str_free(vox_a);
-                        let ge: []u8 = s3(gl, " -> ", vox_b);
-                        _zag_str_free(gl);
-                        _zag_str_free(vox_b);
-                        draw_text(f, pr.x + 10, dy, ge, th_text_dim());
-                        _zag_str_free(ge);
-                        dy = dy + 12;
-                        dy = opt_draw_vox_rows(f, pr.x + 22, dy, &g.path, 4);
-                    } else {
-                        let ge2: []u8 = s2(gh, " empty path");
-                        draw_text(f, pr.x + 10, dy, ge2, th_text_dim());
-                        _zag_str_free(ge2);
-                        dy = dy + 12;
-                    }
-                    _zag_str_free(gh);
-                    gi = gi + 1;
-                }
-            }
-
-            let sy: i32 = dy;
-            draw_text(f, pr.x + 10, sy, "cost before ", th_text_dim());
-            let sx: i32 = pr.x + 10 + text_w("cost before ");
-            let cost_b: []u8 = fmt_i(opt_cost_score(a.*.opt.*.pending.before));
-            let cost_a: []u8 = fmt_i(opt_cost_score(a.*.opt.*.pending.after));
-            draw_text(f, sx, sy, cost_b, th_text_dim());
-            sx = sx + text_w(cost_b);
-            sx = sx + 12; // spacing after before value
-            draw_text(f, sx, sy, " -> ", th_text_dim());
-            sx = sx + text_w(" -> ");
-            sx = sx + text_w(cost_a);
-            sx = sx + 12; // spacing before suffix
-            draw_text(f, sx, sy, cost_a, th_text_dim());
-            _zag_str_free(cost_b);
-            _zag_str_free(cost_a);
-            draw_text(f, pr.x + 10, pr.y + 312, "equivalent over all inputs", th_ok());
-        }
-    }
-
-    if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my) &&
-        !rect_has(ob, inp.*.mx, inp.*.my)) {
-        a.*.opt_open = false;
-    }
-    inp.*.capture = cap;
-}
-
 // ── panel state hashes (Section 3.12) ─────────────────────────────────────────
 // Everything a panel renders from is folded into an i64; an unchanged hash
 // plus an idle pointer means the cached surface stands in for the frame.
@@ -3879,6 +2235,9 @@ fn app_frame(a: *App, dt: f64) void {
 
     draw_viewport(a);
 
+    // ── tool rail (always drawn, never cached — it's tiny and always interactive) ──
+    draw_tool_rail(a);
+
     // ── retained panel surfaces (Section 3.12) ───────────────────────────────
     // A panel re-runs its widget code only when its state hash changed, the
     // pointer is over it (or just left), an ease is mid-flight, or a pointer
@@ -3908,7 +2267,17 @@ fn app_frame(a: *App, dt: f64) void {
         let br: Rect = zone_bottom(a);
         let bh: i64 = hash_bottom(a);
         if (force || mouse_in(a, br) || ps_stale(&a.*.ps_bottom, br, bh)) {
-            draw_debugger(a);
+            if (a.*.bottom_collapsed) {
+                // Collapsed: draw a thin bar with title + expand hint
+                let f: *FB = &a.*.f;
+                fill_rect(f, br.x, br.y, br.w, br.h, th_header());
+                hline(f, br.x, br.y, br.w, th_outline());
+                draw_text_face(f, br.x + 8, br.y + text_cy(face_dense(), br.h),
+                               face_dense(), "SIGNALS — click chevron in tool rail to expand",
+                               th_text_dim());
+            } else {
+                draw_debugger(a);
+            }
             ps_capture(&a.*.f, br, &a.*.ps_bottom, bh);
         } else {
             ps_blit(&a.*.f, &a.*.ps_bottom);
@@ -3921,6 +2290,7 @@ fn app_frame(a: *App, dt: f64) void {
     draw_menu_dropdown(a);
     draw_settings_panel(a);
     draw_opt_panel(a);
+    draw_builder_panel(a);
     draw_flash_panel(a);
     draw_model_panel(a);
     draw_modal(a);

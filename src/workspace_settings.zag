@@ -1,0 +1,529 @@
+// workspace_settings.zag — modal dialogs (Open / Save As / Shortcuts / Recovery
+// / Permission), Flash FIR workspace, physical model & provenance browser,
+// access-state banner, and the settings panel. Extracted from workspace.zag.
+// All functions here import only app.zag and std libraries; workspace.zag
+// imports this file so its declarations are flattened into the build.
+
+@import("../std/list.zag") as list
+@import("app.zag")
+@import("commands.zag")
+@import("strutil.zag")
+@import("sim_region.zag")
+@import("demo.zag")
+@import("capability.zag")
+@import("process_stack.zag")
+
+// ── modals ────────────────────────────────────────────────────────────────────
+
+fn modal_frame(a: *App, w: i32, h: i32, title: []u8) Rect {
+    let f: *FB = &a.*.f;
+    // dim everything behind
+    blend_rect(f, 0, 0, a.*.inp.w, a.*.inp.h, rgb(8, 8, 10), 150);
+    let r: Rect = rect((a.*.inp.w - w) / 2, (a.*.inp.h - h) / 2, w, h);
+    draw_shadow(f, r.x, r.y, r.w, r.h, radius_panel());
+    fill_round_rect(f, r.x, r.y, r.w, r.h, radius_panel(), th_panel());
+    round_rect_outline(f, r.x, r.y, r.w, r.h, radius_panel(), th_outline());
+    fill_round_rect(f, r.x + 1, r.y + 1, r.w - 2, 30, radius_panel() - 1, th_header());
+    fill_rect(f, r.x + 1, r.y + 15, r.w - 2, 16, th_header());
+    hline(f, r.x + 1, r.y + 30, r.w - 2, th_outline_soft());
+    draw_text_face(f, r.x + pad_panel(), r.y + text_cy(face_section(), 30), face_section(), title, th_text());
+    return r;
+}
+
+// Flash FIR workspace: a visible, bounded path from source selection through
+// import to run/step and per-operation inspection. It never executes Flash or
+// host code; it only parses FIR through flash_ir.zag.
+fn draw_flash_panel(a: *App) void {
+    if (!a.*.flash_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let cap: i32 = inp.*.capture; inp.*.capture = 0;
+    let pr: Rect = modal_frame(a, 660, 420, "Flash FIR Workspace");
+    let field: Rect = rect(pr.x + 12, pr.y + 34, pr.w - 134, 20);
+    let _changed: bool = ui_textfield(f, inp, field, &a.*.flash_path, "path/to/program.fir");
+    if (ui_button(f, inp, rect(pr.x + pr.w - 112, pr.y + 34, 100, 20), "Import FIR", false) ||
+        a.*.flash_path.committed) {
+        let _ok: bool = app_flash_import(a, textedit_text(&a.*.flash_path));
+    }
+
+    let by: i32 = pr.y + 62;
+    let run_label: []u8 = "Run"; if (a.*.sim.*.playing) { run_label = "Pause"; }
+    if (ui_button(f, inp, rect(pr.x + 12, by, 62, 20), run_label, a.*.sim.*.playing)) {
+        a.*.sim.*.playing = !a.*.sim.*.playing;
+    }
+    if (ui_button(f, inp, rect(pr.x + 80, by, 54, 20), "Step", false)) {
+        sim_step(a.*.sim, a.*.scene);
+    }
+    if (ui_button(f, inp, rect(pr.x + 140, by, 58, 20), "Reset", false)) {
+        sim_reset(a.*.sim, a.*.scene);
+    }
+    let stat: []u8 = "not imported"; let scol: i64 = th_text_dim();
+    if (a.*.flash_verify_errors == 0) { stat = "verified: all detector traces match"; scol = th_ok(); }
+    else if (a.*.flash_verify_errors > 0) { stat = "verification mismatch"; scol = th_danger(); }
+    draw_text(f, pr.x + 212, by + 6, stat, scol);
+
+    let sy: i32 = pr.y + 94;
+    draw_text(f, pr.x + 12, sy, "FIR SOURCE", th_text_dim());
+    draw_text(f, pr.x + 340, sy, "PER-OPERATION TRACE", th_text_dim());
+    let sr: Rect = rect(pr.x + 12, sy + 14, 310, 272);
+    let tr: Rect = rect(pr.x + 336, sy + 14, 312, 272);
+    fill_round_rect(f, sr.x, sr.y, sr.w, sr.h, radius_control(), rgb(13, 14, 18));
+    fill_round_rect(f, tr.x, tr.y, tr.w, tr.h, radius_control(), rgb(13, 14, 18));
+    round_rect_outline(f, sr.x, sr.y, sr.w, sr.h, radius_control(), th_outline());
+    round_rect_outline(f, tr.x, tr.y, tr.w, tr.h, radius_control(), th_outline());
+    if (a.*.flash_raw.len == 0) {
+        ui_empty_state(f, sr, "no FIR loaded", "choose a bounded Flash FIR above");
+        ui_empty_state(f, tr, "no operation trace", "import then Run or Step");
+    } else {
+        let pos: i32 = 0; let row: i32 = 0;
+        while (pos < a.*.flash_raw.len && row < 16) {
+            let en: i32 = pos;
+            while (en < a.*.flash_raw.len && (a.*.flash_raw[en] as i32) != 10) { en = en + 1; }
+            draw_text_max(f, sr.x + 7, sr.y + 7 + row * 15, a.*.flash_raw[pos..en], th_text_dim(), sr.w - 14);
+            pos = en + 1; row = row + 1;
+        }
+        let i: i32 = 0;
+        while (i < a.*.flash_tags.len && i < 16) {
+            let yy: i32 = tr.y + 7 + i * 16;
+            draw_text_max(f, tr.x + 7, yy, a.*.flash_tags.data[i], th_text(), 112);
+            let fo_n: []u8 = _zag_i64_to_str(a.*.flash_ops.data[i] as i64);
+            let os: []u8 = s2("op ", fo_n);
+            _zag_str_free(fo_n);
+            draw_text(f, tr.x + 126, yy, os, th_text_dim());
+            _zag_str_free(os);
+            let es: []u8 = s2("expected ", trit_glyph(a.*.flash_expected.data[i]));
+            let ecol: i64 = th_warning();
+            if (a.*.flash_verify_errors == 0) { ecol = th_ok(); }
+            draw_text(f, tr.x + 184, yy, es, ecol);
+            _zag_str_free(es);
+            i = i + 1;
+        }
+    }
+    draw_text(f, pr.x + 12, pr.y + pr.h - 24,
+              "FIR import is simulated software evidence; no fabricated-hardware claim.", th_warning());
+    if (ui_button(f, inp, rect(pr.x + pr.w - 88, pr.y + pr.h - 28, 76, 20), "Close", false)) {
+        a.*.flash_open = false;
+    }
+    inp.*.capture = cap;
+}
+
+fn draw_modal(a: *App) void {
+    if (a.*.modal == modal_none()) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    // The modal owns the pointer. Underlying panels were already rendered inert
+    // with capture=4; release capture here so modal buttons themselves work.
+    inp.*.capture = 0;
+
+    if (a.*.modal == modal_open()) {
+        let r: Rect = modal_frame(a, 380, 300, "Open Design");
+        let y: i32 = r.y + 30;
+        if (a.*.modal_files.len == 0) {
+            draw_text(f, r.x + 12, y + 6, "no .zpa designs in this folder", th_text_dim());
+        }
+        let i: i32 = 0;
+        while (i < a.*.modal_files.len && y < r.y + r.h - 56) {
+            let nm: []u8 = list.get[[]u8](a.*.modal_files, i);
+            let row: Rect = rect(r.x + 8, y, r.w - 16, 18);
+            let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
+            let _eid: i64 = ui_register(inp, "option", nm, nm, row, true, false, false);
+            if (hov) { fill_rect(f, row.x, row.y, row.w, row.h, th_accent()); }
+            draw_text(f, row.x + 6, y + 5, nm, th_text());
+            if (hov && btn_released(inp, 0)) {
+                app_open_file(a, nm);
+                a.*.modal = modal_none();
+            }
+            y = y + 19;
+            i = i + 1;
+        }
+        if (ui_button(f, inp, rect(r.x + r.w - 88, r.y + r.h - 26, 80, 18), "Cancel", false)) {
+            a.*.modal = modal_none();
+        }
+        return;
+    }
+
+    if (a.*.modal == modal_recovery()) {
+        let r: Rect = modal_frame(a, 460, 250, "Recover Autosave");
+        draw_text(f, r.x + 12, r.y + 34,
+                  "Choose one of the three retained pre-save snapshots.", th_text_dim());
+        let y: i32 = r.y + 56;
+        if (a.*.modal_files.len == 0) {
+            ui_empty_state(f, rect(r.x + 8, y, r.w - 16, 110),
+                           "no recovery snapshots", "autosave history appears after edits");
+        }
+        let i: i32 = 0;
+        while (i < a.*.modal_files.len) {
+            let p: []u8 = a.*.modal_files.data[i];
+            let row: Rect = rect(r.x + 8, y, r.w - 16, 26);
+            let rl_n: []u8 = _zag_i64_to_str((i + 1) as i64);
+            let label: []u8 = s2("Restore snapshot ", rl_n);
+            _zag_str_free(rl_n);
+            if (ui_button(f, inp, row, ui_park(a, label), false)) { let _ok: bool = app_recover_file(a, p); }
+            y = y + 31; i = i + 1;
+        }
+        if (ui_button(f, inp, rect(r.x + r.w - 88, r.y + r.h - 26, 80, 18), "Cancel", false)) {
+            a.*.modal = modal_none();
+        }
+        return;
+    }
+
+    if (a.*.modal == modal_permission()) {
+        let r: Rect = modal_frame(a, 440, 156, "Write Permission");
+        draw_text(f, r.x + 14, r.y + 38, "This workspace is read-only under the current host policy.", th_text());
+        draw_text(f, r.x + 14, r.y + 56, "Allow edits once, or keep inspecting without mutation.", th_text_dim());
+        draw_text(f, r.x + 14, r.y + 78, "Enter allows once; Esc keeps read-only.", th_accent_hot());
+        if (ui_button(f, inp, rect(r.x + 14, r.y + 108, 118, 24), "Allow once", true)) {
+            app_permission_allow_once(a);
+        }
+        if (ui_button(f, inp, rect(r.x + 140, r.y + 108, 138, 24), "Keep read-only", false)) {
+            app_permission_keep_read_only(a);
+        }
+        return;
+    }
+
+    if (a.*.modal == modal_saveas()) {
+        let r: Rect = modal_frame(a, 380, 118, "Save Design As");
+        draw_text(f, r.x + 12, r.y + 34, "file name:", th_text_dim());
+        let field: Rect = rect(r.x + 12, r.y + 48, r.w - 24, 20);
+        fill_rect(f, field.x, field.y, field.w, field.h, rgb(18, 18, 22));
+        rect_outline(f, field.x, field.y, field.w, field.h, th_accent());
+        let txt: []u8 = a.*.modal_text.data[0..a.*.modal_text.len];
+        draw_text(f, field.x + 6, field.y + 6, txt, th_text());
+        // caret
+        fill_rect(f, field.x + 6 + text_w(txt) + 1, field.y + 4, 1, 12, th_accent_hot());
+        if (ui_button(f, inp, rect(r.x + r.w - 176, r.y + r.h - 26, 80, 18), "Save", false)) {
+            app_saveas_commit(a);
+        }
+        if (ui_button(f, inp, rect(r.x + r.w - 88, r.y + r.h - 26, 80, 18), "Cancel", false)) {
+            a.*.modal = modal_none();
+        }
+        return;
+    }
+
+    if (a.*.modal == modal_keys()) {
+        let r: Rect = modal_frame(a, 420, 312, "Shortcuts");
+        let x: i32 = r.x + 14;
+        let y: i32 = r.y + 32;
+        draw_text(f, x, y, "1..5", th_accent_hot());
+        draw_text(f, x + 90, y, "arm a component for placement", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "Q / E", th_accent_hot());
+        draw_text(f, x + 90, y, "select tool / route tool", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "R", th_accent_hot());
+        draw_text(f, x + 90, y, "rotate placement ghost", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "G", th_accent_hot());
+        draw_text(f, x + 90, y, "move selection (click to drop)", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "Shift+D", th_accent_hot());
+        draw_text(f, x + 90, y, "duplicate selection", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "X / Del", th_accent_hot());
+        draw_text(f, x + 90, y, "delete selection", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "Shift+click", th_accent_hot());
+        draw_text(f, x + 90, y, "add or remove from selection", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "F / Home", th_accent_hot());
+        draw_text(f, x + 90, y, "frame selected / frame all", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "T", th_accent_hot());
+        draw_text(f, x + 90, y, "cycle emitter pattern", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "Space", th_accent_hot());
+        draw_text(f, x + 90, y, "run / pause the simulation", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "Ctrl+Z / Y", th_accent_hot());
+        draw_text(f, x + 90, y, "undo / redo", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "Ctrl+N/O/S", th_accent_hot());
+        draw_text(f, x + 90, y, "new / open / save design", th_text());
+        y = y + 16;
+        draw_text(f, x, y, "MMB drag", th_accent_hot());
+        draw_text(f, x + 90, y, "orbit (Shift+MMB pans)", th_text());
+        y = y + 18;
+        draw_text(f, x, y, "RMB drag", th_accent_hot());
+        draw_text(f, x + 90, y, "free-look without orbiting the center", th_text());
+        y = y + 18;
+        draw_text(f, x, y, "RMB + WASD", th_accent_hot());
+        draw_text(f, x + 90, y, "fly; Q/E vertical, Shift fast, Ctrl precise", th_text());
+        y = y + 22;
+        if (ui_button(f, inp, rect(r.x + r.w - 88, r.y + r.h - 26, 80, 18), "Close", false)) {
+            a.*.modal = modal_none();
+        }
+    }
+}
+
+fn draw_access_state(a: *App) void {
+    if (a.*.access_state == access_ready()) { return; }
+    let f: *FB = &a.*.f; let inp: *Input = &a.*.inp;
+    let vp: Rect = zone_center(a);
+    let r: Rect = rect(vp.x + 12, vp.y + 12, imin(430, vp.w - 24), 46);
+    blend_round_rect(f, r.x, r.y, r.w, r.h, radius_panel(), rgb(8, 10, 15), 232);
+    let col: i64 = th_warning(); let title: []u8 = "Loading workspace...";
+    if (a.*.access_state == access_disconnected()) { title = "Disconnected"; col = th_danger(); }
+    if (a.*.access_state == access_read_only()) { title = "Read-only workspace"; col = th_warning(); }
+    round_rect_outline(f, r.x, r.y, r.w, r.h, radius_panel(), col);
+    draw_text(f, r.x + 10, r.y + 9, title, col);
+    draw_text_max(f, r.x + 10, r.y + 25, a.*.access_message, th_text_dim(), r.w - 126);
+    if (a.*.access_state == access_disconnected()) {
+        if (ui_button(f, inp, rect(r.x + r.w - 96, r.y + 12, 84, 22), "Retry", false)) {
+            app_set_access_state(a, access_loading(), "reconnecting to the live session");
+        }
+    }
+    if (a.*.access_state == access_read_only()) {
+        if (ui_button(f, inp, rect(r.x + r.w - 118, r.y + 12, 106, 22), "Request write", false)) {
+            app_request_write_access(a);
+        }
+    }
+}
+
+fn draw_model_panel(a: *App) void {
+    if (!a.*.model_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let cap: i32 = inp.*.capture;
+    inp.*.capture = 0;
+    let pw: i32 = imin(780, inp.*.w - 24);
+    let ph: i32 = imin(570, inp.*.h - 48);
+    let pr: Rect = rect((inp.*.w - pw) / 2, (inp.*.h - ph) / 2, pw, ph);
+    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
+    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
+    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
+    draw_text(f, pr.x + 14, pr.y + 14, "PHYSICAL MODEL & PROVENANCE", th_text());
+    let sl_v: []u8 = fmt_i(a.*.scene.*.model.schema_version as i64);
+    let schema_line: []u8 = s2("Pinned schema ", sl_v);
+    _zag_str_free(sl_v);
+    draw_text(f, pr.x + 14, pr.y + 31, schema_line, th_accent_hot());
+    _zag_str_free(schema_line);
+    draw_text(f, pr.x + 120, pr.y + 31, a.*.scene.*.model.id, th_text_dim());
+    if (model_can_migrate(a.*.scene.*.model, model_schema_current())) {
+        if (ui_button(f, inp, rect(pr.x + pr.w - 206, pr.y + 10, 112, 22), "Migrate to v2", true)) {
+            if (model_migrate(&a.*.scene.*.model, 2)) {
+                scene_mark_render(a.*.scene); app_mark_dirty(a); app_log(a, "physical model migrated to schema 2");
+            }
+        }
+    }
+    if (ui_button(f, inp, rect(pr.x + pr.w - 86, pr.y + 10, 72, 22), "Close", false)) {
+        a.*.model_open = false; inp.*.capture = cap; return;
+    }
+
+    draw_text(f, pr.x + 14, pr.y + 54, "VERSIONED DEVICE TYPES", th_text_dim());
+    let tw: i32 = (pr.w - 28) / 4;
+    let ti: i32 = 0;
+    while (ti < model_type_schema_count()) {
+        let d: DeviceTypeSchema = model_type_schema(ti);
+        let tx: i32 = pr.x + 14 + (ti % 4) * tw;
+        let ty: i32 = pr.y + 68 + (ti / 4) * 20;
+        let ts_v: []u8 = fmt_i(d.version as i64);
+        let ts: []u8 = s3(d.id, "  v", ts_v);
+        _zag_str_free(ts_v);
+        draw_text(f, tx, ty + 4, ts, th_text());
+        _zag_str_free(ts);
+        ti = ti + 1;
+    }
+
+    let grid_y: i32 = pr.y + 116;
+    draw_text(f, pr.x + 14, grid_y, "PHYSICAL PARAMETERS", th_text_dim());
+    let cols: i32 = 3;
+    let cw: i32 = (pr.w - 28) / cols;
+    let pi: i32 = 0;
+    while (pi < model_param_count()) {
+        let col: i32 = pi % cols;
+        let row_i: i32 = pi / cols;
+        let rr: Rect = rect(pr.x + 14 + col * cw, grid_y + 14 + row_i * 25, cw - 6, 22);
+        let p: PhysicalParam = model_param_at(a.*.scene.*.model, pi);
+        let selected: bool = a.*.model_param_sel == pi;
+        let hov: bool = rect_has(rr, inp.*.mx, inp.*.my);
+        if (selected) { fill_round_rect(f, rr.x, rr.y, rr.w, rr.h, radius_control(), th_accent()); }
+        else if (hov) { fill_round_rect(f, rr.x, rr.y, rr.w, rr.h, radius_control(), th_header()); }
+        let _eid: i64 = ui_register(inp, "gridcell", model_param_name(pi), model_param_name(pi), rr,
+                                    true, selected, false);
+        draw_text_max(f, rr.x + 5, rr.y + 4, model_param_name(pi), th_text(), rr.w / 2);
+        let pvc: i64 = th_warning();
+        if (p.known) { pvc = th_text_dim(); }
+        if (p.known) {
+            let pv_f: []u8 = fmt_f1(p.value);
+            let pv: []u8 = s3(pv_f, " ", p.units);
+            _zag_str_free(pv_f);
+            draw_text_max(f, rr.x + rr.w / 2, rr.y + 4, pv, pvc, rr.w / 2 - 5);
+            _zag_str_free(pv);
+        } else {
+            draw_text_max(f, rr.x + rr.w / 2, rr.y + 4, "Unknown", pvc, rr.w / 2 - 5);
+        }
+        if (hov && btn_released(inp, 0)) { a.*.model_param_sel = pi; }
+        pi = pi + 1;
+    }
+
+    let detail_y: i32 = grid_y + 14 + 9 * 25 + 8;
+    let dp: PhysicalParam = model_param_at(a.*.scene.*.model, a.*.model_param_sel);
+    hline(f, pr.x + 14, detail_y - 6, pr.w - 28, th_outline_soft());
+    draw_text(f, pr.x + 14, detail_y, model_param_name(a.*.model_param_sel), th_text());
+    let dpc: i64 = th_warning();
+    if (dp.known) { dpc = th_accent_hot(); }
+    let dp_unc: []u8 = fmt_f1(dp.uncertainty);
+    let dp_ev: []u8 = s3(evidence_class_name(dp.confidence), "  uncertainty ±", dp_unc);
+    _zag_str_free(dp_unc);
+    draw_text(f, pr.x + 14, detail_y + 16, dp_ev, dpc);
+    _zag_str_free(dp_ev);
+    let dp_src: []u8 = s2("Source: ", dp.source);
+    draw_text(f, pr.x + 14, detail_y + 32, dp_src, th_text_dim());
+    _zag_str_free(dp_src);
+    let dp_m: []u8 = s2("Method: ", dp.method);
+    draw_text(f, pr.x + 14, detail_y + 48, dp_m, th_text_dim());
+    _zag_str_free(dp_m);
+    let dp_v: []u8 = s2("Version: ", dp.source_version);
+    draw_text(f, pr.x + pr.w - 270, detail_y + 32, dp_v, th_text_dim());
+    _zag_str_free(dp_v);
+    let dp_d: []u8 = s2("Date: ", dp.date_);
+    draw_text(f, pr.x + pr.w - 270, detail_y + 48, dp_d, th_text_dim());
+    _zag_str_free(dp_d);
+
+    if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my)) { a.*.model_open = false; }
+    inp.*.capture = cap;
+}
+
+// ── frame orchestration ───────────────────────────────────────────────────────
+
+// ── Settings panel (Section 20.5) ────────────────────────────────────────────
+fn draw_settings_panel(a: *App) void {
+    if (!a.*.settings_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    // This panel is topmost and owns the pointer: its own controls must be live
+    // even though the frame set capture to keep everything underneath inert.
+    let cap: i32 = inp.*.capture;
+    inp.*.capture = 0;
+    let gr: Rect = zone_settings_gear(a);
+    let pw: i32 = 236;
+    let px: i32 = gr.x + gr.w - pw;
+    if (px < 4) { px = 4; }
+    let pr: Rect = rect(px, menu_h(), pw, 510);
+    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
+    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
+    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
+    draw_text(f, pr.x + pad_panel(), pr.y + 8, "Settings", th_text());
+
+    let y: i32 = pr.y + 26;
+    draw_text(f, pr.x + 10, y + 5, "Optimizer", th_text_dim());
+    let e_lbl: []u8 = "Off";
+    if (a.*.opt.*.enabled) { e_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), e_lbl, a.*.opt.*.enabled)) {
+        a.*.opt.*.enabled = !a.*.opt.*.enabled;
+        if (!a.*.opt.*.enabled) { a.*.opt_open = false; }
+    }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "CPU budget", th_text_dim());
+    if (ui_mini(f, inp, rect(pr.x + pw - 88, y + 2, 16, 16), "-", th_text())) { a.*.opt.*.cpu_budget_pct = imax(1, a.*.opt.*.cpu_budget_pct - 1); }
+    if (ui_mini(f, inp, rect(pr.x + pw - 18, y + 2, 16, 16), "+", th_text())) { a.*.opt.*.cpu_budget_pct = imin(20, a.*.opt.*.cpu_budget_pct + 1); }
+    let cbx: i32 = pr.x + pw - 62; cbx = cbx + draw_int(f, cbx, y + 5, a.*.opt.*.cpu_budget_pct as i64, th_text_dim());
+    draw_text(f, cbx, y + 5, "%", th_text_dim());
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Quiet hours UTC", th_text_dim());
+    let qh_s: []u8 = _zag_i64_to_str(a.*.opt.*.quiet_start_hour as i64);
+    let qh_e: []u8 = _zag_i64_to_str(a.*.opt.*.quiet_end_hour as i64);
+    let qtext: []u8 = s3(qh_s, "-", qh_e);
+    _zag_str_free(qh_s);
+    _zag_str_free(qh_e);
+    // ui_button registers the label into the frame catalog (ui_button_key falls
+    // back to the label itself), so it must be parked, not freed after the call.
+    if (ui_button(f, inp, rect(pr.x + pw - 74, y, 64, 18), ui_park(a, qtext), opt_quiet_now(a.*.opt))) {
+        a.*.opt.*.quiet_start_hour = (a.*.opt.*.quiet_start_hour + 1) % 24;
+        a.*.opt.*.quiet_end_hour = (a.*.opt.*.quiet_end_hour + 1) % 24;
+    }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Watchdog", th_text_dim());
+    let wd: []u8 = "Armed"; if (a.*.opt.*.suspended) { wd = "Resume"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 74, y, 64, 18), wd, !a.*.opt.*.suspended)) { opt_engine_resume(a.*.opt); }
+    y = y + 24;
+    let policy: []u8 = "Host policy: inspect only"; let pcol: i64 = th_warning();
+    if (cap_allowed(cap_edit())) { policy = "Host policy: edits allowed"; pcol = th_ok(); }
+    draw_text(f, pr.x + 10, y + 5, policy, pcol);
+    y = y + 24;
+    if (ui_button(f, inp, rect(pr.x + 10, y, pw - 20, 18), "Reset optimizer defaults", false)) {
+        a.*.opt.*.enabled = true; a.*.opt.*.auto_apply = false; a.*.opt.*.min_gain_pct = 1;
+        a.*.opt.*.family_dead_path = true; a.*.opt.*.family_const_collapse = true;
+        a.*.opt.*.family_cse = true; a.*.opt.*.family_factoring = true;
+        a.*.opt.*.family_route = true; a.*.opt.*.family_placement = true;
+        a.*.opt.*.cpu_budget_pct = 5; a.*.opt.*.quiet_start_hour = 22; a.*.opt.*.quiet_end_hour = 7;
+        opt_engine_resume(a.*.opt);
+    }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Auto-apply", th_text_dim());
+    let a_lbl: []u8 = "Off";
+    if (a.*.opt.*.auto_apply) { a_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), a_lbl, a.*.opt.*.auto_apply)) {
+        a.*.opt.*.auto_apply = !a.*.opt.*.auto_apply;
+    }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Min gain", th_text_dim());
+    if (ui_mini(f, inp, rect(pr.x + pw - 88, y + 2, 16, 16), "-", th_text())) {
+        a.*.opt.*.min_gain_pct = imax(1, a.*.opt.*.min_gain_pct - 1);
+    }
+    if (ui_mini(f, inp, rect(pr.x + pw - 18, y + 2, 16, 16), "+", th_text())) {
+        a.*.opt.*.min_gain_pct = imin(100, a.*.opt.*.min_gain_pct + 1);
+    }
+    let gx: i32 = pr.x + pw - 62;
+    gx = gx + draw_int(f, gx, y + 5, a.*.opt.*.min_gain_pct as i64, th_text_dim());
+    draw_text(f, gx, y + 5, "%", th_text_dim());
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Dead-path family", th_text_dim());
+    let fd_lbl: []u8 = "Off"; if (a.*.opt.*.family_dead_path) { fd_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), fd_lbl, a.*.opt.*.family_dead_path)) {
+        a.*.opt.*.family_dead_path = !a.*.opt.*.family_dead_path;
+    }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Const-fold family", th_text_dim());
+    let fc_lbl: []u8 = "Off"; if (a.*.opt.*.family_const_collapse) { fc_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), fc_lbl, a.*.opt.*.family_const_collapse)) {
+        a.*.opt.*.family_const_collapse = !a.*.opt.*.family_const_collapse;
+    }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "CSE family", th_text_dim());
+    let cse_lbl: []u8 = "Off"; if (a.*.opt.*.family_cse) { cse_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), cse_lbl, a.*.opt.*.family_cse)) { a.*.opt.*.family_cse = !a.*.opt.*.family_cse; }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Factoring family", th_text_dim());
+    let fac_lbl: []u8 = "Off"; if (a.*.opt.*.family_factoring) { fac_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), fac_lbl, a.*.opt.*.family_factoring)) { a.*.opt.*.family_factoring = !a.*.opt.*.family_factoring; }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Route family", th_text_dim());
+    let rte_lbl: []u8 = "Off"; if (a.*.opt.*.family_route) { rte_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), rte_lbl, a.*.opt.*.family_route)) { a.*.opt.*.family_route = !a.*.opt.*.family_route; }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "Placement family", th_text_dim());
+    let plc_lbl: []u8 = "Off"; if (a.*.opt.*.family_placement) { plc_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), plc_lbl, a.*.opt.*.family_placement)) { a.*.opt.*.family_placement = !a.*.opt.*.family_placement; }
+    y = y + 24;
+    draw_text(f, pr.x + 10, y + 5, "HiDPI scale", th_text_dim());
+    let s_lbl: []u8 = "1x";
+    if (a.*.ui_scale == 2) { s_lbl = "2x"; }
+    if (a.*.ui_scale == 3) { s_lbl = "3x"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), s_lbl, a.*.ui_scale > 1)) {
+        a.*.ui_scale = (a.*.ui_scale % 3) + 1;
+    }
+    y = y + 24;
+    // reduced motion (Section 3.11): every ease/pulse becomes instant
+    draw_text(f, pr.x + 10, y + 5, "Reduced motion", th_text_dim());
+    let rm_lbl: []u8 = "Off";
+    if (a.*.inp.reduced_motion) { rm_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), rm_lbl, a.*.inp.reduced_motion)) {
+        a.*.inp.reduced_motion = !a.*.inp.reduced_motion;
+    }
+    y = y + 24;
+    // Geometry is always placed on the integer lattice.  This control only
+    // enables the optional pull-to-neighbour alignment aid.
+    draw_text(f, pr.x + 10, y + 5, "Object alignment", th_text_dim());
+    let sn_lbl: []u8 = "Off";
+    if (a.*.snap_obj) { sn_lbl = "On"; }
+    if (ui_button(f, inp, rect(pr.x + pw - 62, y, 52, 18), sn_lbl, a.*.snap_obj)) {
+        a.*.snap_obj = !a.*.snap_obj;
+    }
+
+    if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my) &&
+        !rect_has(gr, inp.*.mx, inp.*.my)) {
+        a.*.settings_open = false;
+    }
+    inp.*.capture = cap;
+}

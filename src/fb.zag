@@ -8,6 +8,7 @@
 @import("../std/list.zag") as list
 @import("../std/rt.zag")
 @import("fontatlas.zag")
+@import("strutil.zag")
 
 // Typography faces (see tools/genfontatlas.py). All UI text renders from a
 // proportional anti-aliased face; the old 5x9 bitmap font is retired.
@@ -630,6 +631,201 @@ fn line2d(f: *FB, x0_: i32, y0_: i32, x1_: i32, y1_: i32, c: i64) void {
     }
 }
 
+// ── stroke icons ────────────────────────────────────────────────────────────
+// Vector-style 16×16 icons drawn from line2d + fill_rect primitives. All
+// coordinates are logical; line2d scales internally so icons are crisp at
+// any FB scale. Each icon is drawn centered in a 16×16 box at (x, y).
+
+// Icon IDs — used by draw_icon to dispatch.
+fn ico_select() i32 { return 0; }   // arrow cursor
+fn ico_route() i32 { return 1; }    // curved path
+fn ico_measure() i32 { return 2; }  // ruler
+fn ico_gear() i32 { return 3; }     // settings cog
+fn ico_eye() i32 { return 4; }      // visibility on
+fn ico_eye_off() i32 { return 5; }  // visibility off
+fn ico_lock() i32 { return 6; }     // locked
+fn ico_unlock() i32 { return 7; }   // unlocked
+fn ico_chevron_r() i32 { return 8; }  // collapsed
+fn ico_chevron_d() i32 { return 9; }  // expanded
+fn ico_plus() i32 { return 10; }
+fn ico_minus() i32 { return 11; }
+fn ico_warning() i32 { return 12; }   // triangle with !
+fn ico_search() i32 { return 13; }    // magnifying glass
+fn ico_grid() i32 { return 14; }      // grid toggle
+fn ico_cube() i32 { return 15; }      // 3D cube (component)
+fn ico_wave() i32 { return 16; }      // waveguide path
+fn ico_play() i32 { return 17; }
+fn ico_pause() i32 { return 18; }
+fn ico_step() i32 { return 19; }      // step forward
+fn ico_reset() i32 { return 20; }     // circular arrow
+
+fn ico_count() i32 { return 21; }
+
+// Draw icon `id` in a 16×16 box at (x, y) with color c.
+// Split into two halves to keep the if-chain short for the codegen.
+fn draw_icon_a(f: *FB, x: i32, y: i32, id: i32, c: i64) void {
+    if (id == ico_select()) {
+        // Arrow cursor: outline arrow pointing top-left
+        line2d(f, x + 3, y + 2, x + 3, y + 13, c);
+        line2d(f, x + 3, y + 2, x + 11, y + 10, c);
+        line2d(f, x + 3, y + 13, x + 7, y + 9, c);
+        line2d(f, x + 7, y + 9, x + 11, y + 10, c);
+        fill_rect(f, x + 3, y + 2, 1, 12, c);
+    } else if (id == ico_route()) {
+        // Curved path with endpoints
+        fill_rect(f, x + 2, y + 11, 3, 3, c);
+        fill_rect(f, x + 11, y + 2, 3, 3, c);
+        line2d(f, x + 3, y + 12, x + 6, y + 12, c);
+        line2d(f, x + 6, y + 12, x + 9, y + 9, c);
+        line2d(f, x + 9, y + 9, x + 12, y + 6, c);
+        line2d(f, x + 12, y + 6, x + 12, y + 3, c);
+    } else if (id == ico_measure()) {
+        // Ruler: horizontal bar with tick marks
+        fill_rect(f, x + 2, y + 6, 12, 5, c);
+        fill_rect(f, x + 2, y + 6, 12, 1, shade(c, 160));
+        fill_rect(f, x + 4, y + 6, 1, 2, shade(c, 60));
+        fill_rect(f, x + 7, y + 6, 1, 3, shade(c, 60));
+        fill_rect(f, x + 10, y + 6, 1, 2, shade(c, 60));
+        fill_rect(f, x + 13, y + 6, 1, 3, shade(c, 60));
+    } else if (id == ico_gear()) {
+        // Cog: body + teeth + hub
+        fill_rect(f, x + 5, y + 5, 6, 6, c);
+        fill_rect(f, x + 7, y + 2, 2, 3, c);
+        fill_rect(f, x + 7, y + 11, 2, 3, c);
+        fill_rect(f, x + 2, y + 7, 3, 2, c);
+        fill_rect(f, x + 11, y + 7, 3, 2, c);
+        fill_rect(f, x + 3, y + 3, 2, 2, c);
+        fill_rect(f, x + 11, y + 3, 2, 2, c);
+        fill_rect(f, x + 3, y + 11, 2, 2, c);
+        fill_rect(f, x + 11, y + 11, 2, 2, c);
+        fill_rect(f, x + 7, y + 7, 2, 2, shade(c, 50));
+    } else if (id == ico_eye()) {
+        // Eye: lens + pupil
+        line2d(f, x + 2, y + 8, x + 5, y + 5, c);
+        line2d(f, x + 5, y + 5, x + 11, y + 5, c);
+        line2d(f, x + 11, y + 5, x + 14, y + 8, c);
+        line2d(f, x + 14, y + 8, x + 11, y + 11, c);
+        line2d(f, x + 11, y + 11, x + 5, y + 11, c);
+        line2d(f, x + 5, y + 11, x + 2, y + 8, c);
+        fill_rect(f, x + 7, y + 7, 2, 2, c);
+    } else if (id == ico_eye_off()) {
+        // Eye with slash
+        line2d(f, x + 2, y + 8, x + 5, y + 5, c);
+        line2d(f, x + 5, y + 5, x + 11, y + 5, c);
+        line2d(f, x + 11, y + 5, x + 14, y + 8, c);
+        line2d(f, x + 14, y + 8, x + 11, y + 11, c);
+        line2d(f, x + 11, y + 11, x + 5, y + 11, c);
+        line2d(f, x + 5, y + 11, x + 2, y + 8, c);
+        line2d(f, x + 2, y + 2, x + 13, y + 13, shade(c, 60));
+    } else if (id == ico_lock()) {
+        // Padlock: shackle + body
+        line2d(f, x + 5, y + 7, x + 5, y + 5, c);
+        line2d(f, x + 5, y + 5, x + 7, y + 3, c);
+        line2d(f, x + 7, y + 3, x + 9, y + 3, c);
+        line2d(f, x + 9, y + 3, x + 11, y + 5, c);
+        line2d(f, x + 11, y + 5, x + 11, y + 7, c);
+        fill_rect(f, x + 3, y + 7, 10, 7, c);
+        fill_rect(f, x + 7, y + 9, 2, 3, shade(c, 50));
+    } else if (id == ico_unlock()) {
+        // Open padlock
+        line2d(f, x + 5, y + 7, x + 5, y + 5, c);
+        line2d(f, x + 5, y + 5, x + 7, y + 3, c);
+        line2d(f, x + 7, y + 3, x + 9, y + 3, c);
+        line2d(f, x + 9, y + 3, x + 11, y + 5, c);
+        fill_rect(f, x + 3, y + 7, 10, 7, c);
+        fill_rect(f, x + 7, y + 9, 2, 3, shade(c, 50));
+    } else if (id == ico_chevron_r()) {
+        // Right-pointing chevron
+        line2d(f, x + 6, y + 4, x + 10, y + 8, c);
+        line2d(f, x + 10, y + 8, x + 6, y + 12, c);
+    } else if (id == ico_chevron_d()) {
+        // Down-pointing chevron
+        line2d(f, x + 4, y + 6, x + 8, y + 10, c);
+        line2d(f, x + 8, y + 10, x + 12, y + 6, c);
+    }
+}
+
+fn draw_icon_b(f: *FB, x: i32, y: i32, id: i32, c: i64) void {
+    if (id == ico_plus()) {
+        line2d(f, x + 8, y + 3, x + 8, y + 13, c);
+        line2d(f, x + 3, y + 8, x + 13, y + 8, c);
+    } else if (id == ico_minus()) {
+        line2d(f, x + 3, y + 8, x + 13, y + 8, c);
+    } else if (id == ico_warning()) {
+        // Triangle with exclamation
+        line2d(f, x + 8, y + 2, x + 2, y + 13, c);
+        line2d(f, x + 2, y + 13, x + 14, y + 13, c);
+        line2d(f, x + 14, y + 13, x + 8, y + 2, c);
+        fill_rect(f, x + 7, y + 5, 2, 5, c);
+        fill_rect(f, x + 7, y + 11, 2, 2, c);
+    } else if (id == ico_search()) {
+        // Magnifying glass
+        line2d(f, x + 3, y + 3, x + 3, y + 8, c);
+        line2d(f, x + 3, y + 8, x + 8, y + 8, c);
+        line2d(f, x + 8, y + 8, x + 8, y + 3, c);
+        line2d(f, x + 8, y + 3, x + 3, y + 3, c);
+        line2d(f, x + 9, y + 9, x + 13, y + 13, c);
+        line2d(f, x + 10, y + 13, x + 13, y + 13, c);
+        line2d(f, x + 13, y + 10, x + 13, y + 13, c);
+    } else if (id == ico_grid()) {
+        // Grid squares
+        line2d(f, x + 3, y + 3, x + 13, y + 3, c);
+        line2d(f, x + 3, y + 8, x + 13, y + 8, c);
+        line2d(f, x + 3, y + 13, x + 13, y + 13, c);
+        line2d(f, x + 3, y + 3, x + 3, y + 13, c);
+        line2d(f, x + 8, y + 3, x + 8, y + 13, c);
+        line2d(f, x + 13, y + 3, x + 13, y + 13, c);
+    } else if (id == ico_cube()) {
+        // Isometric cube
+        line2d(f, x + 8, y + 2, x + 14, y + 5, c);
+        line2d(f, x + 14, y + 5, x + 14, y + 11, c);
+        line2d(f, x + 14, y + 11, x + 8, y + 14, c);
+        line2d(f, x + 8, y + 14, x + 2, y + 11, c);
+        line2d(f, x + 2, y + 11, x + 2, y + 5, c);
+        line2d(f, x + 2, y + 5, x + 8, y + 2, c);
+        line2d(f, x + 8, y + 2, x + 8, y + 8, c);
+        line2d(f, x + 8, y + 8, x + 14, y + 5, c);
+        line2d(f, x + 8, y + 8, x + 2, y + 11, c);
+    } else if (id == ico_wave()) {
+        // Sine wave path
+        line2d(f, x + 2, y + 8, x + 4, y + 5, c);
+        line2d(f, x + 4, y + 5, x + 7, y + 5, c);
+        line2d(f, x + 7, y + 5, x + 9, y + 11, c);
+        line2d(f, x + 9, y + 11, x + 12, y + 11, c);
+        line2d(f, x + 12, y + 11, x + 14, y + 8, c);
+    } else if (id == ico_play()) {
+        // Play triangle
+        line2d(f, x + 4, y + 3, x + 4, y + 13, c);
+        line2d(f, x + 4, y + 3, x + 12, y + 8, c);
+        line2d(f, x + 12, y + 8, x + 4, y + 13, c);
+        fill_rect(f, x + 5, y + 4, 6, 8, c);
+    } else if (id == ico_pause()) {
+        // Two bars
+        fill_rect(f, x + 4, y + 3, 3, 11, c);
+        fill_rect(f, x + 9, y + 3, 3, 11, c);
+    } else if (id == ico_step()) {
+        // Step forward: triangle + bar
+        line2d(f, x + 3, y + 3, x + 3, y + 13, c);
+        line2d(f, x + 3, y + 3, x + 10, y + 8, c);
+        line2d(f, x + 10, y + 8, x + 3, y + 13, c);
+        fill_rect(f, x + 4, y + 4, 5, 8, c);
+        fill_rect(f, x + 12, y + 3, 2, 11, c);
+    } else if (id == ico_reset()) {
+        // Circular arrow
+        line2d(f, x + 4, y + 4, x + 12, y + 4, c);
+        line2d(f, x + 12, y + 4, x + 12, y + 10, c);
+        line2d(f, x + 12, y + 10, x + 4, y + 10, c);
+        line2d(f, x + 4, y + 10, x + 4, y + 6, c);
+        line2d(f, x + 4, y + 6, x + 2, y + 8, c);
+        line2d(f, x + 4, y + 6, x + 6, y + 8, c);
+    }
+}
+
+fn draw_icon(f: *FB, x: i32, y: i32, id: i32, c: i64) void {
+    draw_icon_a(f, x, y, id, c);
+    draw_icon_b(f, x, y, id, c);
+}
+
 // ── text ─────────────────────────────────────────────────────────────────────
 // Proportional anti-aliased text from the baked coverage atlas. `y` is the
 // TOP of the line box; the baseline sits at y + fa_ascent(face). Coverage is
@@ -772,7 +968,11 @@ fn fb_write_ppm(f: *FB, path: []u8) void {
     let pw: i32 = fb_pw(f);
     let ph: i32 = fb_ph(f);
     let npix: i32 = pw * ph;
-    let header: []u8 = _zag_str_concat(_zag_str_concat(_zag_str_concat("P6\n", _zag_i64_to_str(pw as i64)), " "), _zag_str_concat(_zag_i64_to_str(ph as i64), "\n255\n"));
+    let pw_s: []u8 = _zag_i64_to_str(pw as i64);
+    let ph_s: []u8 = _zag_i64_to_str(ph as i64);
+    let header: []u8 = s5("P6\n", pw_s, " ", ph_s, "\n255\n");
+    _zag_str_free(pw_s);
+    _zag_str_free(ph_s);
     let out: list.ArrayList[u8] = list.make[u8](header.len + npix * 3);
     let hi: i32 = 0;
     while (hi < header.len) { push_u8(&out, header[hi]); hi = hi + 1; }
@@ -784,6 +984,7 @@ fn fb_write_ppm(f: *FB, path: []u8) void {
         push_u8(&out, col_b(c) as u8);
         i = i + 1;
     }
+    _zag_str_free(header);
     let rc: i32 = _zag_write_file(path, out.data[0..out.len]);
     if (rc != 0) { _zag_eprintln("fb: ppm write failed"); }
     list.free[u8](&out);

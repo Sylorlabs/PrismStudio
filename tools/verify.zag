@@ -147,6 +147,8 @@ fn gates_3(f: i32) i32 {
     if (!run_suite("gpu-query", "rm -f probe/gpu_query_test.new && ../zag/zag-poc/znc probe/gpu_query_test.zag -o probe/gpu_query_test.new && mv -f probe/gpu_query_test.new probe/gpu_query_test && ./probe/gpu_query_test")) { f = f + 1; }
     if (!run_suite("probe-manifest-audit", "sh tools/probe_manifest_audit.sh")) { f = f + 1; }
     if (!run_suite("inventory-audit", "sh tools/inventory_audit.sh")) { f = f + 1; }
+    if (!run_suite("builder", "rm -f probe/builder_test.new && ../zag/zag-poc/znc probe/builder_test.zag -o probe/builder_test.new && mv -f probe/builder_test.new probe/builder_test && ./probe/builder_test")) { f = f + 1; }
+    if (!run_suite("builder-agent", "rm -f /tmp/prismstudio_builder_gate.zpa* && PRISMSTUDIO_CAPS=all PRISMSTUDIO_IDEMPOTENCY=builder-init PRISMSTUDIO_SESSION=/tmp/prismstudio_builder_gate.zpa ./zagpa --agent --once new >/dev/null && before=$(sha256sum /tmp/prismstudio_builder_gate.zpa) && PRISMSTUDIO_CAPS=all PRISMSTUDIO_SESSION=/tmp/prismstudio_builder_gate.zpa ./zagpa --agent --once 'builder generate 0 0 0 23 1 23' | rg -q 'builder method=density-sweep' && PRISMSTUDIO_CAPS=all PRISMSTUDIO_SESSION=/tmp/prismstudio_builder_gate.zpa ./zagpa --agent --once 'builder generate 0 0 0 23 1 23' | rg -q 'computed_outputs=[0-9]+' && after=$(sha256sum /tmp/prismstudio_builder_gate.zpa) && test \"$before\" = \"$after\" && PRISMSTUDIO_CAPS=all PRISMSTUDIO_SESSION=/tmp/prismstudio_builder_gate.zpa ./zagpa --agent --once 'builder generate 0 0 0 2 1 2' | rg -q 'no non-degenerate'")) { f = f + 1; }
     return f;
 }
 

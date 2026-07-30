@@ -31,6 +31,13 @@ fn chamber_rate_ghz_for(s: *Scene, soh: i32) f64 {
 // synchronous fabric can be retimed to. 0 when nothing active is placed.
 // Reads the compiled nodes (their soh counts are already cached) so a patch
 // pass costs one compare per node, not an adjacency scan per chamber.
+//
+// The clock is also clamped by model-level physical limits that apply to the
+// entire fabric, not individual parts: the optical channel bandwidth, the port
+// coupling bandwidth, and the inverse of the switching/detector impulse
+// response times. These are real physical constraints — you cannot modulate
+// light faster than the optical channel allows, regardless of how fast the
+// individual emitters and detectors are.
 fn sim_clock_from_nodes(sim: *Sim, s: *Scene) f64 {
     let clock: f64 = 0.0;
     let i: i32 = 0;
@@ -42,6 +49,24 @@ fn sim_clock_from_nodes(sim: *Sim, s: *Scene) f64 {
             if (clock == 0.0 || r < clock) { clock = r; }
         }
         i = i + 1;
+    }
+    if (clock <= 0.0) { return 0.0; }
+
+    // Clamp by model-level physical limits.
+    let m: DeviceModel = s.*.model;
+    if (m.optical_bandwidth_ghz.known && m.optical_bandwidth_ghz.value > 0.0) {
+        if (m.optical_bandwidth_ghz.value < clock) { clock = m.optical_bandwidth_ghz.value; }
+    }
+    if (m.port_bandwidth_ghz.known && m.port_bandwidth_ghz.value > 0.0) {
+        if (m.port_bandwidth_ghz.value < clock) { clock = m.port_bandwidth_ghz.value; }
+    }
+    if (m.switching_response_ps.known && m.switching_response_ps.value > 0.0) {
+        let r: f64 = 1000.0 / m.switching_response_ps.value;
+        if (r < clock) { clock = r; }
+    }
+    if (m.detector_response_ps.known && m.detector_response_ps.value > 0.0) {
+        let r: f64 = 1000.0 / m.detector_response_ps.value;
+        if (r < clock) { clock = r; }
     }
     return clock;
 }

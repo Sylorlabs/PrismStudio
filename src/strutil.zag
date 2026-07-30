@@ -40,9 +40,64 @@ fn s5(a: []u8, b: []u8, c: []u8, d: []u8, e: []u8) []u8 {
     return r;
 }
 
+fn s6(a: []u8, b: []u8, c: []u8, d: []u8, e: []u8, f6: []u8) []u8 {
+    let t: []u8 = s5(a, b, c, d, e);
+    let r: []u8 = _zag_str_concat(t, f6);
+    _zag_str_free(t);
+    return r;
+}
+
 // Owned decimal string for an integer.
 fn fmt_i(v: i64) []u8 {
     return _zag_i64_to_str(v);
+}
+
+// ── leak-free print helpers ──────────────────────────────────────────────────
+//
+// _zag_print(_zag_i64_to_str(x)) leaks the i64 string. These helpers bind, print,
+// and free in one call. Use them wherever an integer is printed directly.
+fn print_i64(v: i64) void {
+    let s: []u8 = _zag_i64_to_str(v);
+    _zag_print(s);
+    _zag_str_free(s);
+}
+
+fn println_i64(v: i64) void {
+    let s: []u8 = _zag_i64_to_str(v);
+    _zag_println(s);
+    _zag_str_free(s);
+}
+
+// ── leak-free accumulation helpers ───────────────────────────────────────────
+//
+// Use these to build a string from many parts without leaking intermediates.
+// Pattern:
+//   let out: []u8 = prepend_f("frame=", fmt_i(frame));   // frees fmt_i result
+//   out = append_f(out, " comps=");                       // frees old out
+//   out = append_ff(out, fmt_i(comps));                   // frees old out + fmt_i
+//   agent_ok1f(out);                                      // frees out after print
+//
+// append_f  — suffix is borrowed (string literal / struct field): free prev only.
+// append_ff — suffix is heap-owned (fmt_i / _zag_str_concat result): free both.
+// prepend_f — owned suffix after a borrowed prefix: free suffix, keep prefix.
+
+fn append_f(prev: []u8, suffix: []u8) []u8 {
+    let r: []u8 = _zag_str_concat(prev, suffix);
+    _zag_str_free(prev);
+    return r;
+}
+
+fn append_ff(prev: []u8, suffix: []u8) []u8 {
+    let r: []u8 = _zag_str_concat(prev, suffix);
+    _zag_str_free(prev);
+    _zag_str_free(suffix);
+    return r;
+}
+
+fn prepend_f(prefix: []u8, owned: []u8) []u8 {
+    let r: []u8 = _zag_str_concat(prefix, owned);
+    _zag_str_free(owned);
+    return r;
 }
 
 // Owned "v0 v1 v2 ..." space-join of integers. Every intermediate is freed;

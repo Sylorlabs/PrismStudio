@@ -40,3 +40,12 @@ fn limit_trace_steps() i32 { return 100000; }
 fn limit_simulation_steps_per_request() i32 { return 100000; }
 fn limit_image_dimension() i32 { return 4096; }
 fn limit_image_pixels() i64 { return 16777216; }
+
+// Builder envelope span cap (voxels along any single axis). Configurable for
+// large fabrics; the default 96 keeps the density-sweep bounded.
+fn limit_builder_span() i32 { return limit_env_or("PRISMSTUDIO_MAX_BUILDER_SPAN", 96); }
+
+// Builder polish passes: how many optimizer-style local rewrites the builder
+// applies before returning its result. Each pass is bounded by the optimizer
+// horizon. Configurable; the default 8 is enough to clean obvious waste.
+fn limit_builder_polish_passes() i32 { return limit_env_or("PRISMSTUDIO_MAX_BUILDER_POLISH_PASSES", 8); }

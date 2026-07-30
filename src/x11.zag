@@ -388,6 +388,7 @@ fn x_auth_cookie(disp: i32, cookie: *list.ArrayList[u8]) bool {
             }
         }
     }
+    _zag_str_free(want_num);
     list.free[u8](&b);
     return found;
 }
@@ -401,7 +402,9 @@ fn x_connect_socket(disp: i32) i64 {
     xw8(&sa, 1);   // AF_UNIX
     xw8(&sa, 0);
     xw_bytes(&sa, "/tmp/.X11-unix/X");
-    xw_bytes(&sa, _zag_i64_to_str(disp as i64));
+    let ds: []u8 = _zag_i64_to_str(disp as i64);
+    xw_bytes(&sa, ds);
+    _zag_str_free(ds);
     xw8(&sa, 0);
     let alen: i64 = sa.len as i64;
     let cr: i64 = xsys(42, fd, sa.data as i64, alen, 0, 0, 0);

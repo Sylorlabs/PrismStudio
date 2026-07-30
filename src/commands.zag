@@ -60,6 +60,7 @@ fn cmd_tool_measure() i32 { return 46; }
 fn cmd_toggle_reduced_motion() i32 { return 47; }
 fn cmd_toggle_object_snap() i32 { return 48; }
 fn cmd_flash_workspace() i32 { return 49; }
+fn cmd_builder() i32 { return 51; }
 
 // ── computed ranges ──────────────────────────────────────────────────────────
 // Placement tools occupy [cmd_place_base(), cmd_place_base() + kind_count()).

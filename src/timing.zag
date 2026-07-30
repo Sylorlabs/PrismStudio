@@ -7,6 +7,7 @@
 @import("../std/list.zag") as list
 @import("sim.zag")
 @import("scene.zag")
+@import("strutil.zag")
 
 // The dominant single hop: the guide with the largest delay-line depth (symbols).
 fn timing_bottleneck_delay(sim: *Sim) i32 {
@@ -91,12 +92,15 @@ fn timing_report(s: *Scene) []u8 {
     let rel_permille: i64 = (timing_rel_uncertainty(s) * 1000.0) as i64;
     sim_free(sim);
 
-    let r: []u8 = _zag_str_concat("critical_path_symbols=", _zag_i64_to_str(crit as i64));
-    r = _zag_str_concat(r, " bottleneck_hop_symbols=");
-    r = _zag_str_concat(r, _zag_i64_to_str(bott as i64));
-    r = _zag_str_concat(r, " min_margin_ps=");
-    r = _zag_str_concat(r, _zag_i64_to_str(margin_ps as i64));
-    r = _zag_str_concat(r, " delay_uncertainty_permille=");
-    r = _zag_str_concat(r, _zag_i64_to_str(rel_permille));
+    // Leak-free accumulation: prepend_f/append_f free the owned suffix (fmt_i)
+    // and the previous buffer respectively; append_ff frees both. Every
+    // intermediate reaches _zag_str_free exactly once via these helpers.
+    let r: []u8 = prepend_f("critical_path_symbols=", fmt_i(crit as i64));
+    r = append_f(r, " bottleneck_hop_symbols=");
+    r = append_ff(r, fmt_i(bott as i64));
+    r = append_f(r, " min_margin_ps=");
+    r = append_ff(r, fmt_i(margin_ps as i64));
+    r = append_f(r, " delay_uncertainty_permille=");
+    r = append_ff(r, fmt_i(rel_permille));
     return r;
 }

@@ -18,6 +18,7 @@
 @import("tiles.zag")
 @import("editops.zag")
 @import("optimizer.zag")
+@import("builder.zag")
 @import("uilayer.zag")
 @import("flash_ir.zag")
 @import("strutil.zag")
@@ -61,6 +62,7 @@ struct App {
     right_w: i32,
     bottom_h: i32,
     grab: i32,
+    bottom_collapsed: bool,  // timeline/debugger collapsed to a thin bar
     // tools + selection
     tool: i32,
     ghost_rot: i32,
@@ -122,6 +124,9 @@ struct App {
     opt_open: bool,         // Optimizer proposal panel open
     opt_details: bool,      // proposal details expanded
     opt_previewed: bool,    // manual Apply is locked until the diff was viewed
+    build: *BuildEngine,    // background engine builder (Section 22)
+    build_open: bool,       // Builder panel open
+    build_details: bool,    // builder details expanded
     settings_open: bool,    // Settings panel open
     palette_open: bool,     // command palette open
     palette_text: list.ArrayList[u8],
@@ -256,6 +261,7 @@ fn app_new(w: i32, h: i32) *App {
         .right_w = default_right,
         .bottom_h = default_bottom,
         .grab = 0,
+        .bottom_collapsed = false,
         .tool = 0,
         .ghost_rot = 0,
         .sel = list.make[i32](8),
@@ -272,7 +278,7 @@ fn app_new(w: i32, h: i32) *App {
         .move_ok = 0,
         .hover_ok = false,
         .hover_cell = vox(0, 0, 0),
-        .file_ = "untitled.zpa",
+        .file_ = _zag_strdup("untitled.zpa"),   // always heap-owned: free before reassign
         .dirty = false,
         .title_dirty = true,
         .quit = false,
@@ -307,6 +313,9 @@ fn app_new(w: i32, h: i32) *App {
         .opt_open = false,
         .opt_details = false,
         .opt_previewed = false,
+        .build = build_engine_new(),
+        .build_open = false,
+        .build_details = false,
         .settings_open = false,
         .palette_open = false,
         .palette_text = list.make[u8](32),
@@ -317,7 +326,7 @@ fn app_new(w: i32, h: i32) *App {
         .model_open = false,
         .model_param_sel = 0,
         .flash_path = textedit_new(),
-        .flash_raw = "",
+        .flash_raw = _zag_strdup(""),            // always heap-owned: free before reassign
         .flash_tags = list.make[[]u8](16),
         .flash_ops = list.make[i32](16),
         .flash_expected = list.make[i32](16),
@@ -374,7 +383,7 @@ fn app_new(w: i32, h: i32) *App {
         .sect_y = 4,
         .sel_frame = 0 - 1000,
         .invalid_frame = 0 - 1000,
-        .invalid_text = "",
+        .invalid_text = _zag_strdup(""),         // always heap-owned: free before reassign
         .click_frame = 0 - 1000,
         .click_x = 0,
         .click_y = 0,
@@ -766,9 +775,12 @@ fn app_ungroup_selection(a: *App) void {
 
 // ── invalid-action feedback (Section 3.11) ───────────────────────────────────
 
+// invalid_text is always heap-owned (see app_new init). Free the previous
+// value before storing a strdup of the borrowed msg.
 fn app_invalid(a: *App, msg: []u8) void {
     a.*.invalid_frame = a.*.frame;
-    a.*.invalid_text = msg;
+    _zag_str_free(a.*.invalid_text);
+    a.*.invalid_text = _zag_strdup(msg);
     app_log(a, msg);
 }
 
@@ -831,6 +843,7 @@ fn app_dblclick(a: *App) bool {
 
 fn menu_h() i32 { return 30; }
 fn status_h() i32 { return 26; }
+fn rail_w() i32 { return 36; }  // tool rail width (icon strip)
 
 fn zone_menu(a: *App) Rect {
     return rect(0, 0, a.*.inp.w, menu_h());
@@ -843,10 +856,18 @@ fn zone_settings_gear(a: *App) Rect {
 
 fn zone_opt_btn(a: *App) Rect {
     let g: Rect = zone_settings_gear(a);
-    // Width derived from label: text_w("Optimizer") = 9*6 = 54, plus pad_text()*2+2 = 10 → 64px.
+    // Width derived from label: text_w("opt") = 3*6 = 18, plus pad_text()*2+2 = 10 → 28px.
     // The 4px gap to the settings gear is explicit rather than baked into the offset.
     let bw: i32 = 64;
     return rect(g.x - (bw + 4), g.y, bw, g.h);
+}
+
+// Builder button sits to the left of the Optimizer button, with the same
+// 4px gap. Width derived from label "build" = 5*6 = 30 + pad = 40px.
+fn zone_build_btn(a: *App) Rect {
+    let o: Rect = zone_opt_btn(a);
+    let bw: i32 = 52;
+    return rect(o.x - (bw + 4), o.y, bw, o.h);
 }
 
 fn zone_status(a: *App) Rect {
@@ -854,11 +875,16 @@ fn zone_status(a: *App) Rect {
 }
 
 fn zone_bottom(a: *App) Rect {
+    if (a.*.bottom_collapsed) { return rect(0, a.*.inp.h - status_h() - 20, a.*.inp.w, 20); }
     return rect(0, a.*.inp.h - status_h() - a.*.bottom_h, a.*.inp.w, a.*.bottom_h);
 }
 
+fn zone_rail(a: *App) Rect {
+    return rect(0, menu_h(), rail_w(), a.*.inp.h - menu_h() - status_h());
+}
+
 fn zone_left(a: *App) Rect {
-    return rect(0, menu_h(), a.*.left_w, a.*.inp.h - menu_h() - status_h() - a.*.bottom_h);
+    return rect(rail_w(), menu_h(), a.*.left_w, a.*.inp.h - menu_h() - status_h() - a.*.bottom_h);
 }
 
 fn zone_right(a: *App) Rect {
@@ -866,7 +892,7 @@ fn zone_right(a: *App) Rect {
 }
 
 fn zone_center(a: *App) Rect {
-    return rect(a.*.left_w, menu_h(), a.*.inp.w - a.*.left_w - a.*.right_w, a.*.inp.h - menu_h() - status_h() - a.*.bottom_h);
+    return rect(rail_w() + a.*.left_w, menu_h(), a.*.inp.w - rail_w() - a.*.left_w - a.*.right_w, a.*.inp.h - menu_h() - status_h() - a.*.bottom_h);
 }
 
 fn app_splitters(a: *App) void {
@@ -889,7 +915,7 @@ fn app_splitters(a: *App) void {
         a.*.grab = 0;
     }
     // clamps keep the viewport visually dominant at any drag (Section 3.2)
-    if (a.*.grab == 1) { a.*.left_w = clampi(inp.*.mx, layout_left_min(inp.*.w), inp.*.w / 4); }
+    if (a.*.grab == 1) { a.*.left_w = clampi(inp.*.mx - rail_w(), layout_left_min(inp.*.w), inp.*.w / 4); }
     if (a.*.grab == 2) { a.*.right_w = clampi(inp.*.w - inp.*.mx, layout_right_min(inp.*.w), inp.*.w / 3); }
     if (a.*.grab == 3) { a.*.bottom_h = clampi(inp.*.h - inp.*.my - status_h(), layout_bottom_min(inp.*.h), (inp.*.h * 2) / 5); }
     if (a.*.grab != 0) { inp.*.capture = 1; }
@@ -1165,7 +1191,8 @@ fn app_new_design(a: *App) void {
     scene_clear(a.*.scene);
     journal_clear(&a.*.jrn);
     sel_clear(a);
-    a.*.file_ = "untitled.zpa";
+    _zag_str_free(a.*.file_);
+    a.*.file_ = _zag_strdup("untitled.zpa");
     a.*.dirty = true;
     a.*.title_dirty = true;
     a.*.session_sync_now = true;
@@ -1175,8 +1202,10 @@ fn app_new_design(a: *App) void {
 fn app_save(a: *App) void {
     if (design_save(a.*.scene, a.*.file_)) {
         let bytes: []u8 = _zag_read_file(a.*.file_);
+        let opt_path: []u8 = s2(a.*.file_, ".opt");
         let _campaign: bool = opt_campaign_save_full(a.*.opt,
-            _zag_str_concat(a.*.file_, ".opt"), design_bytes_hash(bytes));
+            opt_path, design_bytes_hash(bytes));
+        _zag_str_free(opt_path);
         a.*.dirty = false;
         a.*.title_dirty = true;
         let __log_s: []u8 = s2("saved ", a.*.file_);
@@ -1191,10 +1220,13 @@ fn app_open_file(a: *App, path: []u8) void {
     if (design_load(a.*.scene, path)) {
         journal_clear(&a.*.jrn);
         sel_clear(a);
+        _zag_str_free(a.*.file_);
         a.*.file_ = _zag_strdup(path);
         let bytes: []u8 = _zag_read_file(path);
+        let opt_path: []u8 = s2(path, ".opt");
         let _campaign: bool = opt_campaign_load_full(a.*.opt,
-            _zag_str_concat(path, ".opt"), design_bytes_hash(bytes), a.*.scene);
+            opt_path, design_bytes_hash(bytes), a.*.scene);
+        _zag_str_free(opt_path);
         a.*.dirty = true;
         a.*.title_dirty = true;
         a.*.session_sync_now = true;
@@ -1226,7 +1258,8 @@ fn app_flash_import(a: *App, path: []u8) bool {
         list.free[FlashOp](&ir.ops);
         return false;
     }
-    a.*.flash_tags.len = 0; a.*.flash_ops.len = 0; a.*.flash_expected.len = 0;
+    free_str_list(&a.*.flash_tags);
+    a.*.flash_ops.len = 0; a.*.flash_expected.len = 0;
     let i: i32 = 0;
     while (i < ir.ops.len) {
         list.push[[]u8](&a.*.flash_tags, _zag_strdup(ir.ops.data[i].tag));
@@ -1234,10 +1267,12 @@ fn app_flash_import(a: *App, path: []u8) bool {
         list.push[i32](&a.*.flash_expected, ir.ops.data[i].expected);
         i = i + 1;
     }
+    _zag_str_free(a.*.flash_raw);
     a.*.flash_raw = _zag_strdup(ir.raw);
     a.*.flash_verify_errors = flash_verify_scene(a.*.scene, a.*.sim);
     journal_clear(&a.*.jrn); sel_clear(a); app_frame_all(a);
-    a.*.file_ = "untitled-flash.zpa";
+    _zag_str_free(a.*.file_);
+    a.*.file_ = _zag_strdup("untitled-flash.zpa");
     a.*.dirty = true; a.*.title_dirty = true; a.*.session_sync_now = true;
     let __log_i: []u8 = s2("imported Flash FIR ", path);
         app_log(a, __log_i);
@@ -1301,7 +1336,8 @@ fn app_recover_file(a: *App, path: []u8) bool {
         return false;
     }
     journal_clear(&a.*.jrn); sel_clear(a); sim_reset(a.*.sim, a.*.scene); app_frame_all(a);
-    a.*.file_ = "recovered.zpa";
+    _zag_str_free(a.*.file_);
+    a.*.file_ = _zag_strdup("recovered.zpa");
     a.*.dirty = true; a.*.title_dirty = true; a.*.session_sync_now = false;
     a.*.modal = modal_none();
     let __log_rec: []u8 = s2("recovered snapshot ", path);
@@ -1388,11 +1424,11 @@ fn gizmo_hit(a: *App, mx: i32, my: i32) i32 {
 // Snap the camera to look along the chosen axis (pitch clamps handle up/down).
 fn gizmo_apply(a: *App, i: i32) void {
     if (i == 0) { a.*.cam.yaw = 0.0; a.*.cam.pitch = 0.02; }
-    if (i == 1) { a.*.cam.yaw = 3.14159265; a.*.cam.pitch = 0.02; }
+    if (i == 1) { a.*.cam.yaw = pi(); a.*.cam.pitch = 0.02; }
     if (i == 2) { a.*.cam.pitch = 1.52; }
     if (i == 3) { a.*.cam.pitch = 0.02; }
-    if (i == 4) { a.*.cam.yaw = 1.57079633; a.*.cam.pitch = 0.02; }
-    if (i == 5) { a.*.cam.yaw = 0.0 - 1.57079633; a.*.cam.pitch = 0.02; }
+    if (i == 4) { a.*.cam.yaw = pi_half(); a.*.cam.pitch = 0.02; }
+    if (i == 5) { a.*.cam.yaw = 0.0 - pi_half(); a.*.cam.pitch = 0.02; }
     app_log(a, "view aligned to axis");
 }
 
@@ -1622,7 +1658,9 @@ fn app_viewport_input(a: *App, dt: f64) void {
         _zag_str_free(__log_pl);
                     }
                 } else {
-                    app_invalid(a, _zag_str_concat("cannot place: ", place_err_text(a.*.ghost_ok)));
+                    let place_msg: []u8 = s2("cannot place: ", place_err_text(a.*.ghost_ok));
+                    app_invalid(a, place_msg);
+                    _zag_str_free(place_msg);
                 }
             }
         }
@@ -1779,6 +1817,10 @@ fn app_keys(a: *App) void {
             a.*.opt_open = !a.*.opt_open; a.*.settings_open = false;
             a.*.opt_previewed = false; a.*.opt_details = false;
         }
+        if (key_hit(inp, 'b' as i32)) {
+            a.*.build_open = !a.*.build_open; a.*.settings_open = false;
+            a.*.opt_open = false;
+        }
         if (key_hit(inp, 's' as i32)) {
             a.*.settings_open = !a.*.settings_open; a.*.opt_open = false;
         }
@@ -1829,7 +1871,11 @@ fn app_keys(a: *App) void {
                     let nr: i32 = (a.*.scene.*.comps.data[ci_r].rot + 1) % 4;
                     let rv: i32 = op_rotate(&a.*.jrn, a.*.scene, sel_primary(a), nr);
                     if (rv == 0) { app_mark_dirty(a); app_log(a, "rotated"); }
-                    else { app_invalid(a, _zag_str_concat("cannot rotate: ", place_err_text(rv))); }
+                    else {
+                        let rot_msg: []u8 = s2("cannot rotate: ", place_err_text(rv));
+                        app_invalid(a, rot_msg);
+                        _zag_str_free(rot_msg);
+                    }
                 }
             }
         }
@@ -1918,7 +1964,12 @@ fn app_saveas_commit(a: *App) void {
         if ((name_[e - 4] as i32) == '.' && (name_[e - 3] as i32) == 'z' &&
             (name_[e - 2] as i32) == 'p' && (name_[e - 1] as i32) == 'a') { has_ext = true; }
     }
-    if (!has_ext) { name_ = _zag_str_concat(name_, ".zpa"); }
+    if (!has_ext) {
+        let ext: []u8 = s2(name_, ".zpa");
+        _zag_str_free(name_);
+        name_ = ext;
+    }
+    _zag_str_free(a.*.file_);
     a.*.file_ = name_;
     a.*.modal = modal_none();
     a.*.title_dirty = true;

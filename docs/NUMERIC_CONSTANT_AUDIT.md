@@ -13,7 +13,9 @@ limit** (named and bounded), and **protocol/ABI** (versioned external contract).
 |---|---|---|
 | `agent.zag` | structural, protocol/ABI, safety limit | Automation contract; stable codes and bounded parsing |
 | `app.zag` | structural, UI-only | Application lifecycle and interaction cadence |
+| `builder.zag` | structural, derived, safety limit | Density-sweep synthesis; physical values come from DeviceModel; spans/passes bounded by limits.zag |
 | `capability.zag` | structural, protocol/ABI, safety limit | Security capability bitset and grant policy |
+| `commands.zag` | structural, protocol/ABI | Stable command-id registry; no physical or performance literals |
 | `components.zag` | structural, UI-only | Component topology and default voxel footprints; no physical rate claims |
 | `demo.zag` | structural, illustrative physical | Demo fixture only; physical values inherit the illustrative model label |
 | `device_model.zag` | physical, derived, safety limit | Physical-model owner; every value carries units, source, method, uncertainty, and confidence |
@@ -21,6 +23,7 @@ limit** (named and bounded), and **protocol/ABI** (versioned external contract).
 | `export.zag` | structural, protocol/ABI, derived | Deterministic export formatting and model-derived values |
 | `fb.zag` | structural, UI-only, safety limit | Pixel arithmetic, clipping, and bounded image dimensions |
 | `flash_ir.zag` | structural, protocol/ABI, safety limit | Flash FIR grammar/version and bounded import |
+| `fontatlas.zag` | UI-only, structural | Glyph atlas packing geometry; no physical or performance literals |
 | `fontdata.zag` | UI-only, structural | Checked-in bitmap glyph data; never physical evidence |
 | `gpu_backend.zag` | structural, protocol/ABI, safety policy | Stable backend choice and refusal codes; live hardware identity is queried and physical access remains separately gated |
 | `gpu_compute.zag` | protocol/ABI, safety limit | Experimental reviewed dispatch construction; no performance claims |
@@ -36,12 +39,14 @@ limit** (named and bounded), and **protocol/ABI** (versioned external contract).
 | `math3d.zag` | structural | Dimensionless vector/matrix algebra constants |
 | `mcp.zag` | protocol/ABI, safety limit | MCP framing/version/schema and request ceilings |
 | `optimizer.zag` | structural, derived, safety limit | Exact structural cost model and bounded scheduler settings; timing gains require benchmark evidence |
+| `process_stack.zag` | structural, derived | Physical process-stack layer heights; values come from DeviceModel |
 | `rdna.zag` | protocol/ABI | Reviewed RDNA1 instruction encodings; never inferred on hardware |
 | `routing.zag` | structural, safety limit, derived | Named route costs and model/geometry-derived path results |
 | `scene.zag` | structural, safety limit | IDs, voxel topology, occupancy, and bounded world coordinates |
 | `session.zag` | structural, protocol/ABI, safety limit | Revision, atomic persistence, autosave retention, and timestamps |
 | `sim.zag` | structural, physical, derived, safety limit | Balanced-ternary states and model-derived clock/delay |
 | `sim_region.zag` | structural, safety limit | Incremental graph patching and bounded history |
+| `strutil.zag` | structural | String-builder arithmetic; no physical or performance literals |
 | `ternary.zag` | structural | Closed balanced-ternary algebra |
 | `tiles.zag` | structural, UI-only | Render tile geometry and dirty-region bookkeeping |
 | `timing.zag` | derived, physical | Geometry/model-derived timing and uncertainty propagation |
@@ -50,6 +55,9 @@ limit** (named and bounded), and **protocol/ABI** (versioned external contract).
 | `viewport.zag` | UI-only, structural, derived | Projection/raster math and world-derived geometry |
 | `voxel.zag` | structural | Integer lattice algebra and keys |
 | `workspace.zag` | UI-only, structural, derived | Product layout and model-derived displayed values |
+| `workspace_menu.zag` | UI-only, structural | Menu/palette/status layout; no physical or performance literals |
+| `workspace_opt.zag` | UI-only, structural, derived | Optimizer/builder panel layout; model-derived displayed values |
+| `workspace_settings.zag` | UI-only, structural | Modal/settings layout; no physical or performance literals |
 | `world.zag` | structural, safety limit | Sparse 32-cubed chunk indexing and bounded queries |
 | `x11.zag` | protocol/ABI, UI-only, safety limit | X11 wire protocol, event constants, and bounded presentation |
 

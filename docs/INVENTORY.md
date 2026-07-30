@@ -4,13 +4,15 @@ A current inventory of PrismStudio's source modules, artifacts, probes, protocol
 storage formats, and external dependencies (Master plan §4.1). The
 `inventory-audit` gate fails if a `src/*.zag` module is missing here.
 
-## Source modules (41) — `src/*.zag`
+## Source modules (49) — `src/*.zag`
 
 | Module | Role |
 |---|---|
 | `agent.zag` | headless agent RPC for CLI and MCP wrappers. |
 | `app.zag` | application core: state, zones, tools, input, and the command |
+| `builder.zag` | Engine Builder / Density Synthesizer (Masterplan §22). |
 | `capability.zag` | explicit local-agent grants and append-only request audit. |
+| `commands.zag` | stable command-id registry for palette + agent dispatch. |
 | `components.zag` | the photonic hardware library. |
 | `demo.zag` | reference photonic processor design (shared by GUI + agent). |
 | `device_model.zag` | versioned physical assumptions with explicit provenance. |
@@ -19,6 +21,7 @@ storage formats, and external dependencies (Master plan §4.1). The
 | `fb.zag` | software framebuffer for Zag Photonics Architect. |
 | `flash_ir.zag` | Flash FIR v1 importer and photonic execution verifier. |
 | `fontdata.zag` | 5x9 bitmap font rows (bits 4..0) |
+| `fontatlas.zag` | glyph atlas packer: bakes fontdata rows into a cacheable |
 | `gpu_backend.zag` | User-selectable auto/CPU/virtual/physical backend policy; explicit CPU/virtual choices do not open or probe DRM. |
 | `gpu_compute.zag` | high-level GPU compute operations built on the verified |
 | `gpu_isa_display.zag` | Compiler-ISA-executed virtual framebuffer with owned memory, ordered fences, complete-frame presentation, and no DRM access. |
@@ -33,12 +36,14 @@ storage formats, and external dependencies (Master plan §4.1). The
 | `math3d.zag` | vectors, orbit camera, projection, and picking rays. |
 | `mcp.zag` | native MCP stdio server (JSON-RPC + Content-Length framing). |
 | `optimizer.zag` | Continuous Optical-Computation Optimizer (Photon Solver). |
+| `process_stack.zag` | physical process-stack layer model (plate, part, guide heights). |
 | `rdna.zag` | a hand-written RDNA1 (GFX10.1) machine-code emitter, in pure Zag. |
 | `routing.zag` | waveguide routing engine. A* over the free voxel lattice, |
 | `scene.zag` | the design database. The scene is stored as (a) a voxel |
 | `session.zag` | live shared design: one .zpa for GUI + agent + MCP. |
 | `sim.zag` | wave-state simulation. The scene's directed optical graph is |
 | `sim_region.zag` | incremental simulation recompile. |
+| `strutil.zag` | leak-free string helpers (s2..s6, fmt_i, fmt_f1) for ownership. |
 | `ternary.zag` | balanced ternary optical logic. |
 | `tiles.zag` | tile-based render cache for the 3D viewport. |
 | `timing.zag` | static timing analysis over the routed photonic fabric (Masterplan |
@@ -47,6 +52,9 @@ storage formats, and external dependencies (Master plan §4.1). The
 | `viewport.zag` | the 3D viewport. Software-rasterized in Zag: |
 | `voxel.zag` | integer lattice coordinates for the design grid. |
 | `workspace.zag` | panel rendering + per-frame orchestration. |
+| `workspace_menu.zag` | menu bar, command palette, status bar, context menu. |
+| `workspace_opt.zag` | optimizer proposal panel + builder panel + apply paths. |
+| `workspace_settings.zag` | modal dialogs, Flash FIR workspace, model browser, settings. |
 | `world.zag` | sparse chunk-based spatial index for million-scale scenes. |
 | `x11.zag` | a pure-Zag X11 client. No libc, no Xlib, no C anywhere: |
 

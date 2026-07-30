@@ -1,0 +1,859 @@
+// workspace_menu.zag — menu bar, command palette, status bar, warnings popup,
+// and right-click context menu. Extracted from workspace.zag.
+// All functions here import only app.zag and std libraries; workspace.zag
+// imports this file so its declarations are flattened into the build.
+
+@import("../std/list.zag") as list
+@import("app.zag")
+@import("commands.zag")
+@import("strutil.zag")
+@import("sim_region.zag")
+@import("demo.zag")
+@import("capability.zag")
+@import("process_stack.zag")
+
+// ── command dispatch (menus + shortcuts route here) ───────────────────────────
+// Command codes are named in commands.zag. Do not add bare integer comparisons
+// here: `if (code == 7)` is a rejected shortcut (see commands.zag header).
+
+fn app_action(a: *App, code: i32) void {
+    a.*.menu = 0 - 1;
+    if (code == cmd_new()) { app_new_design(a); }
+    if (code == cmd_open()) { app_show_open(a); }
+    if (code == cmd_save()) { app_save(a); }
+    if (code == cmd_save_as()) { app_show_saveas(a); }
+    if (code == cmd_quit()) { a.*.quit = true; }
+    if (code == cmd_undo()) { app_undo(a); }
+    if (code == cmd_redo()) { app_redo(a); }
+    if (code == cmd_duplicate()) { app_duplicate(a); }
+    if (code == cmd_delete()) { app_delete_selection(a); }
+    if (code == cmd_deselect()) { sel_clear(a); }
+    if (code == cmd_copy()) { app_copy(a); }
+    if (code == cmd_paste()) { app_paste(a); }
+    if (code == cmd_group()) { app_group_selection(a); }
+    if (code == cmd_ungroup()) { app_ungroup_selection(a); }
+    if (code == cmd_rename()) { app_begin_rename(a, sel_primary(a)); }
+    if (code == cmd_frame_selected()) { app_frame_selected(a); }
+    if (code == cmd_frame_all()) { app_frame_all(a); }
+    if (code == cmd_view_top()) {
+        a.*.cam.yaw = 0.0 - pi_half();
+        a.*.cam.pitch = 1.51;
+    }
+    if (code == cmd_view_front()) {
+        a.*.cam.yaw = 0.0 - pi_half();
+        a.*.cam.pitch = 0.06;
+    }
+    if (code == cmd_view_right()) {
+        a.*.cam.yaw = 0.0;
+        a.*.cam.pitch = 0.06;
+    }
+    if (code == cmd_view_perspective()) {
+        a.*.cam.yaw = 0.9;
+        a.*.cam.pitch = 0.62;
+    }
+    if (code == cmd_toggle_ortho()) {
+        a.*.cam.ortho = !a.*.cam.ortho;
+        scene_mark_render(a.*.scene);   // projection change invalidates the tile cache
+    }
+    if (code == cmd_cycle_ui_scale()) { a.*.ui_scale = (a.*.ui_scale % 3) + 1; }   // cycle 1x/2x/3x
+    if (code == cmd_reset_view()) { app_reset_view(a); }
+    if (code == cmd_section_view()) {
+        a.*.sect_on = !a.*.sect_on;
+        scene_mark_render(a.*.scene);
+        if (a.*.sect_on) { app_log(a, "section view on ([ / ] adjust level)"); }
+    }
+    if (code == cmd_shortcuts()) { a.*.modal = modal_keys(); }
+    if (code == cmd_demo()) { app_action_demo(a); }
+    if (code == cmd_model_provenance()) { a.*.model_open = true; a.*.flash_open = false; }
+    // This is deliberately a first-class visible command rather than an
+    // undocumented file path: the canonical Flash PCU is the reproducible
+    // reference design users can inspect, run, modify, save, and reopen.
+    if (code == cmd_open_flash_reference()) { app_open_file(a, "examples/flash_photonic_massive.zpa"); }
+    if (code == cmd_recover_autosave()) { app_show_recovery(a); }
+    if (code == cmd_tool_select()) { a.*.tool = tool_select(); }
+    if (code == cmd_tool_route()) { a.*.tool = tool_route(); a.*.route_c = 0 - 1; }
+    if (code == cmd_sim_play_toggle()) { a.*.sim.*.playing = !a.*.sim.*.playing; }
+    if (code == cmd_optimizer()) { a.*.opt_open = true; a.*.settings_open = false; a.*.opt_previewed = false; a.*.opt_details = false; }
+    if (code == cmd_builder()) { a.*.build_open = true; a.*.settings_open = false; a.*.opt_open = false; }
+    if (code == cmd_settings()) { a.*.settings_open = true; a.*.opt_open = false; }
+    if (code == cmd_palette()) { a.*.palette_open = true; a.*.palette_text.len = 0; a.*.palette_sel = 0; }
+    if (code == cmd_tool_measure()) { a.*.tool = tool_measure(); a.*.measure_n = 0; }
+    if (code == cmd_toggle_reduced_motion()) { a.*.inp.reduced_motion = !a.*.inp.reduced_motion; }
+    if (code == cmd_toggle_object_snap()) { a.*.snap_obj = !a.*.snap_obj; }
+    if (code == cmd_flash_workspace()) { a.*.flash_open = true; a.*.model_open = false; a.*.settings_open = false; a.*.opt_open = false; }
+    if (code >= cmd_place_base() && code < cmd_place_base() + kind_count()) { a.*.tool = tool_place_base() + (code - cmd_place_base()); }
+    // jump to object (Section 3.6): palette codes cmd_palette_jump_base()+idx select and frame
+    if (code >= cmd_palette_jump_base() && code - cmd_palette_jump_base() < a.*.scene.*.comps.len) {
+        sel_set(a, a.*.scene.*.comps.data[code - cmd_palette_jump_base()].id);
+        app_frame_selected(a);
+    }
+}
+
+// Begin inline rename of `id` (F2, menu, context menu, outliner double-slow-click).
+fn app_begin_rename(a: *App, id: i32) void {
+    if (id < 0) { return; }
+    let ci: i32 = scene_comp_index(a.*.scene, id);
+    if (ci < 0) { return; }
+    a.*.rename_id = id;
+    textedit_set(&a.*.rename_edit, a.*.scene.*.comps.data[ci].name_);
+    a.*.rename_edit.focus = true;
+}
+
+// ── command palette (Section 3.6) ─────────────────────────────────────────────
+struct PCmd {
+    label: []u8,
+    hint: []u8,
+    code: i32,
+}
+
+fn palette_commands(out: *list.ArrayList[PCmd]) void {
+    out.*.len = 0;
+    list.push[PCmd](out, PCmd{ .label = "New Project", .hint = "Ctrl+N", .code = cmd_new() });
+    list.push[PCmd](out, PCmd{ .label = "Open Project...", .hint = "Ctrl+O", .code = cmd_open() });
+    list.push[PCmd](out, PCmd{ .label = "Save", .hint = "Ctrl+S", .code = cmd_save() });
+    list.push[PCmd](out, PCmd{ .label = "Save As...", .hint = "Ctrl+Shift+S", .code = cmd_save_as() });
+    list.push[PCmd](out, PCmd{ .label = "Undo", .hint = "Ctrl+Z", .code = cmd_undo() });
+    list.push[PCmd](out, PCmd{ .label = "Redo", .hint = "Ctrl+Y", .code = cmd_redo() });
+    list.push[PCmd](out, PCmd{ .label = "Duplicate Selection", .hint = "Shift+D", .code = cmd_duplicate() });
+    list.push[PCmd](out, PCmd{ .label = "Copy", .hint = "Ctrl+C", .code = cmd_copy() });
+    list.push[PCmd](out, PCmd{ .label = "Paste", .hint = "Ctrl+V", .code = cmd_paste() });
+    list.push[PCmd](out, PCmd{ .label = "Delete Selection", .hint = "X", .code = cmd_delete() });
+    list.push[PCmd](out, PCmd{ .label = "Deselect All", .hint = "Esc", .code = cmd_deselect() });
+    list.push[PCmd](out, PCmd{ .label = "Frame Selected", .hint = "F", .code = cmd_frame_selected() });
+    list.push[PCmd](out, PCmd{ .label = "Frame All", .hint = "Home", .code = cmd_frame_all() });
+    list.push[PCmd](out, PCmd{ .label = "View: Top", .hint = "", .code = cmd_view_top() });
+    list.push[PCmd](out, PCmd{ .label = "View: Front", .hint = "", .code = cmd_view_front() });
+    list.push[PCmd](out, PCmd{ .label = "View: Right", .hint = "", .code = cmd_view_right() });
+    list.push[PCmd](out, PCmd{ .label = "View: Perspective", .hint = "", .code = cmd_view_perspective() });
+    list.push[PCmd](out, PCmd{ .label = "View: Toggle Orthographic", .hint = "", .code = cmd_toggle_ortho() });
+    list.push[PCmd](out, PCmd{ .label = "View: Reset", .hint = "", .code = cmd_reset_view() });
+    list.push[PCmd](out, PCmd{ .label = "View: Toggle Section View", .hint = "", .code = cmd_section_view() });
+    list.push[PCmd](out, PCmd{ .label = "Cycle HiDPI Scale", .hint = "", .code = cmd_cycle_ui_scale() });
+    list.push[PCmd](out, PCmd{ .label = "Tool: Select", .hint = "Q", .code = cmd_tool_select() });
+    list.push[PCmd](out, PCmd{ .label = "Tool: Route Waveguide", .hint = "E", .code = cmd_tool_route() });
+    list.push[PCmd](out, PCmd{ .label = "Tool: Measure", .hint = "M", .code = cmd_tool_measure() });
+    list.push[PCmd](out, PCmd{ .label = "Group Selection", .hint = "Ctrl+G", .code = cmd_group() });
+    list.push[PCmd](out, PCmd{ .label = "Ungroup Selection", .hint = "Ctrl+Shift+G", .code = cmd_ungroup() });
+    list.push[PCmd](out, PCmd{ .label = "Rename Selection", .hint = "F2", .code = cmd_rename() });
+    list.push[PCmd](out, PCmd{ .label = "Toggle Reduced Motion", .hint = "", .code = cmd_toggle_reduced_motion() });
+    list.push[PCmd](out, PCmd{ .label = "Toggle Object Snapping", .hint = "", .code = cmd_toggle_object_snap() });
+    list.push[PCmd](out, PCmd{ .label = "Toggle Simulation", .hint = "Space", .code = cmd_sim_play_toggle() });
+    list.push[PCmd](out, PCmd{ .label = "Open Optimizer", .hint = "Alt+O", .code = cmd_optimizer() });
+    list.push[PCmd](out, PCmd{ .label = "Open Builder", .hint = "Alt+B", .code = cmd_builder() });
+    list.push[PCmd](out, PCmd{ .label = "Open Settings", .hint = "Alt+S", .code = cmd_settings() });
+    list.push[PCmd](out, PCmd{ .label = "Physical Model & Provenance", .hint = "", .code = cmd_model_provenance() });
+    list.push[PCmd](out, PCmd{ .label = "Flash FIR Workspace", .hint = "", .code = cmd_flash_workspace() });
+    let ki: i32 = 0;
+    while (ki < kind_count()) {
+        list.push[PCmd](out, PCmd{ .label = kind_place_label(kind_at(ki)),
+                                   .hint = "", .code = cmd_place_base() + ki });
+        ki = ki + 1;
+    }
+    list.push[PCmd](out, PCmd{ .label = "Load Demo Design", .hint = "F1", .code = cmd_demo() });
+    list.push[PCmd](out, PCmd{ .label = "Open Reference Flash PCU", .hint = "", .code = cmd_open_flash_reference() });
+    list.push[PCmd](out, PCmd{ .label = "Keyboard Shortcuts", .hint = "", .code = cmd_shortcuts() });
+}
+
+fn ascii_lower(c: u8) u8 {
+    if (c >= 65 && c <= 90) { return c + 32; }
+    return c;
+}
+
+// Case-insensitive substring match; an empty query matches everything.
+fn pcmd_match(label: []u8, q: []u8) bool {
+    if (q.len == 0) { return true; }
+    let i: i32 = 0;
+    while (i + q.len <= label.len) {
+        let ok: bool = true;
+        let j: i32 = 0;
+        while (j < q.len) {
+            if (ascii_lower(label[i + j]) != ascii_lower(q[j])) { ok = false; }
+            j = j + 1;
+        }
+        if (ok) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Rebuilds the filtered palette list. Dynamic "Go to:" labels are heap strings
+// owned by a.*.palette_scratch: this function frees the previous generation on
+// entry, so the PCmd label pointers it hands out stay valid until the next
+// call. Do not build heap labels anywhere else in the palette path (static
+// labels only, see kind_place_label).
+fn palette_filtered(a: *App, out: *list.ArrayList[PCmd]) void {
+    free_str_list(&a.*.palette_scratch);
+    let all: list.ArrayList[PCmd] = list.make[PCmd](40);
+    palette_commands(&all);
+    // jump to object (Section 3.6): one dynamic entry per placed part
+    let jc: i32 = 0;
+    while (jc < a.*.scene.*.comps.len) {
+        let gl: []u8 = s2("Go to: ", a.*.scene.*.comps.data[jc].name_);
+        list.push[[]u8](&a.*.palette_scratch, gl);
+        list.push[PCmd](&all, PCmd{
+            .label = gl,
+            .hint = "", .code = cmd_palette_jump_base() + jc });
+        jc = jc + 1;
+    }
+    out.*.len = 0;
+    let q: []u8 = a.*.palette_text.data[0..a.*.palette_text.len];
+    let i: i32 = 0;
+    while (i < all.len) {
+        if (pcmd_match(all.data[i].label, q)) { list.push[PCmd](out, all.data[i]); }
+        i = i + 1;
+    }
+    list.free[PCmd](&all);
+}
+
+// Execute the highlighted command in the current filtered list.
+fn app_palette_exec(a: *App) void {
+    // Coordinate jump is intentionally textual so exact negative world
+    // coordinates remain quick to enter: Ctrl+K, `tp x y z`, Enter.
+    let pq: []u8 = a.*.palette_text.data[0..a.*.palette_text.len];
+    if (pq.len >= 4 && pq[0] == 't' && pq[1] == 'p' && pq[2] == ' ') {
+        let vals: list.ArrayList[i64] = list.make[i64](3);
+        let p: i32 = 3;
+        while (p < pq.len && vals.len < 3) {
+            while (p < pq.len && pq[p] == ' ') { p = p + 1; }
+            let st: i32 = p;
+            while (p < pq.len && pq[p] != ' ') { p = p + 1; }
+            if (p > st) { list.push[i64](&vals, _zag_str_to_i64(pq[st..p])); }
+        }
+        if (vals.len == 3) {
+            app_camera_teleport(a, vals.data[0] as f64, vals.data[1] as f64, vals.data[2] as f64);
+ let __log_s251: []u8 = _zag_str_concat("camera teleported to ", pq[3..pq.len]);
+                app_log(a, __log_s251);
+                _zag_str_free(__log_s251);
+            a.*.palette_open = false;
+            list.free[i64](&vals);
+            return;
+        }
+        list.free[i64](&vals);
+    }
+    let filt: list.ArrayList[PCmd] = list.make[PCmd](40);
+    palette_filtered(a, &filt);
+    if (filt.len > 0) {
+        let sel: i32 = a.*.palette_sel;
+        if (sel < 0) { sel = 0; }
+        if (sel >= filt.len) { sel = filt.len - 1; }
+        let code: i32 = filt.data[sel].code;
+        a.*.palette_open = false;
+        app_action(a, code);
+    }
+    list.free[PCmd](&filt);
+}
+
+// Palette key handling (owns the keyboard while open).
+fn app_palette_keys(a: *App) void {
+    let inp: *Input = &a.*.inp;
+    let i: i32 = 0;
+    while (i < inp.*.keys.len) {
+        let k: i32 = list.get[i32](inp.*.keys, i);
+        if (k == key_esc()) { a.*.palette_open = false; return; }
+        else if (k == key_enter()) { app_palette_exec(a); return; }
+        else if (k == 17) { if (a.*.palette_sel > 0) { a.*.palette_sel = a.*.palette_sel - 1; } }
+        else if (k == 18) { a.*.palette_sel = a.*.palette_sel + 1; }
+        else if (k == key_backspace()) {
+            if (a.*.palette_text.len > 0) { a.*.palette_text.len = a.*.palette_text.len - 1; }
+            a.*.palette_sel = 0;
+        } else if (k >= 32 && k < 127 && a.*.palette_text.len < 40) {
+            list.push[u8](&a.*.palette_text, k as u8);
+            a.*.palette_sel = 0;
+        }
+        i = i + 1;
+    }
+}
+
+fn draw_palette(a: *App) void {
+    if (!a.*.palette_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let cap: i32 = inp.*.capture;
+    inp.*.capture = 0;
+
+    let pw: i32 = 440;
+    let px: i32 = (a.*.inp.w - pw) / 2;
+    if (px < 8) { px = 8; }
+    let py: i32 = 84;
+
+    let filt: list.ArrayList[PCmd] = list.make[PCmd](40);
+    palette_filtered(a, &filt);
+    if (a.*.palette_sel >= filt.len) { a.*.palette_sel = filt.len - 1; }
+    if (a.*.palette_sel < 0) { a.*.palette_sel = 0; }
+    let shown: i32 = filt.len;
+    if (shown > 9) { shown = 9; }
+    let prow_h: i32 = row_h() + 2;
+    let ph: i32 = 34 + shown * prow_h + 6;
+
+    draw_shadow(f, px, py, pw, ph, radius_panel());
+    fill_round_rect(f, px, py, pw, ph, radius_panel(), th_panel());
+    round_rect_outline(f, px, py, pw, ph, radius_panel(), th_outline());
+    // input row
+    let iy: i32 = py + text_cy(face_body(), 30);
+    draw_text(f, px + 12, iy, ">", th_accent());
+    if (a.*.palette_text.len > 0) {
+        draw_text(f, px + 24, iy, a.*.palette_text.data[0..a.*.palette_text.len], th_text());
+    } else {
+        draw_text(f, px + 24, iy, "Type a command...", th_text_dim());
+    }
+    hline(f, px + 8, py + 31, pw - 16, th_outline_soft());
+
+    let y: i32 = py + 34;
+    let idx: i32 = 0;
+    while (idx < shown) {
+        let c: PCmd = filt.data[idx];
+        let row: Rect = rect(px + 6, y, pw - 12, prow_h);
+        let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
+        let _eid: i64 = ui_register(inp, "menuitem", c.label, c.label, row, true,
+                                    idx == a.*.palette_sel, false);
+        if (idx == a.*.palette_sel || hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
+        draw_text(f, row.x + 8, y + text_cy(face_body(), prow_h), c.label, th_text());
+        if (c.hint.len > 0) {
+            draw_text(f, row.x + row.w - text_w(c.hint) - 8, y + text_cy(face_body(), prow_h), c.hint, th_text_dim());
+        }
+        if (hov && btn_released(inp, 0)) {
+            a.*.palette_sel = idx;
+            app_palette_exec(a);
+        }
+        y = y + prow_h;
+        idx = idx + 1;
+    }
+    list.free[PCmd](&filt);
+
+    if (btn_pressed(inp, 0)) {
+        let box: Rect = rect(px, py, pw, ph);
+        if (!rect_has(box, inp.*.mx, inp.*.my)) { a.*.palette_open = false; }
+    }
+    inp.*.capture = cap;
+}
+
+// small demo design (also used by --smoke); placed through the normal APIs
+fn app_action_demo(a: *App) void {
+    demo_load(a);
+    app_log(a, "demo design loaded");
+}
+
+// ── menu bar ──────────────────────────────────────────────────────────────────
+
+struct MenuItem {
+    label: []u8,
+    hint: []u8,
+    code: i32,     // 0 = separator
+}
+
+fn menu_title(m: i32) []u8 {
+    if (m == 0) { return "File"; }
+    if (m == 1) { return "Edit"; }
+    if (m == 2) { return "View"; }
+    return "Help";
+}
+
+fn menu_items(m: i32, out: *list.ArrayList[MenuItem]) void {
+    out.*.len = 0;
+    if (m == 0) {
+        list.push[MenuItem](out, MenuItem{ .label = "New", .hint = "Ctrl+N", .code = cmd_new() });
+        list.push[MenuItem](out, MenuItem{ .label = "Open...", .hint = "Ctrl+O", .code = cmd_open() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Save", .hint = "Ctrl+S", .code = cmd_save() });
+        list.push[MenuItem](out, MenuItem{ .label = "Save As...", .hint = "Ctrl+Shift+S", .code = cmd_save_as() });
+        list.push[MenuItem](out, MenuItem{ .label = "Recover Autosave...", .hint = "", .code = cmd_recover_autosave() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Quit", .hint = "Ctrl+Q", .code = cmd_quit() });
+    }
+    if (m == 1) {
+        list.push[MenuItem](out, MenuItem{ .label = "Undo", .hint = "Ctrl+Z", .code = cmd_undo() });
+        list.push[MenuItem](out, MenuItem{ .label = "Redo", .hint = "Ctrl+Y", .code = cmd_redo() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Duplicate", .hint = "Shift+D", .code = cmd_duplicate() });
+        list.push[MenuItem](out, MenuItem{ .label = "Copy", .hint = "Ctrl+C", .code = cmd_copy() });
+        list.push[MenuItem](out, MenuItem{ .label = "Paste", .hint = "Ctrl+V", .code = cmd_paste() });
+        list.push[MenuItem](out, MenuItem{ .label = "Delete", .hint = "X", .code = cmd_delete() });
+        list.push[MenuItem](out, MenuItem{ .label = "Deselect", .hint = "Esc", .code = cmd_deselect() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Group", .hint = "Ctrl+G", .code = cmd_group() });
+        list.push[MenuItem](out, MenuItem{ .label = "Ungroup", .hint = "Ctrl+Shift+G", .code = cmd_ungroup() });
+        list.push[MenuItem](out, MenuItem{ .label = "Rename", .hint = "F2", .code = cmd_rename() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Command Palette", .hint = "Ctrl+K", .code = cmd_palette() });
+    }
+    if (m == 2) {
+        list.push[MenuItem](out, MenuItem{ .label = "Frame Selected", .hint = "F", .code = cmd_frame_selected() });
+        list.push[MenuItem](out, MenuItem{ .label = "Frame All", .hint = "Home", .code = cmd_frame_all() });
+        list.push[MenuItem](out, MenuItem{ .label = "Reset View", .hint = "", .code = cmd_reset_view() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Top", .hint = "", .code = cmd_view_top() });
+        list.push[MenuItem](out, MenuItem{ .label = "Front", .hint = "", .code = cmd_view_front() });
+        list.push[MenuItem](out, MenuItem{ .label = "Right", .hint = "", .code = cmd_view_right() });
+        list.push[MenuItem](out, MenuItem{ .label = "Perspective", .hint = "", .code = cmd_view_perspective() });
+        list.push[MenuItem](out, MenuItem{ .label = "Toggle Orthographic", .hint = "", .code = cmd_toggle_ortho() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Section View", .hint = "", .code = cmd_section_view() });
+        list.push[MenuItem](out, MenuItem{ .label = "Measure Tool", .hint = "M", .code = cmd_tool_measure() });
+        list.push[MenuItem](out, MenuItem{ .label = "Object Snapping", .hint = "", .code = cmd_toggle_object_snap() });
+    }
+    if (m == 3) {
+        list.push[MenuItem](out, MenuItem{ .label = "Shortcuts", .hint = "", .code = cmd_shortcuts() });
+        list.push[MenuItem](out, MenuItem{ .label = "Load Demo Design", .hint = "F1", .code = cmd_demo() });
+        list.push[MenuItem](out, MenuItem{ .label = "Physical Model & Provenance...", .hint = "", .code = cmd_model_provenance() });
+    }
+}
+
+fn draw_menubar(a: *App) void {
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let r: Rect = zone_menu(a);
+    fill_rect(f, r.x, r.y, r.w, r.h, th_header());
+    hline(f, r.x, r.y + r.h - 1, r.w, th_outline());
+
+    // Use a readable product label instead of an unexplained accent square.
+    // In a technical workspace every persistent pixel should carry meaning.
+    let my: i32 = r.y + text_cy(face_body(), r.h);
+    draw_text(f, 10, my, "PRISM", th_accent_hot());
+    let x: i32 = 48;
+    let m: i32 = 0;
+    while (m < 4) {
+        let t: []u8 = menu_title(m);
+        let bw: i32 = text_w(t) + 18;
+        let br: Rect = rect(x, r.y + 3, bw, r.h - 5);
+        let hov: bool = rect_has(br, inp.*.mx, inp.*.my);
+        let _eid: i64 = ui_register(inp, "menubaritem", t, t, br,
+                                    a.*.modal == modal_none(), a.*.menu == m, false);
+        if (a.*.menu == m) {
+            fill_round_rect(f, br.x, br.y, br.w, br.h, radius_control(), th_accent());
+        } else if (hov && a.*.modal == modal_none()) {
+            fill_round_rect(f, br.x, br.y, br.w, br.h, radius_control(), th_panel_alt());
+        }
+        draw_text(f, x + 9, my, t, th_text());
+        if (a.*.modal == modal_none()) {
+            if (hov && btn_pressed(inp, 0)) {
+                if (a.*.menu == m) { a.*.menu = 0 - 1; } else { a.*.menu = m; }
+            } else if (hov && a.*.menu >= 0) {
+                a.*.menu = m;   // slide between menus while one is open
+            }
+        }
+        x = x + bw;
+        m = m + 1;
+    }
+
+    // right side: Builder button, Optimizer button (quiet, count-only badge),
+    // and Settings gear. Each tool carries a dedicated, labeled toolbar icon so
+    // the two are visually distinct (Section 22.4).
+    let bb: Rect = zone_build_btn(a);
+    let bh: bool = rect_has(bb, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
+    let bbr: Rect = rect(bb.x, bb.y + 3, bb.w, bb.h - 5);
+    let _beid: i64 = ui_register(inp, "button", "builder", "Builder", bbr,
+                                 a.*.modal == modal_none(), a.*.build_open, false);
+    if (a.*.build_open) { fill_round_rect(f, bbr.x, bbr.y, bbr.w, bbr.h, radius_control(), th_accent()); }
+    else if (bh) { fill_round_rect(f, bbr.x, bbr.y, bbr.w, bbr.h, radius_control(), th_panel_alt()); }
+    draw_text(f, bb.x + 9, my, "build", th_text());
+    if (bh && btn_pressed(inp, 0)) {
+        a.*.build_open = !a.*.build_open;
+        a.*.settings_open = false;
+        a.*.opt_open = false;
+    }
+
+    let ob: Rect = zone_opt_btn(a);
+    if (a.*.opt.*.enabled) {
+        let oh: bool = rect_has(ob, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
+        let obr: Rect = rect(ob.x, ob.y + 3, ob.w, ob.h - 5);
+        let _oeid: i64 = ui_register(inp, "button", "optimizer", "Optimizer", obr,
+                                     a.*.modal == modal_none(), a.*.opt_open, false);
+        if (a.*.opt_open) { fill_round_rect(f, obr.x, obr.y, obr.w, obr.h, radius_control(), th_accent()); }
+        else if (oh) { fill_round_rect(f, obr.x, obr.y, obr.w, obr.h, radius_control(), th_panel_alt()); }
+        draw_text(f, ob.x + 9, my, "opt", th_text());
+        if (opt_engine_badge(a.*.opt) > 0) {
+            let bx: i32 = ob.x + 9 + text_w("opt ");
+            let _bw: i32 = draw_int(f, bx, my, opt_engine_badge(a.*.opt) as i64, th_accent_hot());
+        }
+        if (oh && btn_pressed(inp, 0)) {
+            a.*.opt_open = !a.*.opt_open;
+            a.*.settings_open = false;
+            a.*.opt_previewed = false;
+            a.*.opt_details = false;
+        }
+    }
+
+    let gr: Rect = zone_settings_gear(a);
+    let gh: bool = rect_has(gr, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
+    let grr: Rect = rect(gr.x, gr.y + 3, gr.w, gr.h - 5);
+    let _geid: i64 = ui_register(inp, "button", "settings", "Settings", grr,
+                                 a.*.modal == modal_none(), a.*.settings_open, false);
+    if (a.*.settings_open) { fill_round_rect(f, grr.x, grr.y, grr.w, grr.h, radius_control(), th_accent()); }
+    else if (gh) { fill_round_rect(f, grr.x, grr.y, grr.w, grr.h, radius_control(), th_panel_alt()); }
+    draw_icon(f, gr.x + (gr.w - 16) / 2, gr.y + (gr.h - 16) / 2, ico_gear(), th_text());
+    if (gh && btn_pressed(inp, 0)) {
+        a.*.settings_open = !a.*.settings_open;
+        a.*.opt_open = false;
+    }
+
+    // Connection issues are first-class work, not a tiny status-bar counter.
+    // The chip opens the existing list, where each issue frames its component.
+    let issue_w: i32 = 0;
+    if (a.*.warn_ids.len > 0) {
+        let iw_n: []u8 = fmt_i(a.*.warn_ids.len as i64);
+        let issue_label: []u8 = s2(iw_n, " issues");
+        _zag_str_free(iw_n);
+        issue_w = text_w(issue_label) + 18;
+        let ir: Rect = rect(bb.x - issue_w - 8, r.y + 3, issue_w, r.h - 5);
+        let ih: bool = rect_has(ir, inp.*.mx, inp.*.my) && a.*.modal == modal_none();
+        // The catalog retains this label until next frame: park it (ui_park),
+        // do NOT free it at the end of this draw call.
+        let _ieid: i64 = ui_register(inp, "button", "design-issues", ui_park(a, issue_label), ir,
+                                     a.*.modal == modal_none(), a.*.warn_open, false);
+        let ic: i64 = th_warning();
+        if (a.*.warn_open || ih) { ic = th_accent(); }
+        fill_round_rect(f, ir.x, ir.y, ir.w, ir.h, radius_control(), ic);
+        round_rect_outline(f, ir.x, ir.y, ir.w, ir.h, radius_control(), th_warning());
+        draw_text(f, ir.x + 9, my, issue_label, th_text());
+        if (ih && btn_released(inp, 0)) { a.*.warn_open = !a.*.warn_open; }
+    }
+
+    // document name, left of the buttons and issue chip
+    let title: []u8 = a.*.file_;
+    let title_owned: bool = false;
+    if (a.*.dirty) { title = s2(a.*.file_, " *"); title_owned = true; }
+    let title_x: i32 = bb.x - issue_w - text_w(title) - 26;
+    fill_round_rect(f, title_x - 8, r.y + 4, text_w(title) + 16, r.h - 8,
+                    radius_control(), th_panel());
+    draw_text(f, title_x, my, title, th_text_dim());
+    if (title_owned) { _zag_str_free(title); }
+}
+
+// draw_gear removed — replaced by draw_icon(f, x, y, ico_gear(), c) in fb.zag.
+
+// draw + interact with the open dropdown; called last so it overlays panels
+fn draw_menu_dropdown(a: *App) void {
+    if (a.*.menu < 0) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+
+    // anchor under the menu title
+    let x0: i32 = 30;
+    let m: i32 = 0;
+    while (m < a.*.menu) {
+        x0 = x0 + text_w(menu_title(m)) + 18;
+        m = m + 1;
+    }
+
+    let items: list.ArrayList[MenuItem] = list.make[MenuItem](12);
+    menu_items(a.*.menu, &items);
+    let iw: i32 = 220;
+    let ih: i32 = row_h() + 2;
+    let sep: i32 = 9;
+    let total: i32 = 0;
+    let i: i32 = 0;
+    while (i < items.len) {
+        if (items.data[i].code == cmd_none()) { total = total + sep; } else { total = total + ih; }
+        i = i + 1;
+    }
+    let dr: Rect = rect(x0, menu_h(), iw, total + 8);
+    draw_shadow(f, dr.x, dr.y, dr.w, dr.h, radius_panel());
+    fill_round_rect(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_panel());
+    round_rect_outline(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_outline());
+
+    let y: i32 = dr.y + 4;
+    let clicked_any: bool = false;
+    i = 0;
+    while (i < items.len) {
+        let it: MenuItem = items.data[i];
+        if (it.code == cmd_none()) {
+            hline(f, dr.x + 8, y + 4, dr.w - 16, th_outline_soft());
+            y = y + sep;
+        } else {
+            let row: Rect = rect(dr.x + 4, y, dr.w - 8, ih);
+            let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
+            let _eid: i64 = ui_register(inp, "menuitem", it.label, it.label, row, true, false, false);
+            if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
+            draw_text(f, row.x + 8, y + text_cy(face_body(), ih), it.label, th_text());
+            if (it.hint.len > 0) {
+                draw_text(f, row.x + row.w - text_w(it.hint) - 8, y + text_cy(face_body(), ih), it.hint, th_text_dim());
+            }
+            if (hov && btn_released(inp, 0)) {
+                app_action(a, it.code);
+                clicked_any = true;
+            }
+            y = y + ih;
+        }
+        i = i + 1;
+    }
+    // click outside (below the bar) closes
+    if (!clicked_any && btn_pressed(inp, 0)) {
+        if (!rect_has(dr, inp.*.mx, inp.*.my) && inp.*.my > menu_h()) {
+            a.*.menu = 0 - 1;
+        }
+    }
+    list.free[MenuItem](&items);
+}
+
+// ── status bar ────────────────────────────────────────────────────────────────
+// (tool_name was deleted: it had no callers and mixed literal/owned returns.
+// The status bar composes its tool label from literals + kind_short instead.)
+
+fn draw_statusbar(a: *App) void {
+    let f: *FB = &a.*.f;
+    let r: Rect = zone_status(a);
+    fill_rect(f, r.x, r.y, r.w, r.h, th_header());
+    hline(f, r.x, r.y, r.w, th_outline());
+    let ty: i32 = r.y + text_cy(face_body(), r.h);
+
+    // left: document
+    draw_text(f, 8, ty, a.*.file_, th_text());
+    let doc_w: i32 = text_w(a.*.file_);
+    if (a.*.dirty) {
+        draw_text(f, 8 + doc_w, ty, " *", th_text());
+        doc_w = doc_w + text_w(" *");
+    }
+
+    // cursor lattice cell (250 nm pitch)
+    let x: i32 = 8 + doc_w + 24;
+    if (a.*.hover_ok) {
+        let col: i64 = th_accent_hot();
+        draw_text(f, x, ty, "cell ", col);
+        let cx: i32 = x + text_w("cell ");
+        cx = cx + draw_int(f, cx, ty, a.*.hover_cell.x as i64, col);
+        draw_text(f, cx, ty, ", ", col);
+        cx = cx + text_w(", ");
+        cx = cx + draw_int(f, cx, ty, a.*.hover_cell.y as i64, col);
+        draw_text(f, cx, ty, ", ", col);
+        cx = cx + text_w(", ");
+        cx = cx + draw_int(f, cx, ty, a.*.hover_cell.z as i64, col);
+        x = cx + 24;
+    }
+
+    // tool
+    if (a.*.moving) {
+        draw_text(f, x, ty, "move", th_text_dim());
+        x = x + text_w("move") + 24;
+    } else if (a.*.tool == tool_route()) {
+        draw_text(f, x, ty, "route", th_text_dim());
+        x = x + text_w("route") + 24;
+    } else if (a.*.tool == tool_measure()) {
+        draw_text(f, x, ty, "measure", th_text_dim());
+        x = x + text_w("measure") + 24;
+    } else if (a.*.tool >= tool_place_base()) {
+        draw_text(f, x, ty, "place ", th_text_dim());
+        let kx: i32 = x + text_w("place ");
+        let ks: []u8 = kind_short(app_current_kind(a));
+        draw_text(f, kx, ty, ks, th_text_dim());
+        x = kx + text_w(ks) + 24;
+    } else {
+        draw_text(f, x, ty, "select", th_text_dim());
+        x = x + text_w("select") + 24;
+    }
+    if (a.*.sel.len > 0) {
+        x = x + draw_int(f, x, ty, a.*.sel.len as i64, th_text_dim());
+        draw_text(f, x, ty, " selected", th_text_dim());
+        x = x + text_w(" selected") + 24;
+    }
+
+    // camera + lattice + section state (Section 3.2: a working status bar)
+    let camm: []u8 = "persp";
+    if (a.*.cam.ortho) { camm = "ortho"; }
+    draw_text(f, x, ty, camm, th_text_dim());
+    x = x + text_w(camm) + 16;
+    draw_text(f, x, ty, "grid 1u", th_accent_hot());
+    x = x + text_w("grid 1u") + 16;
+    if (a.*.snap_obj) {
+        draw_text(f, x, ty, "align", th_text_dim());
+        x = x + text_w("align") + 16;
+    }
+    if (a.*.sect_on) {
+        draw_text(f, x, ty, "section", th_warning());
+        x = x + text_w("section") + 16;
+    }
+
+    // design warnings count: click to list them (Section 3.4)
+    if (a.*.warn_ids.len > 0) {
+        let wr: Rect = rect(x - 4, r.y + 2, text_w("00 warnings") + 8, r.h - 4);
+        let whov: bool = rect_has(wr, a.*.inp.mx, a.*.inp.my);
+        if (whov || a.*.warn_open) { fill_rect(f, wr.x, wr.y, wr.w, wr.h, th_header()); }
+        let wtx: i32 = x;
+        wtx = wtx + draw_int(f, wtx, ty, a.*.warn_ids.len as i64, th_warning());
+        draw_text(f, wtx, ty, " warnings", th_warning());
+        if (whov && btn_released(&a.*.inp, 0)) { a.*.warn_open = !a.*.warn_open; }
+        x = x + text_w("00 warnings") + 16;
+    } else { a.*.warn_open = false; }
+
+    // Optimizer badge: quiet, count-only (Section 20.4). Nothing shows at zero.
+    if (opt_engine_badge(a.*.opt) > 0) {
+        let ocol: i64 = th_accent_hot();
+        draw_text(f, x, ty, "opt ", ocol);
+        x = x + text_w("opt ");
+        x = x + draw_int(f, x, ty, opt_engine_badge(a.*.opt) as i64, ocol);
+    }
+
+    // right: counts + timing + sim state
+    let run: []u8 = "paused";
+    if (a.*.sim.*.playing) { run = "running"; }
+    let rw: i32 = text_w(" parts  ") + text_w(" guides  ") + text_w(" ms  sim ") + text_w(run);
+    let rw_c: []u8 = fmt_i(a.*.scene.*.comps.len as i64);
+    let rw_g: []u8 = fmt_i(a.*.scene.*.guides.len as i64);
+    let rw_m: []u8 = fmt_i(a.*.frame_ms);
+    rw = rw + text_w(rw_c);
+    rw = rw + text_w(rw_g);
+    rw = rw + text_w(rw_m);
+    _zag_str_free(rw_c);
+    _zag_str_free(rw_g);
+    _zag_str_free(rw_m);
+    let sx: i32 = r.w - rw - 8;
+    let rx: i32 = sx;
+    rx = rx + draw_int(f, rx, ty, a.*.scene.*.comps.len as i64, th_text_dim());
+    draw_text(f, rx, ty, " parts  ", th_text_dim());
+    rx = rx + text_w(" parts  ");
+    rx = rx + draw_int(f, rx, ty, a.*.scene.*.guides.len as i64, th_text_dim());
+    draw_text(f, rx, ty, " guides  ", th_text_dim());
+    rx = rx + text_w(" guides  ");
+    rx = rx + draw_int(f, rx, ty, a.*.frame_ms, th_text_dim());
+    draw_text(f, rx, ty, " ms  sim ", th_text_dim());
+    rx = rx + text_w(" ms  sim ");
+    draw_text(f, rx, ty, run, th_text_dim());
+}
+
+// Clickable warning list (Section 3.4): every design warning selects and
+// frames its component on click, so no warning is a dead end.
+fn draw_warnings_popup(a: *App) void {
+    if (!a.*.warn_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let cap: i32 = inp.*.capture;
+    inp.*.capture = 0;
+    let n: i32 = a.*.warn_ids.len;
+    if (n > 12) { n = 12; }
+    let ph: i32 = n * row_h() + 34;
+    let pw: i32 = 300;
+    let pr: Rect = rect(8, a.*.inp.h - status_h() - ph - 4, pw, ph);
+    draw_shadow(f, pr.x, pr.y, pr.w, pr.h, radius_panel());
+    fill_round_rect(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_panel());
+    round_rect_outline(f, pr.x, pr.y, pr.w, pr.h, radius_panel(), th_outline());
+    draw_text(f, pr.x + pad_panel(), pr.y + text_cy(face_body(), 24), "DESIGN WARNINGS", th_warning());
+    let y: i32 = pr.y + 28;
+    let i: i32 = 0;
+    while (i < n) {
+        let id: i32 = list.get[i32](a.*.warn_ids, i);
+        let code: i32 = list.get[i32](a.*.warn_codes, i);
+        let row: Rect = rect(pr.x + 4, y, pr.w - 8, row_h() - 1);
+        let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
+        if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
+        let ci: i32 = scene_comp_index(a.*.scene, id);
+        let nm: []u8 = "?";
+        if (ci >= 0) { nm = a.*.scene.*.comps.data[ci].name_; }
+        draw_text(f, row.x + 6, y + text_cy(face_body(), row_h() - 1), nm, th_text());
+        draw_text(f, row.x + 6 + text_w(nm) + 8, y + text_cy(face_body(), row_h() - 1), warn_text(code), th_warning());
+        if (hov && btn_released(inp, 0)) {
+            sel_set(a, id);
+            app_frame_selected(a);
+            a.*.warn_open = false;
+        }
+        y = y + row_h();
+        i = i + 1;
+    }
+    if (btn_pressed(inp, 0) && !rect_has(pr, inp.*.mx, inp.*.my)) { a.*.warn_open = false; }
+    inp.*.capture = cap;
+}
+
+// ── right-click context menu (Section 3.6) ────────────────────────────────────
+
+fn ctx_items(a: *App, out: *list.ArrayList[MenuItem]) void {
+    out.*.len = 0;
+    if (a.*.ctx_comp >= 0) {
+        let ci: i32 = scene_comp_index(a.*.scene, a.*.ctx_comp);
+        let vis_label: []u8 = "Hide";
+        if (ci >= 0 && !a.*.scene.*.comps.data[ci].visible) { vis_label = "Show"; }
+        let lock_label: []u8 = "Lock";
+        if (app_is_locked(a, a.*.ctx_comp)) { lock_label = "Unlock"; }
+        list.push[MenuItem](out, MenuItem{ .label = "Rename", .hint = "F2", .code = cmd_rename() });
+        list.push[MenuItem](out, MenuItem{ .label = "Duplicate", .hint = "Shift+D", .code = cmd_duplicate() });
+        list.push[MenuItem](out, MenuItem{ .label = "Copy", .hint = "Ctrl+C", .code = cmd_copy() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Frame", .hint = "F", .code = cmd_frame_selected() });
+        list.push[MenuItem](out, MenuItem{ .label = vis_label, .hint = "", .code = cmd_toggle_visibility() });
+        list.push[MenuItem](out, MenuItem{ .label = lock_label, .hint = "", .code = cmd_toggle_lock() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Group", .hint = "Ctrl+G", .code = cmd_group() });
+        list.push[MenuItem](out, MenuItem{ .label = "Ungroup", .hint = "", .code = cmd_ungroup() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Delete", .hint = "X", .code = cmd_delete() });
+    } else {
+        list.push[MenuItem](out, MenuItem{ .label = "Paste", .hint = "Ctrl+V", .code = cmd_paste() });
+        list.push[MenuItem](out, MenuItem{ .label = "", .hint = "", .code = cmd_none() });
+        list.push[MenuItem](out, MenuItem{ .label = "Frame All", .hint = "Home", .code = cmd_frame_all() });
+        list.push[MenuItem](out, MenuItem{ .label = "Reset View", .hint = "", .code = cmd_reset_view() });
+    }
+}
+
+fn ctx_exec(a: *App, code: i32) void {
+    if (code == cmd_toggle_visibility()) {
+        let ci: i32 = scene_comp_index(a.*.scene, a.*.ctx_comp);
+        if (ci >= 0) {
+            a.*.scene.*.comps.data[ci].visible = !a.*.scene.*.comps.data[ci].visible;
+            scene_mark_render(a.*.scene);
+        }
+        return;
+    }
+    if (code == cmd_toggle_lock()) {
+        app_toggle_lock(a, a.*.ctx_comp);
+        return;
+    }
+    app_action(a, code);
+}
+
+fn draw_ctx_menu(a: *App) void {
+    if (!a.*.ctx_open) { return; }
+    let f: *FB = &a.*.f;
+    let inp: *Input = &a.*.inp;
+    let cap: i32 = inp.*.capture;
+    inp.*.capture = 0;
+
+    let items: list.ArrayList[MenuItem] = list.make[MenuItem](14);
+    ctx_items(a, &items);
+    let iw: i32 = 200;
+    let ih: i32 = row_h() + 2;
+    let sep: i32 = 9;
+    let total: i32 = 0;
+    let i: i32 = 0;
+    while (i < items.len) {
+        if (items.data[i].code == cmd_none()) { total = total + sep; } else { total = total + ih; }
+        i = i + 1;
+    }
+    let mx0: i32 = a.*.ctx_x;
+    let my0: i32 = a.*.ctx_y;
+    if (mx0 + iw > inp.*.w - 4) { mx0 = inp.*.w - 4 - iw; }
+    if (my0 + total + 8 > inp.*.h - 4) { my0 = inp.*.h - 4 - total - 8; }
+    let dr: Rect = rect(mx0, my0, iw, total + 8);
+    draw_shadow(f, dr.x, dr.y, dr.w, dr.h, radius_panel());
+    fill_round_rect(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_panel());
+    round_rect_outline(f, dr.x, dr.y, dr.w, dr.h, radius_panel(), th_outline());
+
+    let y: i32 = dr.y + 4;
+    let clicked: bool = false;
+    i = 0;
+    while (i < items.len) {
+        let it: MenuItem = items.data[i];
+        if (it.code == cmd_none()) {
+            hline(f, dr.x + 8, y + 4, dr.w - 16, th_outline_soft());
+            y = y + sep;
+        } else {
+            let row: Rect = rect(dr.x + 4, y, dr.w - 8, ih);
+            let hov: bool = rect_has(row, inp.*.mx, inp.*.my);
+            let _eid: i64 = ui_register(inp, "menuitem", it.label, it.label, row, true, false, false);
+            if (hov) { fill_round_rect(f, row.x, row.y, row.w, row.h, radius_control(), th_accent()); }
+            draw_text(f, row.x + pad_panel(), y + text_cy(face_body(), ih), it.label, th_text());
+            if (it.hint.len > 0) {
+                draw_text(f, row.x + row.w - text_w(it.hint) - pad_panel(), y + text_cy(face_body(), ih), it.hint, th_text_dim());
+            }
+            if (hov && btn_released(inp, 0)) {
+                a.*.ctx_open = false;
+                ctx_exec(a, it.code);
+                clicked = true;
+            }
+            y = y + ih;
+        }
+        i = i + 1;
+    }
+    if (!clicked && (btn_pressed(inp, 0) || btn_pressed(inp, 2)) &&
+        !rect_has(dr, inp.*.mx, inp.*.my)) {
+        a.*.ctx_open = false;
+    }
+    list.free[MenuItem](&items);
+    inp.*.capture = cap;
+}

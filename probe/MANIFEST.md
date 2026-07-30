@@ -6,12 +6,13 @@ probes, and from generated artifacts (Master plan §4.2). Generated binaries are
 never tracked in git (`.gitignore`); only `.zag` sources and this manifest live
 in `probe/`. The `probe-manifest-audit` gate fails if any probe is unclassified.
 
-## Production tests — gated by `tools/verify.zag` (92)
+## Production tests — gated by `tools/verify.zag` (94)
 
 - `agent.zag`
 - `ast.zag`
 - `bounds_test.zag`
 - `boxselect_test.zag`
+- `builder_test.zag`
 - `camera_test.zag`
 - `components.zag`
 - `copypaste_test.zag`
@@ -61,6 +62,7 @@ in `probe/`. The `probe-manifest-audit` gate fails if any probe is unclassified.
 - `parser_corpus_test.zag`
 - `persistence_test.zag`
 - `picking_test.zag`
+- `process_stack_test.zag`
 - `protocol_parser_test.zag`
 - `provenance_test.zag`
 - `provenance_units_test.zag`
